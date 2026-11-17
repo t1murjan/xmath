@@ -5,10 +5,13 @@
 
 pub mod ast;
 pub mod builtins;
+mod builtins_ext;
 pub mod eval;
 pub mod format;
+pub mod linalg;
 pub mod numeric;
 pub mod parser;
+pub mod special;
 pub mod units;
 pub mod value;
 pub mod worksheet;

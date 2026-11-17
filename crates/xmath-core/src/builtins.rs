@@ -13,19 +13,24 @@ pub const NAMES: &[&str] = &[
     "Var", "sum", "prod", "length", "rows", "cols", "last", "identity", "transpose", "det", "tr", "lsolve",
     "augment", "stack", "submatrix", "cross", "norme", "sort", "reverse", "linterp", "polyroots", "factorial",
     "gamma", "Γ", "erf", "erfc", "dnorm", "pnorm", "UnitsOf", "concat", "num2str", "strlen", "if", "integrate",
-    "diff", "root", "matrix",
+    "diff", "root", "matrix", "eigenvals", "eigenvecs", "eigenvec", "rank", "cholesky", "lu", "qr", "svd", "svds",
+    "geninv", "rref", "norm1", "norm2", "normi", "cond2", "diag", "csort", "rsort", "lspline", "pspline", "cspline",
+    "interp", "slope", "intercept", "line", "corr", "regress", "cvar", "skew", "kurt", "hist", "gmean", "hmean",
+    "mode", "gcd", "lcm", "Φ", "heaviside", "δ", "kronecker", "sinc", "csgn", "qnorm", "dunif", "punif", "dexp",
+    "pexp", "J0", "J1", "Jn", "Y0", "Y1", "Yn", "I0", "I1", "In", "K0", "K1", "Kn", "substr", "search", "str2num",
+    "vec2str", "str2vec", "lookup", "match", "vlookup", "hlookup", "rkfixed", "Rkadapt",
 ];
 
-fn arity(name: &str, args: &[Value], n: usize) -> EResult<()> {
+pub(crate) fn arity(name: &str, args: &[Value], n: usize) -> EResult<()> {
     if args.len() != n {
-        return Err(format!("{name} takes {n} argument{}", if n == 1 { "" } else { "s" }));
+        return Err(format!("{name}: нужно аргументов: {n}"));
     }
     Ok(())
 }
 
-fn dimless(n: Num) -> EResult<C64> {
+pub(crate) fn dimless(n: Num) -> EResult<C64> {
     if !n.dim.is_none() {
-        return Err("the argument must be dimensionless".into());
+        return Err("аргумент должен быть безразмерным".into());
     }
     Ok(no_neg_zero(n.v))
 }
@@ -41,11 +46,11 @@ fn no_neg_zero(z: C64) -> C64 {
 }
 
 /// Applies a scalar function elementwise to scalars and matrices.
-fn map1(v: &Value, f: impl Fn(Num) -> EResult<Num>) -> EResult<Value> {
+pub(crate) fn map1(v: &Value, f: impl Fn(Num) -> EResult<Num>) -> EResult<Value> {
     match v {
         Value::Num(n) => Ok(Value::Num(f(*n)?)),
         Value::Matrix(m) => Ok(Value::Matrix(m.map(f)?)),
-        other => Err(format!("expected a number, found {}", other.type_name())),
+        other => Err(format!("ожидалось число, найдено: {}", other.type_name())),
     }
 }
 
@@ -79,11 +84,11 @@ fn real_or_complex(v: &Value, real: impl Fn(f64) -> f64, complex: impl Fn(C64) -
     })
 }
 
-fn real_fn(v: &Value, f: impl Fn(f64) -> f64) -> EResult<Value> {
+pub(crate) fn real_fn(v: &Value, f: impl Fn(f64) -> f64) -> EResult<Value> {
     map1(v, |n| {
         let z = dimless(n)?;
         if z.im != 0.0 {
-            return Err("the argument must be real".into());
+            return Err("аргумент должен быть вещественным".into());
         }
         Ok(Num::real(f(z.re)))
     })
@@ -95,26 +100,26 @@ fn real_keep_dim(v: &Value, f: impl Fn(f64) -> f64) -> EResult<Value> {
 }
 
 /// All elements of scalars / matrices / ranges given as arguments.
-fn flatten(args: &[Value]) -> EResult<Vec<Num>> {
+pub(crate) fn flatten(args: &[Value]) -> EResult<Vec<Num>> {
     let mut out = Vec::new();
     for a in args {
         match a {
             Value::Num(n) => out.push(*n),
             Value::Matrix(m) => out.extend_from_slice(&m.data),
             Value::Range(r) => out.extend(r.values()),
-            other => return Err(format!("expected numbers, found {}", other.type_name())),
+            other => return Err(format!("ожидались числа, найдено: {}", other.type_name())),
         }
     }
     if out.is_empty() {
-        return Err("no values given".into());
+        return Err("нет значений".into());
     }
     Ok(out)
 }
 
-fn same_dim(v: &[Num]) -> EResult<Dim> {
+pub(crate) fn same_dim(v: &[Num]) -> EResult<Dim> {
     let d = v[0].dim;
     if v.iter().any(|n| n.dim != d) {
-        return Err("the values have different units".into());
+        return Err("значения имеют разные единицы измерения".into());
     }
     Ok(d)
 }
@@ -125,7 +130,7 @@ fn extremum(args: &[Value], want_max: bool) -> EResult<Value> {
     let mut best = v[0].v.re;
     for n in &v {
         if !n.is_real() {
-            return Err("max and min need real values".into());
+            return Err("max и min требуют вещественных значений".into());
         }
         if (want_max && n.v.re > best) || (!want_max && n.v.re < best) {
             best = n.v.re;
@@ -139,7 +144,7 @@ fn variance(args: &[Value], sample: bool) -> EResult<Num> {
     let d = same_dim(&v)?;
     let n = v.len() as f64;
     if sample && v.len() < 2 {
-        return Err("needs at least two values".into());
+        return Err("нужно не менее двух значений".into());
     }
     let mean: C64 = v.iter().map(|x| x.v).sum::<C64>() / n;
     let ss: f64 = v.iter().map(|x| (x.v - mean).norm_sqr()).sum();
@@ -147,19 +152,19 @@ fn variance(args: &[Value], sample: bool) -> EResult<Num> {
 }
 
 fn sqrt_num(n: Num) -> EResult<Num> {
-    let dim = n.dim.powf(0.5).ok_or("the square root of these units cannot be represented")?;
+    let dim = n.dim.powf(0.5).ok_or("корень из этих единиц измерения представить нельзя")?;
     let z = no_neg_zero(n.v);
     let v = if z.im == 0.0 && z.re >= 0.0 { C64::new(z.re.sqrt(), 0.0) } else { z.sqrt() };
     Ok(Num::new(v, dim))
 }
 
-fn int_arg(v: &Value) -> EResult<i64> {
+pub(crate) fn int_arg(v: &Value) -> EResult<i64> {
     v.as_int()
 }
 
 fn factorial(x: f64) -> EResult<f64> {
     if x < 0.0 && x.fract() == 0.0 {
-        return Err("factorial of a negative integer".into());
+        return Err("факториал отрицательного целого".into());
     }
     if x.fract() == 0.0 && x <= 170.0 {
         return Ok((1..=x as u64).map(|k| k as f64).product());
@@ -168,24 +173,24 @@ fn factorial(x: f64) -> EResult<f64> {
 }
 
 /// A vector argument (row vectors are accepted and returned as columns).
-fn vector_arg(v: &Value, what: &str) -> EResult<Matrix> {
+pub(crate) fn vector_arg(v: &Value, what: &str) -> EResult<Matrix> {
     match v {
         Value::Matrix(m) if m.cols == 1 => Ok(m.clone()),
         Value::Matrix(m) if m.rows == 1 => Ok(m.transpose()),
         Value::Range(r) => Ok(Matrix::column(r.values().collect())),
-        _ => Err(format!("{what} must be a vector")),
+        _ => Err(format!("{what} должен быть вектором")),
     }
 }
 
 fn concat_matrices(args: &[Value], horizontal: bool) -> EResult<Value> {
     let mats = args.iter().map(|a| a.to_matrix()).collect::<EResult<Vec<_>>>()?;
     if mats.is_empty() {
-        return Err("needs at least one argument".into());
+        return Err("нужен хотя бы один аргумент".into());
     }
     if horizontal {
         let rows = mats[0].rows;
         if mats.iter().any(|m| m.rows != rows) {
-            return Err("all arguments must have the same number of rows".into());
+            return Err("все аргументы должны иметь одинаковое число строк".into());
         }
         let cols = mats.iter().map(|m| m.cols).sum();
         let mut out = Matrix::zeros(rows, cols);
@@ -202,7 +207,7 @@ fn concat_matrices(args: &[Value], horizontal: bool) -> EResult<Value> {
     } else {
         let cols = mats[0].cols;
         if mats.iter().any(|m| m.cols != cols) {
-            return Err("all arguments must have the same number of columns".into());
+            return Err("все аргументы должны иметь одинаковое число столбцов".into());
         }
         let rows = mats.iter().map(|m| m.rows).sum();
         let mut data = Vec::new();
@@ -248,17 +253,17 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
                 let b = dimless(args[1].as_num()?)?;
                 complex_fn(&args[0], |z| z.ln() / b.ln())
             })(),
-            _ => Err("log takes 1 or 2 arguments".into()),
+            _ => Err("log принимает 1 или 2 аргумента".into()),
         },
         "sqrt" => one(&|v| map1(v, sqrt_num)),
         "nthroot" => (|| {
             arity(name, args, 2)?;
             let n = int_arg(&args[1])?;
             if n == 0 {
-                return Err("the root index must not be zero".into());
+                return Err("показатель корня не может быть нулём".into());
             }
             map1(&args[0], |x| {
-                let dim = x.dim.powf(1.0 / n as f64).ok_or("these units cannot be represented")?;
+                let dim = x.dim.powf(1.0 / n as f64).ok_or("такие единицы измерения представить нельзя")?;
                 let v = if x.v.im == 0.0 && x.v.re < 0.0 && n % 2 != 0 {
                     C64::new(-(-x.v.re).powf(1.0 / n as f64), 0.0)
                 } else {
@@ -278,7 +283,7 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
             let x = args[0].as_num()?;
             let y = args[1].as_num()?;
             if x.dim != y.dim {
-                return Err("the units do not match".into());
+                return Err("Единицы измерения не совпадают".into());
             }
             Ok(Value::real(y.v.re.atan2(x.v.re)))
         })(),
@@ -292,17 +297,17 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
                 let p = 10f64.powi(n);
                 real_keep_dim(&args[0], |x| (x * p).round() / p)
             })(),
-            _ => Err("round takes 1 or 2 arguments".into()),
+            _ => Err("round принимает 1 или 2 аргумента".into()),
         },
         "mod" => (|| {
             arity(name, args, 2)?;
             let x = args[0].as_num()?;
             let y = args[1].as_num()?;
             if x.dim != y.dim {
-                return Err("the units do not match".into());
+                return Err("Единицы измерения не совпадают".into());
             }
             if y.v.re == 0.0 {
-                return Err("division by zero".into());
+                return Err("Деление на ноль".into());
             }
             Ok(Value::Num(Num::with_dim(x.v.re % y.v.re, x.dim)))
         })(),
@@ -346,7 +351,7 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
             Value::Matrix(m) if m.is_vector() => Ok(Value::real(m.data.len() as f64)),
             Value::Range(r) => Ok(Value::real(r.len() as f64)),
             Value::Str(s) => Ok(Value::real(s.chars().count() as f64)),
-            _ => Err("expected a vector".into()),
+            _ => Err("ожидался вектор".into()),
         }),
         "rows" => one(&|v| Ok(Value::real(v.to_matrix()?.rows as f64))),
         "cols" => one(&|v| Ok(Value::real(v.to_matrix()?.cols as f64))),
@@ -357,7 +362,7 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
         "identity" => one(&|v| {
             let n = int_arg(v)?;
             if n <= 0 || n > 10_000 {
-                return Err("invalid size".into());
+                return Err("недопустимый размер".into());
             }
             Ok(Value::Matrix(identity(n as usize)))
         }),
@@ -366,7 +371,7 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
         "tr" => one(&|v| {
             let m = v.to_matrix()?;
             if !m.is_square() {
-                return Err("needs a square matrix".into());
+                return Err("нужна квадратная матрица".into());
             }
             let mut acc = m.get(0, 0);
             for i in 1..m.rows {
@@ -386,7 +391,7 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
             let ix = args[1..].iter().map(|a| int_arg(a).map(|k| k - origin)).collect::<EResult<Vec<_>>>()?;
             let (ir, jr, ic, jc) = (ix[0], ix[1], ix[2], ix[3]);
             if ir < 0 || ic < 0 || jr < ir || jc < ic || jr as usize >= m.rows || jc as usize >= m.cols {
-                return Err("index out of range".into());
+                return Err("индекс вне допустимых границ".into());
             }
             let mut out = Matrix::zeros((jr - ir + 1) as usize, (jc - ic + 1) as usize);
             for i in 0..out.rows {
@@ -398,10 +403,10 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
         })(),
         "cross" => (|| {
             arity(name, args, 2)?;
-            let a = vector_arg(&args[0], "cross: the first argument")?;
-            let b = vector_arg(&args[1], "cross: the second argument")?;
+            let a = vector_arg(&args[0], "cross: первый аргумент")?;
+            let b = vector_arg(&args[1], "cross: второй аргумент")?;
             if a.rows != 3 || b.rows != 3 {
-                return Err("needs two 3-element vectors".into());
+                return Err("нужны два вектора из 3 элементов".into());
             }
             let c = |i: usize, j: usize| num_sub(num_mul(a.data[i], b.data[j]), num_mul(a.data[j], b.data[i]));
             Ok(Value::Matrix(Matrix::column(vec![c(1, 2)?, c(2, 0)?, c(0, 1)?])))
@@ -412,7 +417,7 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
             Ok(Value::Num(Num::with_dim(m.data.iter().map(|n| n.v.norm_sqr()).sum::<f64>().sqrt(), d)))
         }),
         "sort" => one(&|v| {
-            let m = vector_arg(v, "sort: the argument")?;
+            let m = vector_arg(v, "sort: аргумент")?;
             same_dim(&m.data)?;
             let mut data = m.data.clone();
             data.sort_by(|a, b| a.v.re.total_cmp(&b.v.re));
@@ -433,13 +438,13 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
             let vx = vector_arg(&args[0], "linterp: vx")?;
             let vy = vector_arg(&args[1], "linterp: vy")?;
             if vx.rows != vy.rows || vx.rows < 2 {
-                return Err("vx and vy must have the same length (at least 2)".into());
+                return Err("vx и vy должны иметь одинаковую длину (не менее 2)".into());
             }
             let dx = same_dim(&vx.data)?;
             let dy = same_dim(&vy.data)?;
             map1(&args[2], |x| {
                 if x.dim != dx {
-                    return Err("x has different units than vx".into());
+                    return Err("x и vx имеют разные единицы измерения".into());
                 }
                 let n = vx.rows;
                 let xs: Vec<f64> = vx.data.iter().map(|v| v.v.re).collect();
@@ -453,7 +458,7 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
             })
         })(),
         "polyroots" => one(&|v| {
-            let m = vector_arg(v, "polyroots: the coefficients")?;
+            let m = vector_arg(v, "polyroots: коэффициенты")?;
             let c: Vec<C64> = m.data.iter().map(|n| dimless(*n)).collect::<EResult<_>>()?;
             let roots = numeric::polyroots(&c)?;
             Ok(Value::Matrix(Matrix::column(roots.into_iter().map(|z| Num::new(z, Dim::NONE)).collect())))
@@ -471,7 +476,7 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
             arity(name, args, 3)?;
             let (mu, sigma) = (args[1].as_real()?, args[2].as_real()?);
             if sigma <= 0.0 {
-                return Err("σ must be positive".into());
+                return Err("σ должна быть положительной".into());
             }
             real_fn(&args[0], |x| {
                 (-(x - mu).powi(2) / (2.0 * sigma * sigma)).exp() / (sigma * (2.0 * std::f64::consts::PI).sqrt())
@@ -481,7 +486,7 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
             arity(name, args, 3)?;
             let (mu, sigma) = (args[1].as_real()?, args[2].as_real()?);
             if sigma <= 0.0 {
-                return Err("σ must be positive".into());
+                return Err("σ должна быть положительной".into());
             }
             real_fn(&args[0], |x| 0.5 * libm::erfc(-(x - mu) / (sigma * std::f64::consts::SQRT_2)))
         })(),
@@ -491,7 +496,7 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
             for a in args {
                 match a {
                     Value::Str(x) => s.push_str(x),
-                    other => return Err(format!("expected strings, found {}", other.type_name())),
+                    other => return Err(format!("ожидались строки, найдено: {}", other.type_name())),
                 }
             }
             Ok(Value::Str(s.into()))
@@ -499,9 +504,9 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
         "num2str" => one(&|v| Ok(Value::Str(format_plain(v.as_num()?).into()))),
         "strlen" => one(&|v| match v {
             Value::Str(s) => Ok(Value::real(s.chars().count() as f64)),
-            _ => Err("expected a string".into()),
+            _ => Err("ожидалась строка".into()),
         }),
-        _ => return None,
+        _ => return crate::builtins_ext::call(name, args, origin),
     };
     Some(r)
 }

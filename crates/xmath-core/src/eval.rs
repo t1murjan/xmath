@@ -86,7 +86,7 @@ impl Evaluator {
             Expr::Num(x) => Ok(Value::real(*x)),
             Expr::Imag(x) => Ok(Value::Num(Num::new(C64::new(0.0, *x), Dim::NONE))),
             Expr::Str(s) => Ok(Value::Str(s.as_str().into())),
-            Expr::Var(n) => self.lookup(n, sc).ok_or_else(|| format!("'{n}' is not defined")),
+            Expr::Var(n) => self.lookup(n, sc).ok_or_else(|| format!("'{n}' не определена")),
             Expr::Unary(op, a) => {
                 let v = self.eval(a, sc)?;
                 match op {
@@ -121,19 +121,19 @@ impl Evaluator {
                 let b = self.eval(base, sc)?;
                 let m = match &b {
                     Value::Matrix(m) => m,
-                    Value::Range(_) => return Err("a range variable cannot be indexed; use a vector".into()),
-                    other => return Err(format!("only vectors and matrices can be indexed, found {}", other.type_name())),
+                    Value::Range(_) => return Err("дискретную переменную нельзя индексировать; используйте вектор".into()),
+                    other => return Err(format!("индексировать можно только векторы и матрицы, найдено: {}", other.type_name())),
                 };
                 let origin = self.origin(sc);
                 let ix = idx
                     .iter()
                     .map(|i| self.eval(i, sc)?.as_int().map(|k| k - origin))
                     .collect::<EResult<Vec<i64>>>()?;
-                let out_of_range = || "index out of range".to_string();
+                let out_of_range = || "индекс вне допустимых границ".to_string();
                 match ix.as_slice() {
                     [k] => {
                         if !m.is_vector() {
-                            return Err("a matrix needs two indices".into());
+                            return Err("для матрицы нужны два индекса".into());
                         }
                         let k = usize::try_from(*k).map_err(|_| out_of_range())?;
                         m.data.get(k).map(|n| Value::Num(*n)).ok_or_else(out_of_range)
@@ -146,7 +146,7 @@ impl Evaluator {
                         }
                         Ok(Value::Num(m.get(r, c)))
                     }
-                    _ => Err("too many indices".into()),
+                    _ => Err("слишком много индексов".into()),
                 }
             }
             Expr::Matrix(rows) => {
@@ -160,7 +160,7 @@ impl Evaluator {
                         match self.eval(cell, sc)? {
                             Value::Num(n) => data.push(n),
                             other => {
-                                return Err(format!("matrix elements must be scalars, found {}", other.type_name()))
+                                return Err(format!("элементы матрицы должны быть скалярами, найдено: {}", other.type_name()))
                             }
                         }
                     }
@@ -171,16 +171,16 @@ impl Evaluator {
                 let a = self.eval(first, sc)?.as_num()?;
                 let c = self.eval(last, sc)?.as_num()?;
                 if !a.is_real() || !c.is_real() {
-                    return Err("range limits must be real".into());
+                    return Err("границы диапазона должны быть вещественными".into());
                 }
                 if a.dim != c.dim {
-                    return Err("range limits have different units".into());
+                    return Err("границы диапазона имеют разные единицы измерения".into());
                 }
                 let step = match second {
                     Some(b) => {
                         let b = self.eval(b, sc)?.as_num()?;
                         if b.dim != a.dim {
-                            return Err("range limits have different units".into());
+                            return Err("границы диапазона имеют разные единицы измерения".into());
                         }
                         b.v.re - a.v.re
                     }
@@ -193,11 +193,11 @@ impl Evaluator {
                     }
                 };
                 if step == 0.0 || !step.is_finite() {
-                    return Err("the range step must not be zero".into());
+                    return Err("шаг диапазона не может быть нулевым".into());
                 }
                 let r = Range { start: a.v.re, step, end: c.v.re, dim: a.dim };
                 if r.len() > MAX_RANGE_LEN {
-                    return Err(format!("the range has too many values (more than {MAX_RANGE_LEN})"));
+                    return Err(format!("в диапазоне слишком много значений (больше {MAX_RANGE_LEN})"));
                 }
                 Ok(Value::Range(r))
             }
@@ -210,7 +210,7 @@ impl Evaluator {
                 }
                 Value::Matrix(m) => Ok(Value::Num(det(&m)?)),
                 Value::Str(s) => Ok(Value::real(s.chars().count() as f64)),
-                other => Err(format!("cannot take the absolute value of {}", other.type_name())),
+                other => Err(format!("нельзя взять модуль: {}", other.type_name())),
             },
         }
     }
@@ -219,16 +219,15 @@ impl Evaluator {
     pub fn call_value(&self, f: &UserFunc, args: Vec<Value>) -> EResult<Value> {
         if args.len() != f.params.len() {
             return Err(format!(
-                "'{}' takes {} argument{}, but {} were given",
+                "'{}': нужно аргументов: {}, передано: {}",
                 f.name,
                 f.params.len(),
-                if f.params.len() == 1 { "" } else { "s" },
                 args.len()
             ));
         }
         let d = self.depth.get();
         if d >= MAX_CALL_DEPTH {
-            return Err("recursion is too deep".into());
+            return Err("слишком глубокая рекурсия".into());
         }
         let mut locals = (*f.locals).clone();
         for (p, a) in f.params.iter().zip(args) {
@@ -259,6 +258,9 @@ impl Evaluator {
         if name == "matrix" {
             return self.builtin_matrix(&vals);
         }
+        if matches!(name, "rkfixed" | "Rkadapt" | "rkadapt") {
+            return self.builtin_ode(name, &vals);
+        }
         if let Some(r) = builtins::call(name, &vals, self.origin(sc)) {
             return r.map_err(|e| format!("{name}: {e}"));
         }
@@ -268,20 +270,20 @@ impl Evaluator {
                 return mul(&v, &vals[0]);
             }
         }
-        Err(format!("'{name}' is not a defined function"))
+        Err(format!("функция '{name}' не определена"))
     }
 
     fn builtin_matrix(&self, vals: &[Value]) -> EResult<Value> {
         if vals.len() != 3 {
-            return Err("matrix(m, n, f) takes 3 arguments".into());
+            return Err("matrix(m, n, f) принимает 3 аргумента".into());
         }
         let m = vals[0].as_int()?;
         let n = vals[1].as_int()?;
         let Value::Func(f) = &vals[2] else {
-            return Err("matrix: the third argument must be a function f(i, j)".into());
+            return Err("третий аргумент должен быть функцией f(i, j)".into());
         };
         if m <= 0 || n <= 0 || m * n > MAX_RANGE_LEN as i64 {
-            return Err("matrix: invalid size".into());
+            return Err("недопустимый размер матрицы".into());
         }
         let mut out = Matrix::zeros(m as usize, n as usize);
         for i in 0..m as usize {
@@ -293,10 +295,68 @@ impl Evaluator {
         Ok(Value::Matrix(out))
     }
 
+    /// `rkfixed(y, x1, x2, npoints, D)` and `Rkadapt(...)`: solves `y' = D(x, y)`.
+    /// Returns the matrix whose first column is `x` and the others the components of `y`.
+    fn builtin_ode(&self, name: &str, vals: &[Value]) -> EResult<Value> {
+        if vals.len() != 5 {
+            return Err(format!("{name}(y, x1, x2, npoints, D) принимает 5 аргументов"));
+        }
+        let scalar = matches!(vals[0], Value::Num(_));
+        let init = vals[0].to_matrix()?;
+        if !init.is_vector() {
+            return Err("начальные условия должны быть вектором".into());
+        }
+        let to_f = |n: &Num| -> EResult<f64> {
+            if !n.dim.is_none() {
+                return Err("значение должно быть безразмерным".into());
+            }
+            if !n.is_real() {
+                return Err("значение должно быть вещественным".into());
+            }
+            Ok(n.v.re)
+        };
+        let y0 = init.data.iter().map(to_f).collect::<EResult<Vec<f64>>>()?;
+        let x1 = vals[1].as_dimless_real()?;
+        let x2 = vals[2].as_dimless_real()?;
+        let np = vals[3].as_int()?;
+        if np < 1 || np as usize > MAX_RANGE_LEN {
+            return Err("недопустимое число точек".into());
+        }
+        let Value::Func(f) = &vals[4] else {
+            return Err("пятый аргумент должен быть функцией D(x, y)".into());
+        };
+        let dim = y0.len();
+        let rhs = |x: f64, y: &[f64]| -> EResult<Vec<f64>> {
+            let yv = if scalar {
+                Value::real(y[0])
+            } else {
+                Value::Matrix(Matrix::column(y.iter().map(|v| Num::real(*v)).collect()))
+            };
+            let r = self.call_value(f, vec![Value::real(x), yv])?.to_matrix()?;
+            if r.data.len() != dim || !r.is_vector() {
+                return Err(format!("D(x, y) должна возвращать вектор из {dim} элементов"));
+            }
+            r.data.iter().map(to_f).collect()
+        };
+        let rows = if name == "rkfixed" {
+            crate::numeric::rk4_fixed(&rhs, &y0, x1, x2, np as usize)?
+        } else {
+            crate::numeric::rk45_adaptive(&rhs, &y0, x1, x2, np as usize, 1e-8)?
+        };
+        let mut out = Matrix::zeros(rows.len(), dim + 1);
+        for (k, row) in rows.iter().enumerate() {
+            out.set(k, 0, Num::real(x1 + (x2 - x1) * k as f64 / np as f64));
+            for (j, v) in row.iter().enumerate() {
+                out.set(k, j + 1, Num::real(*v));
+            }
+        }
+        Ok(Value::Matrix(out))
+    }
+
     fn bound_var<'a>(&self, e: &'a Expr, form: &str) -> EResult<&'a str> {
         match e {
             Expr::Var(n) => Ok(n),
-            _ => Err(format!("{form}: the variable argument must be a name")),
+            _ => Err(format!("{form}: переменная должна быть именем")),
         }
     }
 
@@ -327,14 +387,14 @@ impl Evaluator {
             let a = self.eval(&args[1], sc)?.as_int()?;
             let b = self.eval(&args[2], sc)?.as_int()?;
             if b - a > MAX_RANGE_LEN as i64 {
-                return Err("too many terms".into());
+                return Err("слишком много слагаемых".into());
             }
             (a..=b).map(|k| Value::real(k as f64)).collect()
         } else {
             match self.lookup(var, sc) {
                 Some(Value::Range(r)) => r.values().map(Value::Num).collect(),
                 Some(Value::Matrix(m)) if m.is_vector() => m.data.iter().map(|n| Value::Num(*n)).collect(),
-                _ => return Err(format!("'{var}' must be a range variable")),
+                _ => return Err(format!("'{var}' должна быть дискретной переменной")),
             }
         };
         let mut acc: Option<Value> = None;
@@ -358,10 +418,10 @@ impl Evaluator {
         let a = self.eval(&args[2], sc)?.as_num()?;
         let b = self.eval(&args[3], sc)?.as_num()?;
         if a.dim != b.dim {
-            return Err("the limits have different units".into());
+            return Err("пределы имеют разные единицы измерения".into());
         }
         if !a.is_real() || !b.is_real() {
-            return Err("the limits must be real".into());
+            return Err("пределы должны быть вещественными".into());
         }
         let f = self.scalar_fn(&args[0], var, a.dim, sc);
         let out_dim = Cell::new(None::<Dim>);
@@ -369,7 +429,7 @@ impl Evaluator {
             let n = f(C64::new(x, 0.0))?;
             match out_dim.get() {
                 None => out_dim.set(Some(n.dim)),
-                Some(d) if d != n.dim => return Err("the integrand has inconsistent units".into()),
+                Some(d) if d != n.dim => return Err("подынтегральная функция имеет несогласованные единицы измерения".into()),
                 _ => {}
             }
             Ok(n.v)
@@ -385,7 +445,7 @@ impl Evaluator {
             Some(e) => self.eval(e, sc)?.as_num()?,
             None => self
                 .lookup(var, sc)
-                .ok_or_else(|| format!("'{var}' must be defined (it is the point where the derivative is taken)"))?
+                .ok_or_else(|| format!("'{var}' должна быть определена (точка, в которой берётся производная)"))?
                 .as_num()?,
         };
         let f = self.scalar_fn(&args[0], var, at.dim, sc);
@@ -405,7 +465,7 @@ impl Evaluator {
             let a = self.eval(&args[2], sc)?.as_num()?;
             let b = self.eval(&args[3], sc)?.as_num()?;
             if a.dim != b.dim {
-                return Err("the bracket limits have different units".into());
+                return Err("границы интервала имеют разные единицы измерения".into());
             }
             let f = self.scalar_fn(&args[0], var, a.dim, sc);
             let g = |x: f64| -> EResult<f64> { Ok(f(C64::new(x, 0.0))?.v.re) };
@@ -414,7 +474,7 @@ impl Evaluator {
         }
         let guess = self
             .lookup(var, sc)
-            .ok_or_else(|| format!("'{var}' needs a guess value defined above"))?
+            .ok_or_else(|| format!("для '{var}' нужно начальное приближение, заданное выше"))?
             .as_num()?;
         let f = self.scalar_fn(&args[0], var, guess.dim, sc);
         let g = |x: C64| -> EResult<C64> { Ok(f(x)?.v) };
@@ -472,7 +532,7 @@ impl Evaluator {
         self.for_each_binding(&ranges, sc, &mut |s| {
             out.push(self.eval(e, s)?.as_num()?);
             if out.len() > MAX_RANGE_LEN {
-                return Err("too many values".into());
+                return Err("слишком много значений".into());
             }
             Ok(())
         })?;
@@ -489,7 +549,7 @@ impl Evaluator {
                 let ranges = self.range_vars(&[expr], &sc);
                 if let Some((r, _)) = ranges.first() {
                     return Err(format!(
-                        "the range variable '{r}' can only be used in an indexed definition such as {name}[{r}] := …"
+                        "дискретную переменную '{r}' можно использовать только в определении с индексом, например {name}[{r}] := …"
                     ));
                 }
                 (name.clone(), self.eval(expr, &sc)?)
@@ -522,13 +582,13 @@ impl Evaluator {
                     let (r, c) = match ix.as_slice() {
                         [r] => (*r, 0),
                         [r, c] => (*r, *c),
-                        _ => return Err("too many indices".into()),
+                        _ => return Err("слишком много индексов".into()),
                     };
                     if r < 0 || c < 0 {
-                        return Err("index out of range".into());
+                        return Err("индекс вне допустимых границ".into());
                     }
                     if (r as usize + 1) * (c as usize + 1) > MAX_RANGE_LEN {
-                        return Err("the matrix would be too large".into());
+                        return Err("матрица получилась бы слишком большой".into());
                     }
                     if m.rows == 0 && c == 0 {
                         m = Matrix::zeros(0, 1);

@@ -79,7 +79,7 @@ fn adaptive(f: &dyn Fn(f64) -> EResult<C64>, a: f64, b: f64) -> EResult<C64> {
     }
     let total: C64 = parts.iter().map(|p| p.2).sum();
     if !total.re.is_finite() || !total.im.is_finite() {
-        return Err("the integral does not converge".into());
+        return Err("интеграл не сходится".into());
     }
     Ok(total)
 }
@@ -97,7 +97,7 @@ pub fn integrate(f: &dyn Fn(f64) -> EResult<C64>, a: f64, b: f64) -> EResult<C64
         if v.re.is_finite() && v.im.is_finite() {
             Ok(v)
         } else {
-            Err("the integrand is not finite on the interval".into())
+            Err("подынтегральная функция не ограничена на интервале".into())
         }
     };
     match (a <= -inf, b >= inf) {
@@ -161,7 +161,7 @@ pub fn derivative(f: &dyn Fn(f64) -> EResult<C64>, x: f64) -> EResult<C64> {
         }
     }
     if !best.re.is_finite() || !best.im.is_finite() {
-        return Err("the derivative is not finite".into());
+        return Err("производная не существует (бесконечна)".into());
     }
     Ok(best)
 }
@@ -200,7 +200,7 @@ pub fn secant(f: &dyn Fn(C64) -> EResult<C64>, guess: C64) -> EResult<C64> {
     if f1.norm() <= 1e-10 * f(guess)?.norm().max(1.0) {
         return Ok(x1);
     }
-    Err("no solution found; try a different guess value".into())
+    Err("решение не найдено; попробуйте другое начальное приближение".into())
 }
 
 /// Brent's method on a bracketing interval.
@@ -215,7 +215,7 @@ pub fn brent(f: &dyn Fn(f64) -> EResult<f64>, a: f64, b: f64) -> EResult<f64> {
         return Ok(b);
     }
     if fa.signum() == fb.signum() {
-        return Err("the function has the same sign at both ends of the interval".into());
+        return Err("функция имеет одинаковый знак на концах интервала".into());
     }
     let (mut c, mut fc) = (a, fa);
     let mut d = b - a;
@@ -285,7 +285,7 @@ pub fn polyroots(coeffs: &[C64]) -> EResult<Vec<C64>> {
     }
     let n = c.len().saturating_sub(1);
     if n == 0 {
-        return Err("the polynomial must have degree 1 or higher".into());
+        return Err("степень многочлена должна быть не меньше 1".into());
     }
     let lead = c[n];
     let c: Vec<C64> = c.iter().map(|x| x / lead).collect();
@@ -321,6 +321,109 @@ pub fn polyroots(coeffs: &[C64]) -> EResult<Vec<C64>> {
     }
     z.sort_by(|a, b| a.re.total_cmp(&b.re).then(a.im.total_cmp(&b.im)));
     Ok(z)
+}
+
+/// Right-hand side of an ODE system `y' = f(x, y)`.
+pub type OdeFn<'a> = dyn Fn(f64, &[f64]) -> EResult<Vec<f64>> + 'a;
+
+fn axpy(y: &[f64], h: f64, k: &[f64]) -> Vec<f64> {
+    y.iter().zip(k).map(|(a, b)| a + h * b).collect()
+}
+
+/// Classic fourth-order Runge–Kutta with a fixed step; returns the `y` values
+/// at `x1 + k (x2 - x1) / n` for `k = 0..=n`.
+pub fn rk4_fixed(f: &OdeFn, y0: &[f64], x1: f64, x2: f64, n: usize) -> EResult<Vec<Vec<f64>>> {
+    let h = (x2 - x1) / n as f64;
+    let mut out = vec![y0.to_vec()];
+    let mut y = y0.to_vec();
+    for k in 0..n {
+        let x = x1 + k as f64 * h;
+        let k1 = f(x, &y)?;
+        let k2 = f(x + 0.5 * h, &axpy(&y, 0.5 * h, &k1))?;
+        let k3 = f(x + 0.5 * h, &axpy(&y, 0.5 * h, &k2))?;
+        let k4 = f(x + h, &axpy(&y, h, &k3))?;
+        for i in 0..y.len() {
+            y[i] += h / 6.0 * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]);
+        }
+        if y.iter().any(|v| !v.is_finite()) {
+            return Err("решение расходится".into());
+        }
+        out.push(y.clone());
+    }
+    Ok(out)
+}
+
+/// Adaptive Dormand–Prince 5(4) integration; the solution is reported at
+/// `n + 1` equally spaced points.
+pub fn rk45_adaptive(f: &OdeFn, y0: &[f64], x1: f64, x2: f64, n: usize, tol: f64) -> EResult<Vec<Vec<f64>>> {
+    const C: [f64; 7] = [0.0, 0.2, 0.3, 0.8, 8.0 / 9.0, 1.0, 1.0];
+    const A: [[f64; 6]; 7] = [
+        [0.0; 6],
+        [0.2, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [3.0 / 40.0, 9.0 / 40.0, 0.0, 0.0, 0.0, 0.0],
+        [44.0 / 45.0, -56.0 / 15.0, 32.0 / 9.0, 0.0, 0.0, 0.0],
+        [19372.0 / 6561.0, -25360.0 / 2187.0, 64448.0 / 6561.0, -212.0 / 729.0, 0.0, 0.0],
+        [9017.0 / 3168.0, -355.0 / 33.0, 46732.0 / 5247.0, 49.0 / 176.0, -5103.0 / 18656.0, 0.0],
+        [35.0 / 384.0, 0.0, 500.0 / 1113.0, 125.0 / 192.0, -2187.0 / 6784.0, 11.0 / 84.0],
+    ];
+    const B4: [f64; 7] =
+        [5179.0 / 57600.0, 0.0, 7571.0 / 16695.0, 393.0 / 640.0, -92097.0 / 339200.0, 187.0 / 2100.0, 1.0 / 40.0];
+    let dim = y0.len();
+    let seg = (x2 - x1) / n as f64;
+    let mut out = vec![y0.to_vec()];
+    let mut y = y0.to_vec();
+    let mut h = seg / 4.0;
+    let mut steps = 0usize;
+    for k in 0..n {
+        let x_end = x1 + (k + 1) as f64 * seg;
+        let mut x = x1 + k as f64 * seg;
+        while (x_end - x) * seg.signum() > 1e-14 * seg.abs() {
+            steps += 1;
+            if steps > 2_000_000 {
+                return Err("слишком много шагов интегрирования".into());
+            }
+            if (x + h - x_end) * seg.signum() > 0.0 {
+                h = x_end - x;
+            }
+            let mut ks: Vec<Vec<f64>> = Vec::with_capacity(7);
+            for s in 0..7 {
+                let mut ys = y.clone();
+                for (j, kj) in ks.iter().enumerate() {
+                    for i in 0..dim {
+                        ys[i] += h * A[s][j] * kj[i];
+                    }
+                }
+                ks.push(f(x + C[s] * h, &ys)?);
+            }
+            // 5th-order solution is ys of stage 7 (FSAL): y + h * sum A[6][j] k_j
+            let mut y5 = y.clone();
+            for j in 0..6 {
+                for i in 0..dim {
+                    y5[i] += h * A[6][j] * ks[j][i];
+                }
+            }
+            let mut err: f64 = 0.0;
+            for i in 0..dim {
+                let mut y4 = y[i];
+                for j in 0..7 {
+                    y4 += h * B4[j] * ks[j][i];
+                }
+                let sc = 1e-10 + tol * y[i].abs().max(y5[i].abs());
+                err = err.max((y5[i] - y4).abs() / sc);
+            }
+            if !err.is_finite() {
+                return Err("решение расходится".into());
+            }
+            if err <= 1.0 {
+                x += h;
+                y = y5;
+            }
+            let fac = if err == 0.0 { 5.0 } else { (0.9 * err.powf(-0.2)).clamp(0.2, 5.0) };
+            h *= fac;
+        }
+        out.push(y.clone());
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -362,5 +465,16 @@ mod tests {
         for (z, e) in p.iter().zip([1.0, 2.0, 3.0]) {
             assert!((z.re - e).abs() < 1e-10 && z.im == 0.0, "{p:?}");
         }
+    }
+
+    #[test]
+    fn ode() {
+        // y' = y, y(0) = 1
+        let f = |_x: f64, y: &[f64]| -> EResult<Vec<f64>> { Ok(vec![y[0]]) };
+        let r = rk4_fixed(&f, &[1.0], 0.0, 1.0, 50).unwrap();
+        assert!((r[50][0] - std::f64::consts::E).abs() < 1e-7);
+        let r = rk45_adaptive(&f, &[1.0], 0.0, 1.0, 4, 1e-10).unwrap();
+        assert!((r[4][0] - std::f64::consts::E).abs() < 1e-8);
+        assert!((r[2][0] - 0.5f64.exp()).abs() < 1e-8);
     }
 }

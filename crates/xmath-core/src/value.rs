@@ -111,7 +111,7 @@ impl Matrix {
         if self.data.iter().all(|n| n.dim == d) {
             Ok(d)
         } else {
-            Err("this operation requires all matrix elements to have the same units".into())
+            Err("для этой операции все элементы матрицы должны иметь одинаковые единицы измерения".into())
         }
     }
 
@@ -182,25 +182,25 @@ impl Value {
 
     pub fn type_name(&self) -> &'static str {
         match self {
-            Value::Num(_) => "a scalar",
-            Value::Matrix(_) => "a matrix",
-            Value::Str(_) => "a string",
-            Value::Range(_) => "a range",
-            Value::Func(_) => "a function",
+            Value::Num(_) => "скаляр",
+            Value::Matrix(_) => "матрица",
+            Value::Str(_) => "строка",
+            Value::Range(_) => "диапазон",
+            Value::Func(_) => "функция",
         }
     }
 
     pub fn as_num(&self) -> EResult<Num> {
         match self {
             Value::Num(n) => Ok(*n),
-            other => Err(format!("expected a scalar, found {}", other.type_name())),
+            other => Err(format!("ожидался скаляр, найдено: {}", other.type_name())),
         }
     }
 
     pub fn as_matrix(&self) -> EResult<&Matrix> {
         match self {
             Value::Matrix(m) => Ok(m),
-            other => Err(format!("expected a vector or matrix, found {}", other.type_name())),
+            other => Err(format!("ожидался вектор или матрица, найдено: {}", other.type_name())),
         }
     }
 
@@ -210,14 +210,14 @@ impl Value {
             Value::Matrix(m) => Ok(m.clone()),
             Value::Num(n) => Ok(Matrix::new(1, 1, vec![*n])),
             Value::Range(r) => Ok(Matrix::column(r.values().collect())),
-            other => Err(format!("expected a vector or matrix, found {}", other.type_name())),
+            other => Err(format!("ожидался вектор или матрица, найдено: {}", other.type_name())),
         }
     }
 
     pub fn as_real(&self) -> EResult<f64> {
         let n = self.as_num()?;
         if !n.is_real() {
-            return Err("value must be real".into());
+            return Err("значение должно быть вещественным".into());
         }
         Ok(n.v.re)
     }
@@ -225,10 +225,10 @@ impl Value {
     pub fn as_dimless_real(&self) -> EResult<f64> {
         let n = self.as_num()?;
         if !n.dim.is_none() {
-            return Err("value must be dimensionless".into());
+            return Err("значение должно быть безразмерным".into());
         }
         if !n.is_real() {
-            return Err("value must be real".into());
+            return Err("значение должно быть вещественным".into());
         }
         Ok(n.v.re)
     }
@@ -237,7 +237,7 @@ impl Value {
         let x = self.as_dimless_real()?;
         let r = x.round();
         if (x - r).abs() > 1e-9 * x.abs().max(1.0) {
-            return Err(format!("expected an integer, found {x}"));
+            return Err(format!("ожидалось целое число, найдено {x}"));
         }
         Ok(r as i64)
     }
@@ -252,7 +252,7 @@ impl Value {
 // Scalar arithmetic
 
 fn units_mismatch() -> String {
-    "the units do not match".into()
+    "Единицы измерения не совпадают".into()
 }
 
 pub fn num_add(a: Num, b: Num) -> EResult<Num> {
@@ -279,7 +279,7 @@ pub fn num_mul(a: Num, b: Num) -> Num {
 
 pub fn num_div(a: Num, b: Num) -> EResult<Num> {
     if b.v == C64::new(0.0, 0.0) {
-        return Err("division by zero".into());
+        return Err("Деление на ноль".into());
     }
     Ok(Num::new(a.v / b.v, a.dim.div(b.dim)))
 }
@@ -305,18 +305,18 @@ pub fn cpow(base: C64, e: C64) -> C64 {
 
 pub fn num_pow(a: Num, b: Num) -> EResult<Num> {
     if !b.dim.is_none() {
-        return Err("an exponent must be dimensionless".into());
+        return Err("показатель степени должен быть безразмерным".into());
     }
     let dim = if a.dim.is_none() {
         Dim::NONE
     } else {
         if !b.is_real() {
-            return Err("a quantity with units cannot be raised to a complex power".into());
+            return Err("величину с единицами нельзя возводить в комплексную степень".into());
         }
-        a.dim.powf(b.v.re).ok_or("this power of the units cannot be represented")?
+        a.dim.powf(b.v.re).ok_or("такую степень единиц измерения представить нельзя")?
     };
     if a.v == C64::new(0.0, 0.0) && b.v.re < 0.0 {
-        return Err("division by zero".into());
+        return Err("Деление на ноль".into());
     }
     Ok(Num::new(cpow(a.v, b.v), dim))
 }
@@ -325,7 +325,7 @@ fn compare(a: Num, b: Num) -> EResult<std::cmp::Ordering> {
     if a.dim != b.dim && !(b.v.re == 0.0 && b.dim.is_none()) && !(a.v.re == 0.0 && a.dim.is_none()) {
         return Err(units_mismatch());
     }
-    a.v.re.partial_cmp(&b.v.re).ok_or_else(|| "cannot compare NaN".into())
+    a.v.re.partial_cmp(&b.v.re).ok_or_else(|| "нельзя сравнить NaN".into())
 }
 
 pub fn num_eq(a: Num, b: Num) -> EResult<bool> {
@@ -347,14 +347,14 @@ fn elementwise(a: &Value, b: &Value, f: impl Fn(Num, Num) -> EResult<Num>, what:
         (Value::Matrix(m), Value::Matrix(n)) => {
             if m.rows != n.rows || m.cols != n.cols {
                 return Err(format!(
-                    "cannot {what} a {}×{} and a {}×{} matrix",
+                    "нельзя {what}: матрицы {}×{} и {}×{} имеют разные размеры",
                     m.rows, m.cols, n.rows, n.cols
                 ));
             }
             let data = m.data.iter().zip(&n.data).map(|(x, y)| f(*x, *y)).collect::<EResult<Vec<_>>>()?;
             Ok(Value::Matrix(Matrix::new(m.rows, m.cols, data)))
         }
-        (x, y) => Err(format!("cannot {what} {} and {}", x.type_name(), y.type_name())),
+        (x, y) => Err(format!("нельзя {what}: {} и {}", x.type_name(), y.type_name())),
     }
 }
 
@@ -362,25 +362,25 @@ pub fn add(a: &Value, b: &Value) -> EResult<Value> {
     if let (Value::Str(x), Value::Str(y)) = (a, b) {
         return Ok(Value::Str(format!("{x}{y}").into()));
     }
-    elementwise(a, b, num_add, "add")
+    elementwise(a, b, num_add, "сложить")
 }
 
 pub fn sub(a: &Value, b: &Value) -> EResult<Value> {
-    elementwise(a, b, num_sub, "subtract")
+    elementwise(a, b, num_sub, "вычесть")
 }
 
 pub fn neg(a: &Value) -> EResult<Value> {
     match a {
         Value::Num(n) => Ok(Value::Num(Num::new(-n.v, n.dim))),
         Value::Matrix(m) => Ok(Value::Matrix(m.map(|n| Ok(Num::new(-n.v, n.dim)))?)),
-        other => Err(format!("cannot negate {}", other.type_name())),
+        other => Err(format!("нельзя изменить знак: {}", other.type_name())),
     }
 }
 
 pub fn matmul(a: &Matrix, b: &Matrix) -> EResult<Matrix> {
     if a.cols != b.rows {
         return Err(format!(
-            "cannot multiply a {}×{} matrix by a {}×{} matrix",
+            "нельзя умножить матрицу {}×{} на матрицу {}×{}",
             a.rows, a.cols, b.rows, b.cols
         ));
     }
@@ -410,7 +410,7 @@ pub fn mul(a: &Value, b: &Value) -> EResult<Value> {
             }
             Ok(Value::Matrix(matmul(m, n)?))
         }
-        _ => elementwise(a, b, |x, y| Ok(num_mul(x, y)), "multiply"),
+        _ => elementwise(a, b, |x, y| Ok(num_mul(x, y)), "умножить"),
     }
 }
 
@@ -420,11 +420,11 @@ fn conj(n: Num) -> Num {
 
 pub fn div(a: &Value, b: &Value) -> EResult<Value> {
     match (a, b) {
-        (_, Value::Num(_)) => elementwise(a, b, num_div, "divide"),
+        (_, Value::Num(_)) => elementwise(a, b, num_div, "разделить"),
         (Value::Num(_), Value::Matrix(m)) | (Value::Matrix(_), Value::Matrix(m)) if m.is_square() => {
             mul(a, &Value::Matrix(inverse(m)?))
         }
-        (x, y) => Err(format!("cannot divide {} by {}", x.type_name(), y.type_name())),
+        (x, y) => Err(format!("нельзя разделить: {} на {}", x.type_name(), y.type_name())),
     }
 }
 
@@ -432,9 +432,9 @@ pub fn pow(a: &Value, b: &Value) -> EResult<Value> {
     match (a, b) {
         (Value::Num(x), Value::Num(y)) => Ok(Value::Num(num_pow(*x, *y)?)),
         (Value::Matrix(m), Value::Num(_)) => {
-            let n = b.as_int().map_err(|_| "a matrix power must be an integer".to_string())?;
+            let n = b.as_int().map_err(|_| "степень матрицы должна быть целым числом".to_string())?;
             if !m.is_square() {
-                return Err("only square matrices can be raised to a power".into());
+                return Err("возводить в степень можно только квадратные матрицы".into());
             }
             let base = if n < 0 { inverse(m)? } else { m.clone() };
             let mut result = identity(m.rows);
@@ -443,7 +443,7 @@ pub fn pow(a: &Value, b: &Value) -> EResult<Value> {
             }
             Ok(Value::Matrix(result))
         }
-        (x, y) => Err(format!("cannot raise {} to {}", x.type_name(), y.type_name())),
+        (x, y) => Err(format!("нельзя возвести в степень: {} и {}", x.type_name(), y.type_name())),
     }
 }
 
@@ -477,7 +477,7 @@ pub fn cmp_op(a: &Value, b: &Value, op: crate::ast::BinOp) -> EResult<Value> {
             };
             Ok(Num::real(if r { 1.0 } else { 0.0 }))
         },
-        "compare",
+        "сравнить",
     )
 }
 
@@ -564,7 +564,7 @@ impl Lu {
 
 pub fn det(m: &Matrix) -> EResult<Num> {
     if !m.is_square() {
-        return Err("the determinant needs a square matrix".into());
+        return Err("определитель определён только для квадратной матрицы".into());
     }
     let d = m.uniform_dim()?;
     let dim = d.powf(m.rows as f64).unwrap_or(d);
@@ -581,12 +581,12 @@ pub fn det(m: &Matrix) -> EResult<Num> {
 
 pub fn inverse(m: &Matrix) -> EResult<Matrix> {
     if !m.is_square() {
-        return Err("only square matrices can be inverted".into());
+        return Err("обратить можно только квадратную матрицу".into());
     }
     let d = m.uniform_dim()?;
     let f = lu(m);
     if f.singular {
-        return Err("the matrix is singular".into());
+        return Err("Матрица вырождена".into());
     }
     let n = m.rows;
     let mut out = Matrix::zeros(n, n);
@@ -603,16 +603,16 @@ pub fn inverse(m: &Matrix) -> EResult<Matrix> {
 
 pub fn lsolve(m: &Matrix, b: &Matrix) -> EResult<Matrix> {
     if !m.is_square() {
-        return Err("lsolve needs a square matrix".into());
+        return Err("матрица должна быть квадратной".into());
     }
     if b.cols != 1 || b.rows != m.rows {
-        return Err("lsolve: the right-hand side must be a vector with as many rows as the matrix".into());
+        return Err("правая часть должна быть вектором с тем же числом строк, что и матрица".into());
     }
     let dm = m.uniform_dim()?;
     let db = b.uniform_dim()?;
     let f = lu(m);
     if f.singular {
-        return Err("the matrix is singular".into());
+        return Err("Матрица вырождена".into());
     }
     let rhs: Vec<C64> = b.data.iter().map(|x| x.v).collect();
     let x = f.solve(&rhs);
