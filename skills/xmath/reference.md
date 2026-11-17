@@ -93,6 +93,11 @@ Error messages from the engine are in Russian (e.g. `Единицы измере
 * Matrix literal: `[1, 2; 3, 4]` (commas separate columns, semicolons separate rows). Column vector `[1; 2; 3]`, row vector `[1, 2, 3]`.
 * Indexing: `A[0, 1]` (row, column), `v[2]`; indices start at `ORIGIN` = 0.
 * Operations: `A*B`, `A^-1`, `transpose(A)`, `det(A)`, `lsolve(A, b)`, `A*x`, elementwise through functions (`sqrt([1;4;9])`).
+* Mathcad applies some operations element by element **automatically** (no `vectorize` needed), and xmath follows these rules:
+  `v^n` (any scalar `n`) for a non-square array/vector; `scalar/v`; `v/w` for arrays of equal shape when the divisor is non-square; `scalar^v`;
+  `v + scalar`, `v - w`, comparisons and scalar functions (`sqrt(v)`) are element-wise. Unchanged: `v*w` of two column vectors is the dot product
+  (a scalar), `A*B` is the matrix product, and for SQUARE matrices `A^n` is the matrix power and `x/A`, `B/A` are `A^-1` products.
+  Use `vectorize(...)` to force element-wise behaviour for `v*w`, square matrices, or user functions.
 * Matrix column (Mathcad `M⟨j⟩`, Ctrl+6): `M^<j>` gives column `j` as a column vector (index from `ORIGIN`), e.g. `X := M^<0>`, `(transpose(M))^<1>`. The error "столбец … вне допустимых границ" is raised for a bad index.
 * Vectorize (Mathcad arrow over an expression, Ctrl+-): `vectorize(expr)` applies everything inside **element by element** over all vector/matrix operands of the same size
   (scalars are broadcast): `vectorize(v*w)` is the element-wise product (not the dot product), `vectorize(v/w)` element-wise quotient, `vectorize(f(v))` calls a user function or

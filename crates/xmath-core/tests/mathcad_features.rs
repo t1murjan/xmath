@@ -56,8 +56,8 @@ fn vectorize_elementwise() {
     assert_eq!(col(&[v, "vectorize(v^2 + 1)"]), vec![2.0, 5.0, 10.0]);
     assert_eq!(col(&[v, "vectorize(2^v)"]), vec![2.0, 4.0, 8.0]);
     assert_eq!(col(&[v, "vectorize(-v)"]), vec![-1.0, -2.0, -3.0]);
-    // ordinary semantics are unchanged
-    assert!(run(&[v, w, "v/w"]).is_err());
+    // without the arrow, v/w of equal-size vectors is element-wise too; v*w stays a dot product
+    assert_eq!(col(&[v, w, "v/w"]), vec![0.25, 0.4, 0.5]);
 }
 
 #[test]

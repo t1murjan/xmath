@@ -437,6 +437,11 @@ fn conj(n: Num) -> Num {
 pub fn div(a: &Value, b: &Value) -> EResult<Value> {
     match (a, b) {
         (_, Value::Num(_)) => elementwise(a, b, num_div, "разделить"),
+        // Mathcad: dividing by a non-square array (e.g. a vector) works element by element
+        (Value::Num(_), Value::Matrix(m)) if !m.is_square() => elementwise(a, b, num_div, "разделить"),
+        (Value::Matrix(x), Value::Matrix(m)) if !m.is_square() && x.rows == m.rows && x.cols == m.cols => {
+            elementwise(a, b, num_div, "разделить")
+        }
         (Value::Num(_), Value::Matrix(m)) | (Value::Matrix(_), Value::Matrix(m)) if m.is_square() => {
             mul(a, &Value::Matrix(inverse(m)?))
         }
@@ -448,10 +453,11 @@ pub fn pow(a: &Value, b: &Value) -> EResult<Value> {
     match (a, b) {
         (Value::Num(x), Value::Num(y)) => Ok(Value::Num(num_pow(*x, *y)?)),
         (Value::Matrix(m), Value::Num(_)) => {
-            let n = b.as_int().map_err(|_| "степень матрицы должна быть целым числом".to_string())?;
             if !m.is_square() {
-                return Err("возводить в степень можно только квадратные матрицы".into());
+                // Mathcad: a power of a non-square array is element-wise
+                return elementwise(&Value::Matrix(m.clone()), b, num_pow, "возвести в степень");
             }
+            let n = b.as_int().map_err(|_| "степень матрицы должна быть целым числом".to_string())?;
             let base = if n < 0 { inverse(m)? } else { m.clone() };
             let mut result = identity(m.rows);
             for _ in 0..n.unsigned_abs() {
@@ -459,6 +465,7 @@ pub fn pow(a: &Value, b: &Value) -> EResult<Value> {
             }
             Ok(Value::Matrix(result))
         }
+        (Value::Num(_), Value::Matrix(m)) if !m.is_square() => elementwise(a, b, num_pow, "возвести в степень"),
         (x, y) => Err(format!("нельзя возвести в степень: {} и {}", x.type_name(), y.type_name())),
     }
 }
