@@ -170,3 +170,37 @@ fn rounding_and_mod() {
     assert_eq!(num(&["floor(-2.5)"]), -3.0);
     assert_eq!(num(&["ceil(-2.5)"]), -2.0);
 }
+
+#[test]
+fn loess_regression_small_span() {
+    let defs = ["vx := stack(1, 2, 3, 4, 5)", "vy := stack(2.7, 7.4, 20.1, 54.6, 148.4)", "vs := loess(vx, vy, 0.75)"];
+    for (x, lo, hi) in [(2.5, 7.4, 54.6), (1.0, 2.0, 10.0), (5.0, 54.6, 160.0), (3.0, 7.4, 54.6)] {
+        let mut l = defs.to_vec();
+        let e = format!("interp(vs, vx, vy, {x})");
+        l.push(&e);
+        let v = num(&l);
+        assert!(v.is_finite() && v >= lo && v <= hi, "x={x}: {v}");
+    }
+    // outside the range and duplicated x values stay finite
+    let v = num(&[defs[0], defs[1], defs[2], "interp(vs, vx, vy, 6)"]);
+    assert!(v.is_finite() && v.abs() < 1e4, "{v}");
+    let v = num(&[
+        "vx := stack(1, 1, 2, 2, 3, 3)",
+        "vy := stack(1, 1, 4, 4, 9, 9)",
+        "vs := loess(vx, vy, 0.5)",
+        "interp(vs, vx, vy, 1.5)",
+    ]);
+    assert!(v.is_finite() && (1.0..=9.0).contains(&v), "{v}");
+}
+
+#[test]
+fn loess_follows_smooth_function() {
+    let v = num(&[
+        "f(k) := sin(k/5)",
+        "vx := stack(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)",
+        "vy := stack(f(0), f(1), f(2), f(3), f(4), f(5), f(6), f(7), f(8), f(9), f(10), f(11), f(12), f(13), f(14), f(15), f(16), f(17), f(18), f(19))",
+        "vs := loess(vx, vy, 0.5)",
+        "interp(vs, vx, vy, 7.5) - sin(1.5)",
+    ]);
+    assert!(v.abs() < 5e-3, "{v}");
+}

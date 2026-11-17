@@ -319,48 +319,106 @@ fn genfit(args: &[Value], calc: Calc) -> EResult<Value> {
 // ---------------------------------------------------------------------------
 // Smoothing
 
+/// Gaussian elimination that fails on (relatively) tiny pivots.
+fn solve_checked(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
+    let n = b.len();
+    let scale = a.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs()));
+    for c in 0..n {
+        let p = (c..n).max_by(|&i, &j| a[i][c].abs().total_cmp(&a[j][c].abs()))?;
+        if !(a[p][c].abs() > 1e-9 * scale) {
+            return None;
+        }
+        a.swap(c, p);
+        b.swap(c, p);
+        for r in c + 1..n {
+            let f = a[r][c] / a[c][c];
+            for k in c..n {
+                a[r][k] -= f * a[c][k];
+            }
+            b[r] -= f * b[c];
+        }
+    }
+    let mut x = vec![0.0; n];
+    for r in (0..n).rev() {
+        let s: f64 = (r + 1..n).map(|k| a[r][k] * x[k]).sum();
+        x[r] = (b[r] - s) / a[r][r];
+    }
+    x.iter().all(|v| v.is_finite()).then_some(x)
+}
+
 /// Local quadratic regression with tricube weights, evaluated at `t`.
+/// Falls back to a local line, then to a weighted mean, when the local
+/// problem is ill-conditioned (too few points with non-zero weight);
+/// outside the data range a local line is used.
 pub fn loess_at(x: &[f64], y: &[f64], span: f64, t: f64) -> f64 {
     let n = x.len();
-    let q = ((span * n as f64).ceil() as usize).clamp(3.min(n), n);
-    let mut d: Vec<f64> = x.iter().map(|v| (v - t).abs()).collect();
-    let mut sorted = d.clone();
+    // at least 4 neighbours so that 3 of them carry weight
+    let q = ((span * n as f64).ceil() as usize).clamp(4.min(n), n);
+    let dist: Vec<f64> = x.iter().map(|v| (v - t).abs()).collect();
+    let mut sorted = dist.clone();
     sorted.sort_by(f64::total_cmp);
     let mut h = sorted[q - 1];
     if span > 1.0 {
         h *= span;
     }
-    h = (h * (1.0 + 1e-9)).max(1e-300);
-    for v in d.iter_mut() {
-        let u = *v / h;
-        *v = if u < 1.0 { (1.0 - u * u * u).powi(3) } else { 0.0 };
+    // widen the window until at least min(3, n) points have clear weight
+    let need = 3.min(n);
+    let span_x = sorted[n - 1].max(1e-300);
+    if h <= 0.0 {
+        h = span_x * 1e-3;
     }
-    // weighted normal equations in (x - t)
+    let weights = |h: f64| -> Vec<f64> {
+        dist.iter()
+            .map(|&d| {
+                let u = d / h;
+                if u < 1.0 { (1.0 - u * u * u).powi(3) } else { 0.0 }
+            })
+            .collect()
+    };
+    let mut w = weights(h);
+    for _ in 0..60 {
+        if w.iter().filter(|&&v| v > 1e-3).count() >= need {
+            break;
+        }
+        h *= 1.5;
+        w = weights(h);
+    }
+    let sw: f64 = w.iter().sum();
+    if !(sw > 0.0) {
+        return y.iter().sum::<f64>() / n as f64;
+    }
+    // scaled coordinate keeps the normal equations well conditioned
+    let u: Vec<f64> = x.iter().map(|v| (v - t) / h).collect();
     let mut s = [0.0f64; 5];
     let mut b = [0.0f64; 3];
     for i in 0..n {
-        let (w, u) = (d[i], x[i] - t);
-        let mut pw = w;
+        let mut pw = w[i];
         for sk in s.iter_mut() {
             *sk += pw;
-            pw *= u;
+            pw *= u[i];
         }
-        b[0] += w * y[i];
-        b[1] += w * y[i] * u;
-        b[2] += w * y[i] * u * u;
+        b[0] += w[i] * y[i];
+        b[1] += w[i] * y[i] * u[i];
+        b[2] += w[i] * y[i] * u[i] * u[i];
     }
-    if s[0] <= 0.0 {
-        return f64::NAN;
+    let inside = n > 0 && t >= x.iter().cloned().fold(f64::INFINITY, f64::min) && t <= x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    if inside && n >= 3 {
+        let quad = vec![vec![s[0], s[1], s[2]], vec![s[1], s[2], s[3]], vec![s[2], s[3], s[4]]];
+        if let Some(c) = solve_checked(quad, b.to_vec()) {
+            // guard against wild results: stay within a generous data envelope
+            let (lo, hi) = y.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &v| (l.min(v), h.max(v)));
+            let pad = (hi - lo).max(1e-300);
+            if c[0] >= lo - pad && c[0] <= hi + pad {
+                return c[0];
+            }
+        }
     }
-    let quad = vec![vec![s[0], s[1], s[2]], vec![s[1], s[2], s[3]], vec![s[2], s[3], s[4]]];
-    if let Some(c) = solve_small(quad, b.to_vec()) {
-        return c[0];
+    if n >= 2 {
+        if let Some(c) = solve_checked(vec![vec![s[0], s[1]], vec![s[1], s[2]]], vec![b[0], b[1]]) {
+            return c[0];
+        }
     }
-    let lin = vec![vec![s[0], s[1]], vec![s[1], s[2]]];
-    if let Some(c) = solve_small(lin, vec![b[0], b[1]]) {
-        return c[0];
-    }
-    b[0] / s[0]
+    b[0] / sw
 }
 
 fn loess(args: &[Value]) -> EResult<Value> {
