@@ -143,121 +143,222 @@ pub const CAPACITANCE: Dim = Dim::from_ints([-2, -1, 4, 2, 0, 0, 0]);
 pub const INDUCTANCE: Dim = Dim::from_ints([2, 1, -2, -2, 0, 0, 0]);
 pub const MAG_FLUX: Dim = Dim::from_ints([2, 1, -2, -1, 0, 0, 0]);
 pub const MAG_FLUX_DENSITY: Dim = Dim::from_ints([0, 1, -2, -1, 0, 0, 0]);
+pub const ILLUMINANCE: Dim = Dim::from_ints([-2, 0, 0, 0, 0, 0, 1]);
+pub const DOSE: Dim = Dim::from_ints([2, 0, -2, 0, 0, 0, 0]);
+pub const DYN_VISCOSITY: Dim = Dim::from_ints([-1, 1, -1, 0, 0, 0, 0]);
+pub const KIN_VISCOSITY: Dim = Dim::from_ints([2, 0, -1, 0, 0, 0, 0]);
 
-/// A named unit: `value_in_SI = number * factor`.
+/// A named unit: `value_in_SI = (number + offset) * factor`.
+///
+/// # Temperature (Mathcad 15 semantics)
+///
+/// `K` and `R` (Rankine) are ordinary absolute units. `°C`/`degC` and
+/// `°F`/`degF` are *offset* units (`offset != 0`); `Δ°C`/`ΔdegC`/`Δ°F`/`ΔdegF`
+/// are plain difference units with `offset == 0`.
+///
+/// As in Mathcad, an offset unit is meaningful only (a) as the last factor of
+/// a value, `T := 25 °C` (the evaluator turns `x °C` into `(x + 273.15) K`),
+/// and (b) as a display unit, `T = °C` (shows `(T - 273.15 K) / K`). In every
+/// other position (`°C^2`, `5 °C/s`, `a * °C` with a non-scalar `a`, a bare
+/// `°C` value) the name behaves like `K` / `Δ°C`, i.e. `factor` only.
 pub struct UnitDef {
     pub name: &'static str,
     pub factor: f64,
     pub dim: Dim,
+    /// Zero point offset in the unit's own scale (273.15 for °C, 459.67 for °F).
+    pub offset: f64,
+}
+
+impl UnitDef {
+    /// Offset of the zero point expressed in SI kelvin (0 for non-offset units).
+    pub fn offset_si(&self) -> f64 {
+        self.offset * self.factor
+    }
 }
 
 const fn u(name: &'static str, factor: f64, dim: Dim) -> UnitDef {
-    UnitDef { name, factor, dim }
+    UnitDef { name, factor, dim, offset: 0.0 }
+}
+
+const fn uo(name: &'static str, factor: f64, dim: Dim, offset: f64) -> UnitDef {
+    UnitDef { name, factor, dim, offset }
 }
 
 const PI: f64 = std::f64::consts::PI;
-const LBF: f64 = 4.448_221_615_260_5;
+/// Pound-mass in kg (exact).
+pub const LB: f64 = 0.453_592_37;
+/// Standard gravity, m/s^2 (exact).
+pub const G0: f64 = 9.806_65;
+/// Pound-force in N (exact: lb * g0).
+pub const LBF: f64 = 4.448_221_615_260_5;
+/// Pound per square inch in Pa.
+pub const PSI: f64 = 6_894.757_293_168_361;
 
 pub static UNITS: &[UnitDef] = &[
     // length
     u("m", 1.0, LENGTH),
     u("km", 1e3, LENGTH),
-    u("dm", 0.1, LENGTH),
+    u("dm", 1e-1, LENGTH),
     u("cm", 1e-2, LENGTH),
     u("mm", 1e-3, LENGTH),
     u("μm", 1e-6, LENGTH),
-    u("um", 1e-6, LENGTH),
     u("nm", 1e-9, LENGTH),
+    u("pm", 1e-12, LENGTH),
+    u("um", 1e-6, LENGTH),
+    u("fm", 1e-15, LENGTH),
+    u("Å", 1e-10, LENGTH),
     u("in", 0.0254, LENGTH),
+    u("mil", 2.54e-5, LENGTH),
     u("ft", 0.3048, LENGTH),
     u("yd", 0.9144, LENGTH),
     u("mi", 1609.344, LENGTH),
-    // mass (Mathcad convention: `gm` is gram, `g` is gravity)
+    u("nmi", 1852.0, LENGTH),
+    u("au", 1.495_978_707e11, LENGTH),
+    u("ly", 9.460_730_472_580_8e15, LENGTH),
+    u("pc", 3.085_677_581_491_367e16, LENGTH),
+    // mass (Mathcad: `gm` is the gram, `g` is gravity)
     u("kg", 1.0, MASS),
     u("gm", 1e-3, MASS),
     u("mg", 1e-6, MASS),
+    u("μg", 1e-9, MASS),
     u("tonne", 1e3, MASS),
-    u("lb", 0.453_592_37, MASS),
+    u("mton", 1e3, MASS),
+    u("lb", LB, MASS),
+    u("lbm", LB, MASS),
+    u("oz", LB / 16.0, MASS),
+    u("ton", LB * 2000.0, MASS),
+    u("slug", 14.593_902_937_2, MASS),
+    u("amu", 1.660_539_066_60e-27, MASS),
     // time
     u("s", 1.0, TIME),
+    u("sec", 1.0, TIME),
     u("ms", 1e-3, TIME),
     u("μs", 1e-6, TIME),
-    u("us", 1e-6, TIME),
     u("ns", 1e-9, TIME),
+    u("ps", 1e-12, TIME),
+    u("us", 1e-6, TIME),
     u("min", 60.0, TIME),
     u("hr", 3600.0, TIME),
     u("day", 86400.0, TIME),
+    u("wk", 604800.0, TIME),
     u("week", 604800.0, TIME),
     u("yr", 31_557_600.0, TIME),
-    // electric current, temperature, amount, luminosity
+    // electric current, amount, luminosity
     u("A", 1.0, CURRENT),
     u("mA", 1e-3, CURRENT),
+    u("μA", 1e-6, CURRENT),
     u("kA", 1e3, CURRENT),
-    u("K", 1.0, TEMPERATURE),
-    u("Δ°C", 1.0, TEMPERATURE),
     u("mol", 1.0, AMOUNT),
+    u("mmol", 1e-3, AMOUNT),
+    u("kmol", 1e3, AMOUNT),
     u("cd", 1.0, LUMINOSITY),
+    u("lm", 1.0, LUMINOSITY),
+    u("lx", 1.0, ILLUMINANCE),
+    // temperature: K, Rankine, offset scales °C / °F and difference units (see module docs)
+    u("K", 1.0, TEMPERATURE),
+    u("R", 5.0 / 9.0, TEMPERATURE),
+    uo("°C", 1.0, TEMPERATURE, 273.15),
+    uo("degC", 1.0, TEMPERATURE, 273.15),
+    uo("°F", 5.0 / 9.0, TEMPERATURE, 459.67),
+    uo("degF", 5.0 / 9.0, TEMPERATURE, 459.67),
+    u("Δ°C", 1.0, TEMPERATURE),
+    u("ΔdegC", 1.0, TEMPERATURE),
+    u("Δ°F", 5.0 / 9.0, TEMPERATURE),
+    u("ΔdegF", 5.0 / 9.0, TEMPERATURE),
     // area and volume
     u("ha", 1e4, AREA),
+    u("acre", 4_046.856_422_4, AREA),
     u("L", 1e-3, VOLUME),
-    u("mL", 1e-6, VOLUME),
     u("liter", 1e-3, VOLUME),
+    u("mL", 1e-6, VOLUME),
+    u("cL", 1e-5, VOLUME),
+    u("dL", 1e-4, VOLUME),
+    u("hL", 0.1, VOLUME),
     u("gal", 3.785_411_784e-3, VOLUME),
+    u("qt", 9.463_529_46e-4, VOLUME),
+    u("pt", 4.731_764_73e-4, VOLUME),
+    u("fl_oz", 2.957_352_956_25e-5, VOLUME),
+    u("floz", 2.957_352_956_25e-5, VOLUME),
+    u("bbl", 0.158_987_294_928, VOLUME),
     // frequency
     u("Hz", 1.0, FREQUENCY),
     u("kHz", 1e3, FREQUENCY),
     u("MHz", 1e6, FREQUENCY),
     u("GHz", 1e9, FREQUENCY),
+    u("THz", 1e12, FREQUENCY),
     u("rpm", 1.0 / 60.0, FREQUENCY),
-    // speed
+    // velocity
     u("kph", 1.0 / 3.6, VELOCITY),
     u("mph", 0.447_04, VELOCITY),
+    u("knot", 1852.0 / 3600.0, VELOCITY),
     // force
     u("N", 1.0, FORCE),
     u("kN", 1e3, FORCE),
     u("MN", 1e6, FORCE),
+    u("GN", 1e9, FORCE),
     u("dyne", 1e-5, FORCE),
     u("kgf", 9.806_65, FORCE),
     u("tonnef", 9.806_65e3, FORCE),
     u("lbf", LBF, FORCE),
     u("kip", LBF * 1e3, FORCE),
+    u("ozf", LBF / 16.0, FORCE),
+    u("tonf", LBF * 2000.0, FORCE),
     // pressure
     u("Pa", 1.0, PRESSURE),
     u("kPa", 1e3, PRESSURE),
     u("MPa", 1e6, PRESSURE),
     u("GPa", 1e9, PRESSURE),
+    u("hPa", 1e2, PRESSURE),
     u("bar", 1e5, PRESSURE),
+    u("mbar", 1e2, PRESSURE),
     u("atm", 101_325.0, PRESSURE),
-    u("psi", LBF / 0.0254 / 0.0254, PRESSURE),
-    u("ksi", LBF / 0.0254 / 0.0254 * 1e3, PRESSURE),
-    u("mmHg", 133.322_387_415, PRESSURE),
+    u("at", 98_066.5, PRESSURE),
+    u("psi", PSI, PRESSURE),
+    u("ksi", PSI * 1e3, PRESSURE),
     u("torr", 101_325.0 / 760.0, PRESSURE),
+    u("mmHg", 133.322_387_415, PRESSURE),
+    u("inHg", 3_386.388_640_341, PRESSURE),
+    u("mmH2O", 9.806_65, PRESSURE),
+    u("inH2O", 249.088_91, PRESSURE),
     // energy
     u("J", 1.0, ENERGY),
+    u("mJ", 1e-3, ENERGY),
     u("kJ", 1e3, ENERGY),
     u("MJ", 1e6, ENERGY),
+    u("GJ", 1e9, ENERGY),
+    u("erg", 1e-7, ENERGY),
     u("cal", 4.1868, ENERGY),
     u("kcal", 4186.8, ENERGY),
     u("Wh", 3600.0, ENERGY),
     u("kWh", 3.6e6, ENERGY),
+    u("MWh", 3.6e9, ENERGY),
     u("eV", 1.602_176_634e-19, ENERGY),
+    u("keV", 1.602_176_634e-16, ENERGY),
+    u("MeV", 1.602_176_634e-13, ENERGY),
     u("BTU", 1055.055_852_62, ENERGY),
     // power
     u("W", 1.0, POWER),
     u("mW", 1e-3, POWER),
     u("kW", 1e3, POWER),
     u("MW", 1e6, POWER),
+    u("GW", 1e9, POWER),
     u("hp", 745.699_871_582_270_2, POWER),
     // electromagnetism
     u("C", 1.0, CHARGE),
+    u("mC", 1e-3, CHARGE),
+    u("μC", 1e-6, CHARGE),
     u("V", 1.0, VOLTAGE),
     u("mV", 1e-3, VOLTAGE),
+    u("μV", 1e-6, VOLTAGE),
     u("kV", 1e3, VOLTAGE),
     u("Ω", 1.0, RESISTANCE),
     u("ohm", 1.0, RESISTANCE),
+    u("mΩ", 1e-3, RESISTANCE),
     u("kΩ", 1e3, RESISTANCE),
     u("MΩ", 1e6, RESISTANCE),
     u("S", 1.0, CONDUCTANCE),
+    u("mS", 1e-3, CONDUCTANCE),
+    u("μS", 1e-6, CONDUCTANCE),
     u("F", 1.0, CAPACITANCE),
     u("mF", 1e-3, CAPACITANCE),
     u("μF", 1e-6, CAPACITANCE),
@@ -265,12 +366,32 @@ pub static UNITS: &[UnitDef] = &[
     u("pF", 1e-12, CAPACITANCE),
     u("H", 1.0, INDUCTANCE),
     u("mH", 1e-3, INDUCTANCE),
+    u("μH", 1e-6, INDUCTANCE),
+    u("nH", 1e-9, INDUCTANCE),
     u("Wb", 1.0, MAG_FLUX),
+    u("mWb", 1e-3, MAG_FLUX),
     u("T", 1.0, MAG_FLUX_DENSITY),
+    u("mT", 1e-3, MAG_FLUX_DENSITY),
+    u("μT", 1e-6, MAG_FLUX_DENSITY),
+    u("gauss", 1e-4, MAG_FLUX_DENSITY),
+    // radioactivity and dose
+    u("Bq", 1.0, FREQUENCY),
+    u("Ci", 3.7e10, FREQUENCY),
+    u("Gy", 1.0, DOSE),
+    u("Sv", 1.0, DOSE),
+    // viscosity
+    u("P", 0.1, DYN_VISCOSITY),
+    u("cP", 1e-3, DYN_VISCOSITY),
+    u("St", 1e-4, KIN_VISCOSITY),
+    u("cSt", 1e-6, KIN_VISCOSITY),
     // angles (dimensionless)
     u("rad", 1.0, Dim::NONE),
+    u("mrad", 1e-3, Dim::NONE),
     u("deg", PI / 180.0, Dim::NONE),
     u("°", PI / 180.0, Dim::NONE),
+    u("rev", 2.0 * PI, Dim::NONE),
+    u("arcmin", PI / 10800.0, Dim::NONE),
+    u("arcsec", PI / 648000.0, Dim::NONE),
     u("%", 0.01, Dim::NONE),
 ];
 
@@ -278,7 +399,14 @@ pub fn lookup(name: &str) -> Option<&'static UnitDef> {
     UNITS.iter().find(|u| u.name == name)
 }
 
-/// Units that are preferred when showing a result in "automatic" units.
+/// The offset temperature unit (`°C`, `°F`, ...) called `name`, if it is one.
+pub fn offset_unit(name: &str) -> Option<&'static UnitDef> {
+    lookup(name).filter(|u| u.offset != 0.0)
+}
+
+/// Units that are preferred when showing a result in "automatic" units
+/// (SI system). `Hz`/`Bq` are deliberately absent: like Mathcad, a frequency
+/// is shown as `1/s`.
 pub static DERIVED_DISPLAY: &[(&str, Dim)] = &[
     ("N", FORCE),
     ("Pa", PRESSURE),
