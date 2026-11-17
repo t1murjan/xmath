@@ -319,7 +319,120 @@ impl Evaluator {
                 Err(_) => self.eval(b, sc),
             },
             Expr::Program(stmts) => self.run_program(stmts, sc),
+            Expr::Vectorize(a) => self.veval(a, sc),
+            Expr::MatCol(m, j) => {
+                let b = self.eval(m, sc)?;
+                let m = match &b {
+                    Value::Matrix(m) => m,
+                    Value::Num(_) => return Err("оператор столбца M⟨j⟩ применим только к матрицам".into()),
+                    other => return Err(format!("оператор столбца M⟨j⟩ применим только к матрицам, найдено: {}", other.type_name())),
+                };
+                let origin = self.origin(sc);
+                let k = self.eval(j, sc)?.as_int()? - origin;
+                let k = usize::try_from(k)
+                    .ok()
+                    .filter(|k| *k < m.cols)
+                    .ok_or_else(|| format!("столбец {} вне допустимых границ (в матрице {} столбцов)", k + origin, m.cols))?;
+                Ok(Value::Matrix(Matrix::column((0..m.rows).map(|r| m.get(r, k)).collect())))
+            }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Vectorize
+
+    /// Evaluates `e` element by element: matrix operands of the same size are
+    /// combined index by index (`*`, `/`, `^` and function calls included),
+    /// scalars are broadcast.
+    fn veval(&self, e: &Expr, sc: &Scope) -> EResult<Value> {
+        match e {
+            Expr::Vectorize(a) => self.veval(a, sc),
+            Expr::Unary(UnOp::Not, _) => self.eval(e, sc),
+            Expr::Unary(op, a) => {
+                let v = self.veval(a, sc)?;
+                self.vmap(&[v], &mut |x| match op {
+                    UnOp::Neg => neg(&x[0]),
+                    _ => builtins::call("factorial", &[x[0].clone()], 0).unwrap(),
+                })
+            }
+            Expr::Binary(BinOp::And | BinOp::Or, ..) => self.eval(e, sc),
+            Expr::Binary(op, a, b) => {
+                let x = self.veval(a, sc)?;
+                let y = self.veval(b, sc)?;
+                self.vmap(&[x, y], &mut |v| match op {
+                    BinOp::Add => add(&v[0], &v[1]),
+                    BinOp::Sub => sub(&v[0], &v[1]),
+                    BinOp::Mul => match self.offset_temperature(&v[0], b, sc) {
+                        Some(t) => Ok(t),
+                        None => mul(&v[0], &v[1]),
+                    },
+                    BinOp::Div => div(&v[0], &v[1]),
+                    BinOp::Pow => pow(&v[0], &v[1]),
+                    _ => cmp_op(&v[0], &v[1], *op),
+                })
+            }
+            Expr::Call(name, args) => {
+                // special forms and matrix builders see their arguments unevaluated / whole
+                if matches!(name.as_str(), "if" | "sum" | "Σ" | "prod" | "Π" | "integrate" | "∫" | "diff" | "root" | "matrix" | "rkfixed" | "Rkadapt" | "rkadapt") {
+                    return self.eval(e, sc);
+                }
+                let vals = args.iter().map(|a| self.veval(a, sc)).collect::<EResult<Vec<_>>>()?;
+                let names: Vec<String> = (0..vals.len()).map(|i| format!("\u{1}v{i}")).collect();
+                let call_args: Vec<Expr> = names.iter().map(|n| Expr::Var(n.clone())).collect();
+                self.vmap(&vals, &mut |x| {
+                    let mut s2 = sc.clone();
+                    for (n, v) in names.iter().zip(x) {
+                        s2 = s2.with(n, v.clone());
+                    }
+                    self.call(name, &call_args, &s2)
+                })
+            }
+            _ => self.eval(e, sc),
+        }
+    }
+
+    /// Applies `f` to every index of the matrix arguments (all of the same size);
+    /// scalar arguments are repeated. Without matrix arguments `f` is called once.
+    fn vmap(&self, vals: &[Value], f: &mut dyn FnMut(&[Value]) -> EResult<Value>) -> EResult<Value> {
+        let mut shape: Option<(usize, usize)> = None;
+        let mut mats: Vec<Option<Matrix>> = Vec::new();
+        for v in vals {
+            let m = match v {
+                Value::Matrix(m) => Some(m.clone()),
+                Value::Range(r) => Some(Matrix::column(r.values().collect())),
+                _ => None,
+            };
+            if let Some(m) = &m {
+                match shape {
+                    None => shape = Some((m.rows, m.cols)),
+                    Some(sh) if sh != (m.rows, m.cols) => {
+                        return Err(format!(
+                            "vectorize: размеры операндов не совпадают ({}×{} и {}×{})",
+                            sh.0, sh.1, m.rows, m.cols
+                        ))
+                    }
+                    _ => {}
+                }
+            }
+            mats.push(m);
+        }
+        let Some((rows, cols)) = shape else {
+            return f(vals);
+        };
+        let mut out = Vec::with_capacity(rows * cols);
+        for k in 0..rows * cols {
+            let args: Vec<Value> = vals
+                .iter()
+                .zip(&mats)
+                .map(|(v, m)| match m {
+                    Some(m) => Value::Num(m.data[k]),
+                    None => v.clone(),
+                })
+                .collect();
+            let r = f(&args)?;
+            out.push(r.as_num().map_err(|_| "vectorize: результат для элемента должен быть скаляром".to_string())?);
+        }
+        Ok(Value::Matrix(Matrix::new(rows, cols, out)))
     }
 
     // -----------------------------------------------------------------------
@@ -335,10 +448,31 @@ impl Evaluator {
         }
     }
 
+    /// Runs a block. Consecutive `if` statements form a chain (as in Mathcad):
+    /// an `otherwise` runs only when its own condition and the conditions of all
+    /// `if`s before it in the chain were false.
     fn exec_block(&self, stmts: &[PStmt], fr: &mut Frame) -> EResult<Flow> {
         let mut last = None;
+        let mut fired = false;
         for s in stmts {
-            match self.exec_stmt(s, fr)? {
+            let flow = match s {
+                PStmt::If { cond, then, else_ } => {
+                    if self.eval(cond, &fr.sc)?.truthy()? {
+                        fired = true;
+                        self.exec_block(then, fr)?
+                    } else if let (Some(e), false) = (else_, fired) {
+                        fired = true;
+                        self.exec_block(e, fr)?
+                    } else {
+                        Flow::Normal(None)
+                    }
+                }
+                _ => {
+                    fired = false;
+                    self.exec_stmt(s, fr)?
+                }
+            };
+            match flow {
                 Flow::Normal(Some(v)) => last = Some(v),
                 Flow::Normal(None) => {}
                 other => return Ok(other),
@@ -386,6 +520,7 @@ impl Evaluator {
                 Ok(Flow::Normal(Some(Value::Num(v))))
             }
             PStmt::Assign(Target::Func(..), _) => Err("в программе нельзя определять функции".into()),
+            PStmt::Assign(Target::Vector(_), _) => Err("в программе нельзя использовать векторное определение".into()),
             PStmt::If { cond, then, else_ } => {
                 if self.eval(cond, &fr.sc)?.truthy()? {
                     self.exec_block(then, fr)
@@ -762,7 +897,42 @@ impl Evaluator {
     // Definitions
 
     pub fn define(&mut self, target: &Target, expr: &Expr) -> EResult<()> {
+        self.define_value(target, expr).map(|_| ())
+    }
+
+    /// Like [`define`](Self::define), returns the defined value (for a vector
+    /// definition: the whole right-hand side).
+    pub fn define_value(&mut self, target: &Target, expr: &Expr) -> EResult<Value> {
         let sc = self.top_scope();
+        if let Target::Vector(names) = target {
+            let v = self.eval(expr, &sc)?;
+            let m = match &v {
+                Value::Matrix(m) if m.is_vector() => m,
+                Value::Num(_) if names.len() == 1 => {
+                    self.defs.push((names[0].clone(), v.clone()));
+                    return Ok(v);
+                }
+                other => {
+                    return Err(format!(
+                        "справа от определения [{}] := … должен быть вектор из {} элементов, найдено: {}",
+                        names.join("; "),
+                        names.len(),
+                        other.type_name()
+                    ))
+                }
+            };
+            if m.data.len() != names.len() {
+                return Err(format!(
+                    "размер вектора ({}) не совпадает с числом определяемых имён ({})",
+                    m.data.len(),
+                    names.len()
+                ));
+            }
+            for (n, x) in names.iter().zip(&m.data) {
+                self.defs.push((n.clone(), Value::Num(*x)));
+            }
+            return Ok(v);
+        }
         let (name, value) = match target {
             Target::Var(name) => {
                 let ranges = self.range_vars(&[expr], &sc);
@@ -802,9 +972,10 @@ impl Evaluator {
                 })?;
                 (name.clone(), Value::Matrix(m))
             }
+            Target::Vector(_) => unreachable!(),
         };
-        self.defs.push((name, value));
-        Ok(())
+        self.defs.push((name, value.clone()));
+        Ok(value)
     }
 }
 
@@ -817,7 +988,11 @@ pub fn free_vars(e: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
             }
         }
         Expr::Num(_) | Expr::Imag(_) | Expr::Str(_) => {}
-        Expr::Unary(_, a) | Expr::Abs(a) => free_vars(a, bound, out),
+        Expr::Unary(_, a) | Expr::Abs(a) | Expr::Vectorize(a) => free_vars(a, bound, out),
+        Expr::MatCol(a, b) => {
+            free_vars(a, bound, out);
+            free_vars(b, bound, out);
+        }
         Expr::Binary(_, a, b) => {
             free_vars(a, bound, out);
             free_vars(b, bound, out);
@@ -890,7 +1065,7 @@ fn block_free_vars(stmts: &[PStmt], bound: &mut Vec<String>, out: &mut Vec<Strin
                         }
                         bound.push(n.clone());
                     }
-                    Target::Func(..) => {}
+                    Target::Func(..) | Target::Vector(_) => {}
                 }
             }
             PStmt::Expr(e) | PStmt::Return(e) => free_vars(e, bound, out),

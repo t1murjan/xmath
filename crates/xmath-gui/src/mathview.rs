@@ -426,12 +426,40 @@ impl<'a> Ts<'a> {
             }
             Expr::Abs(a) => self.fence(self.expr(a, size), '|', size),
             Expr::Program(stmts) => self.program(stmts, size),
+            Expr::Vectorize(a) => self.vector_arrow(self.expr(a, size), size),
+            Expr::MatCol(m, j) => {
+                let b = self.expr(m, size);
+                let b = self.paren_if(b, m.precedence() < 9, size);
+                let small = size * 0.75;
+                let idx = self.hcat(vec![self.text("⟨", small), self.expr(j, small), self.text("⟩", small)]);
+                self.sup(b, idx, size)
+            }
             Expr::OnError(a, b) => {
                 let la = self.expr(a, size);
                 let lb = self.expr(b, size);
                 self.hcat(vec![la, self.kw(" on error ", size), lb])
             }
         }
+    }
+
+    /// Mathcad's vectorize operator: a right arrow drawn above the expression.
+    fn vector_arrow(&self, inner: Lay, size: f32) -> Lay {
+        let gap = size * 0.14;
+        let head = size * 0.16;
+        let y = -inner.asc - gap;
+        let w = inner.w.max(size * 0.5);
+        let lw = (size / 14.0).max(1.0);
+        let mut out = Lay { w, asc: -y + head + 1.0, desc: inner.desc, items: vec![] };
+        let off = (w - inner.w) / 2.0;
+        out.place(inner, off, 0.0);
+        let (a, b) = (Vec2::new(size * 0.05, y), Vec2::new(w - size * 0.05, y));
+        out.items.push(Item::Line { a, b, w: lw, color: self.color });
+        out.items.push(Item::Path {
+            pts: vec![Vec2::new(b.x - head, y - head * 0.7), b, Vec2::new(b.x - head, y + head * 0.7)],
+            w: lw,
+            color: self.color,
+        });
+        out
     }
 
     /// A bold keyword (padded with the spaces given in `s`).
@@ -591,6 +619,9 @@ impl<'a> Ts<'a> {
                 self.hcat(vec![self.ident(n, size), self.fence(args, '(', size)])
             }
             Target::Indexed(n, idx) => self.sub(self.ident(n, size), self.list(idx, size * 0.72), size),
+            Target::Vector(names) => {
+                self.matrix(names.iter().map(|n| vec![self.ident(n, size)]).collect(), size)
+            }
         }
     }
 
@@ -682,9 +713,30 @@ impl<'a> Ts<'a> {
     /// Lays out a whole math region.
     pub fn statement(&self, stmt: &Stmt, result: Option<(&ResultView, Option<&Expr>)>, size: f32) -> Lay {
         match stmt {
-            Stmt::Define { target, expr, global } => {
+            Stmt::Define { target, expr, global, show } => {
                 let sym = if *global { "≡" } else { ":=" };
-                self.hcat(vec![self.target(target, size), self.op(sym, size), self.expr(expr, size)])
+                let mut parts = vec![self.target(target, size), self.op(sym, size), self.expr(expr, size)];
+                if let Some(unit) = show {
+                    parts.push(self.op("=", size));
+                    match result {
+                        Some((view, user_unit)) => {
+                            parts.push(self.result(view, size));
+                            if let Some(u) = user_unit.or(unit.as_ref()) {
+                                parts.push(self.space(size * 0.3));
+                                parts.push(self.expr(u, size));
+                            }
+                        }
+                        None => {
+                            if let Some(u) = unit {
+                                parts.push(self.text("■ ", size));
+                                parts.push(self.expr(u, size));
+                            } else {
+                                parts.push(self.text("■", size));
+                            }
+                        }
+                    }
+                }
+                self.hcat(parts)
             }
             Stmt::Eval { expr, unit } => {
                 let mut parts = vec![self.expr(expr, size), self.op("=", size)];

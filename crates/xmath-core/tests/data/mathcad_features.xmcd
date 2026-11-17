@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.mathsoft.com/worksheet30" xmlns:ml="http://schemas.mathsoft.com/math30">
+<regions>
+<region region-id="1" left="36" top="10" width="90" height="21"><math><ml:define><ml:id>v</ml:id><ml:matrix rows="3" cols="1"><ml:real>1</ml:real><ml:real>2</ml:real><ml:real>3</ml:real></ml:matrix></ml:define></math></region>
+<region region-id="2" left="36" top="40" width="90" height="21"><math><ml:define><ml:id>w</ml:id><ml:matrix rows="3" cols="1"><ml:real>4</ml:real><ml:real>5</ml:real><ml:real>6</ml:real></ml:matrix></ml:define></math></region>
+<region region-id="3" left="36" top="70" width="90" height="21"><math><ml:define><ml:id>p</ml:id><ml:apply><ml:vectorize/><ml:parens><ml:apply><ml:mult/><ml:id>v</ml:id><ml:id>w</ml:id></ml:apply></ml:parens></ml:apply></ml:define></math></region>
+<region region-id="4" left="36" top="100" width="90" height="21"><math><ml:eval><ml:id>p</ml:id></ml:eval></math></region>
+<region region-id="5" left="36" top="130" width="90" height="21"><math><ml:define><ml:id>d</ml:id><ml:eval><ml:apply><ml:mult/><ml:real>2</ml:real><ml:id>m</ml:id></ml:apply><ml:unitOverride><ml:id>cm</ml:id></ml:unitOverride><result><ml:real>200</ml:real></result></ml:eval></ml:define></math></region>
+<region region-id="6" left="36" top="160" width="90" height="21"><math><ml:define><ml:id>k</ml:id><ml:eval><ml:real>7</ml:real><ml:unitOverride><ml:placeholder/></ml:unitOverride></ml:eval></ml:define></math></region>
+<region region-id="7" left="36" top="190" width="90" height="21"><math><ml:define><ml:matrix rows="3" cols="1"><ml:id>a</ml:id><ml:id>b</ml:id><ml:id>c</ml:id></ml:matrix><ml:eval><ml:apply><ml:plus/><ml:id>v</ml:id><ml:id>w</ml:id></ml:apply></ml:eval></ml:define></math></region>
+<region region-id="8" left="36" top="220" width="90" height="21"><math><ml:eval><ml:apply><ml:mult/><ml:id>a</ml:id><ml:id>c</ml:id></ml:apply></ml:eval></math></region>
+<region region-id="9" left="36" top="250" width="90" height="21"><math><ml:define><ml:id>M</ml:id><ml:matrix rows="2" cols="2"><ml:real>1</ml:real><ml:real>3</ml:real><ml:real>2</ml:real><ml:real>4</ml:real></ml:matrix></ml:define></math></region>
+<region region-id="10" left="36" top="280" width="90" height="21"><math><ml:eval><ml:apply><ml:matcol/><ml:id>M</ml:id><ml:real>1</ml:real></ml:apply></ml:eval></math></region>
+<region region-id="11" left="36" top="310" width="90" height="21"><math><ml:define><ml:id>i</ml:id><ml:range><ml:real>0</ml:real><ml:real>2</ml:real></ml:range></ml:define></math></region>
+<region region-id="12" left="36" top="340" width="90" height="21"><math><ml:define><ml:id>S</ml:id><ml:apply><ml:summation/><ml:lambda><ml:boundVars><ml:id>i</ml:id></ml:boundVars><ml:apply><ml:indexer/><ml:id>v</ml:id><ml:id>i</ml:id></ml:apply></ml:lambda></ml:apply></ml:define></math></region>
+<region region-id="13" left="36" top="370" width="90" height="21"><math><ml:eval><ml:id>S</ml:id></ml:eval></math></region>
+<region region-id="14" left="36" top="400" width="90" height="21"><math><ml:sequence><ml:id>t</ml:id><ml:placeholder/><ml:id>mks</ml:id></ml:sequence></math></region>
+</regions>
+</worksheet>

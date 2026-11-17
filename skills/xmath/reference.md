@@ -13,6 +13,8 @@ linear text. Everything defined above (smaller `y`) is visible below; `≡` (glo
 | `f(a, b) := expr` | user function | `f(x) := x^2 + 1` |
 | `expr =` | evaluate and show the result | `f(3) =` -> `f(3) = 10` |
 | `expr = unit` | evaluate and show the result in a unit | `M = kN*m` |
+| `name := expr =` / `name := expr = unit` | definition that also displays its value (Mathcad `d := a/b = 69.6 μm`) | `d := L/n = mm` |
+| `[a; b; c] := expr` | vector definition: `expr` must be a vector of the same length; each name gets one element | `[x; y] := A*v` |
 | `v[i] := expr` | indexed (element-wise) definition | `v[i] := i^2` |
 | `i := a..b` | range variable, step 1 | `i := 0..10` |
 | `x := a, a2..b` | range variable with step `a2 - a` | `x := 0, 0.1..1` |
@@ -87,6 +89,11 @@ Error messages from the engine are in Russian (e.g. `Единицы измере
 * Matrix literal: `[1, 2; 3, 4]` (commas separate columns, semicolons separate rows). Column vector `[1; 2; 3]`, row vector `[1, 2, 3]`.
 * Indexing: `A[0, 1]` (row, column), `v[2]`; indices start at `ORIGIN` = 0.
 * Operations: `A*B`, `A^-1`, `transpose(A)`, `det(A)`, `lsolve(A, b)`, `A*x`, elementwise through functions (`sqrt([1;4;9])`).
+* Matrix column (Mathcad `M⟨j⟩`, Ctrl+6): `M^<j>` gives column `j` as a column vector (index from `ORIGIN`), e.g. `X := M^<0>`, `(transpose(M))^<1>`. The error "столбец … вне допустимых границ" is raised for a bad index.
+* Vectorize (Mathcad arrow over an expression, Ctrl+-): `vectorize(expr)` applies everything inside **element by element** over all vector/matrix operands of the same size
+  (scalars are broadcast): `vectorize(v*w)` is the element-wise product (not the dot product), `vectorize(v/w)` element-wise quotient, `vectorize(f(v))` calls a user function or
+  built-in per element, `vectorize(v^2 + 1)`. Operands of different sizes give an error. Typical use: `S := vectorize(f(φ))`, `k := vectorize(a/b)`.
+* Range sum `sum(i, expr)` / `prod(i, expr)` (Mathcad Σ with only an index under it) runs over the range variable `i` defined above.
 * Range variable: `i := 0..4` then `v[i] := i^2` builds the vector `[0;1;4;9;16]`; `v =` shows it.
   `x := 0, 0.25..1` gives `0, 0.25, 0.5, 0.75, 1`. An expression using a range variable is evaluated for every value:
   `x^2 =` shows a column of results (a "table").
@@ -109,6 +116,8 @@ w(a) := { i ← 0; while i < a { i ← i + 1; if i == 5 { break } }; i }
 * Statements: `x ← e` / `v[i] ← e` (local assignment; ASCII `<-`), `for i ∈ range { ... }` (ASCII `in`; range `1..n`, `0, 2..10`, or a vector),
   `while cond { ... }`, `if cond { ... } otherwise { ... }` (`else` and `else if` also accepted), postfix `stmt if cond`,
   `break`, `continue`, `return e`, and `e1 on error e2` (value of `e2` if `e1` fails; usable on any expression).
+* Consecutive `if` statements of a block form a chain: an `otherwise` runs only if its own condition and the conditions of all preceding `if`s of the chain were false, e.g.
+  `{ a if x < 0; if x < 5 { b } otherwise { c } }` returns `a`, `b` or `c` (Mathcad semantics).
 * The value of a program is the value of the last executed statement, or of `return`. A program that ends with no value is an error.
 * `←` always creates/updates a **local**; locals shadow worksheet variables and never change them. Assignments in nested blocks update the enclosing program's local.
   `v[i] ← e` builds a local vector (indices start at `ORIGIN`).

@@ -79,6 +79,11 @@ pub enum Expr {
     Program(Vec<PStmt>),
     /// `expr1 on error expr2`: the value of `expr2` if `expr1` fails.
     OnError(Box<Expr>, Box<Expr>),
+    /// Mathcad's vectorize operator (arrow over the expression): `vectorize(expr)`.
+    /// Everything inside is applied element by element.
+    Vectorize(Box<Expr>),
+    /// Matrix column operator `M⟨j⟩`, text syntax `M^<j>`.
+    MatCol(Box<Expr>, Box<Expr>),
 }
 
 /// A statement inside a program block.
@@ -125,12 +130,16 @@ pub enum Target {
     Var(String),
     Func(String, Vec<String>),
     Indexed(String, Vec<Expr>),
+    /// Vector definition `[a; b; c] := v`: every name gets one element.
+    Vector(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
-    /// `target := expr` (or `≡` when `global`).
-    Define { target: Target, expr: Expr, global: bool },
+    /// `target := expr` (or `≡` when `global`). `show` is the displayed value after the
+    /// definition (`d := expr =` / `d := expr = μm`): `Some(None)` shows the value,
+    /// `Some(Some(unit))` shows it in `unit`.
+    Define { target: Target, expr: Expr, global: bool, show: Option<Option<Expr>> },
     /// `expr =` optionally followed by a display unit.
     Eval { expr: Expr, unit: Option<Expr> },
     /// A bare expression that is only displayed.
@@ -236,6 +245,13 @@ impl fmt::Display for Expr {
                 write!(f, " on error ")?;
                 write_child(f, b, b.precedence() == 0)
             }
+            Expr::Vectorize(a) => write!(f, "vectorize({a})"),
+            Expr::MatCol(m, j) => {
+                write_child(f, m, m.precedence() < 9)?;
+                write!(f, "^<")?;
+                write_child(f, j, j.precedence() < 4)?;
+                write!(f, ">")
+            }
         }
     }
 }
@@ -293,6 +309,7 @@ impl fmt::Display for Target {
                 write_list(f, idx)?;
                 write!(f, "]")
             }
+            Target::Vector(names) => write!(f, "[{}]", names.join("; ")),
         }
     }
 }
@@ -300,8 +317,15 @@ impl fmt::Display for Target {
 impl fmt::Display for Stmt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Stmt::Define { target, expr, global } => {
-                write!(f, "{target} {} {expr}", if *global { "≡" } else { ":=" })
+            Stmt::Define { target, expr, global, show } => {
+                write!(f, "{target} {} {expr}", if *global { "≡" } else { ":=" })?;
+                if let Some(unit) = show {
+                    write!(f, " =")?;
+                    if let Some(u) = unit {
+                        write!(f, " {u}")?;
+                    }
+                }
+                Ok(())
             }
             Stmt::Eval { expr, unit } => {
                 write!(f, "{expr} =")?;
