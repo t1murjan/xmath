@@ -12,6 +12,8 @@ use egui::{
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 use xmath_core::{
     evaluate_worksheet, parse_statement, FormatOptions, Output, Region, RegionKind, RegionOutput, Worksheet,
 };
@@ -93,6 +95,27 @@ struct FormatDlg {
     tab: usize,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum DlgKind {
+    Open,
+    Save,
+}
+
+/// A native file dialog running on a background thread.
+struct FileJob {
+    kind: DlgKind,
+    rx: mpsc::Receiver<Result<Option<PathBuf>, ()>>,
+    started: Instant,
+    then: Option<Action>,
+}
+
+/// Built-in fallback: a text field for the path when no native dialog exists.
+struct PathDlg {
+    kind: DlgKind,
+    text: String,
+    then: Option<Action>,
+}
+
 struct Toolbars {
     standard: bool,
     formatting: bool,
@@ -136,6 +159,12 @@ pub struct App {
     confirm: Option<Action>,
     allow_close: bool,
 
+    file_job: Option<FileJob>,
+    path_dlg: Option<PathDlg>,
+    /// Context help of the hovered toolbar/palette button (shown in the status bar).
+    hint: String,
+    edit_snapshot: bool,
+
     status: String,
     title: String,
     pending: Vec<Action>,
@@ -176,17 +205,54 @@ impl App {
             show_about: false,
             confirm: None,
             allow_close: false,
+            file_job: None,
+            path_dlg: None,
+            hint: String::new(),
+            edit_snapshot: false,
             status: String::new(),
             title: String::new(),
             pending: Vec::new(),
             has_bold_font,
             import_log: Vec::new(),
         };
+        if let Some(st) = cc.storage.and_then(|s| s.get_string("xmath-ui")) {
+            app.restore_ui(&st);
+        }
         if let Some(p) = path {
             app.load(&p);
         }
-        let _ = cc;
         app
+    }
+
+    /// `bars:SFMT;palettes:Calculator,Graph` — toolbar visibility and open palettes.
+    fn restore_ui(&mut self, st: &str) {
+        for part in st.split(';') {
+            match part.split_once(':') {
+                Some(("bars", v)) => {
+                    self.bars.standard = v.contains('S');
+                    self.bars.formatting = v.contains('F');
+                    self.bars.math = v.contains('M');
+                    self.bars.status = v.contains('T');
+                }
+                Some(("palettes", v)) => {
+                    self.palettes = Palette::ALL.iter().copied().filter(|p| v.split(',').any(|n| n == p.title())).collect();
+                }
+                Some(("auto", v)) => self.auto_calc = v != "0",
+                _ => {}
+            }
+        }
+    }
+
+    fn ui_state(&self) -> String {
+        let b = &self.bars;
+        let mut bars = String::new();
+        for (on, c) in [(b.standard, 'S'), (b.formatting, 'F'), (b.math, 'M'), (b.status, 'T')] {
+            if on {
+                bars.push(c);
+            }
+        }
+        let pal: Vec<&str> = Palette::ALL.iter().filter(|p| self.palettes.contains(p)).map(|p| p.title()).collect();
+        format!("bars:{bars};palettes:{};auto:{}", pal.join(","), self.auto_calc as u8)
     }
 
     // -----------------------------------------------------------------
@@ -272,33 +338,97 @@ impl App {
         }
     }
 
-    fn save(&mut self) {
+    /// Saves to the current path, or asks for one.
+    fn save_doc(&mut self, ctx: &Context, then: Option<Action>) {
         match self.path.clone() {
-            Some(p) => self.save_to(p),
-            None => self.save_as(),
+            Some(p) => {
+                self.save_to(p);
+                self.continue_after_save(ctx, then);
+            }
+            None => self.save_as(ctx, then),
         }
     }
 
-    fn save_as(&mut self) {
+    fn continue_after_save(&mut self, ctx: &Context, then: Option<Action>) {
+        if let Some(a) = then {
+            if !self.modified {
+                self.do_action(ctx, a);
+            }
+        }
+    }
+
+    fn save_as(&mut self, ctx: &Context, then: Option<Action>) {
+        self.start_dialog(ctx, DlgKind::Save, then);
+    }
+
+    fn open_dialog(&mut self, ctx: &Context) {
+        self.start_dialog(ctx, DlgKind::Open, None);
+    }
+
+    /// Runs the native dialog (on a thread under Linux, where the xdg portal
+    /// may block or be missing; directly elsewhere, macOS wants the main thread).
+    fn start_dialog(&mut self, ctx: &Context, kind: DlgKind, then: Option<Action>) {
+        if self.file_job.is_some() || self.path_dlg.is_some() {
+            return;
+        }
         let name = self.doc_name().replace(':', "") + ".xmath";
-        if let Some(p) = rfd::FileDialog::new()
-            .add_filter("Рабочий лист xmath (*.xmath)", &["xmath"])
-            .set_file_name(&name)
-            .save_file()
+        let (tx, rx) = mpsc::channel();
+        let run = move || native_dialog(kind, &name);
+        #[cfg(target_os = "linux")]
         {
-            self.save_to(p);
+            let c = ctx.clone();
+            std::thread::spawn(move || {
+                let r = std::panic::catch_unwind(run).map_err(|_| ());
+                let _ = tx.send(r);
+                c.request_repaint();
+            });
+            self.status = "Ожидание диалога выбора файла...".into();
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = tx.send(Ok(run()));
+        }
+        self.file_job = Some(FileJob { kind, rx, started: Instant::now(), then });
+        ctx.request_repaint_after(Duration::from_millis(100));
+    }
+
+    fn poll_dialog(&mut self, ctx: &Context) {
+        let Some(job) = &self.file_job else { return };
+        let res = match job.rx.try_recv() {
+            Ok(r) => r,
+            Err(mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(Duration::from_millis(100));
+                return;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => Err(()),
+        };
+        let job = self.file_job.take().unwrap();
+        // a dialog that vanishes within a fraction of a second is a failure
+        // (no portal / backend), not the user pressing Cancel
+        let failed = res.is_err() || (cfg!(target_os = "linux") && matches!(res, Ok(None)) && job.started.elapsed() < Duration::from_millis(400));
+        if failed {
+            self.status = "Системный диалог выбора файла недоступен (нет xdg-desktop-portal?). Введите путь вручную.".into();
+            let text = match (&self.path, job.kind) {
+                (Some(p), DlgKind::Save) => p.display().to_string(),
+                (None, DlgKind::Save) => std::env::current_dir().unwrap_or_default().join(self.doc_name().replace(':', "") + ".xmath").display().to_string(),
+                _ => String::new(),
+            };
+            self.path_dlg = Some(PathDlg { kind: job.kind, text, then: job.then });
+            return;
+        }
+        self.status.clear();
+        if let Some(p) = res.ok().flatten() {
+            self.file_chosen(ctx, job.kind, p, job.then);
         }
     }
 
-    fn open_dialog(&mut self) {
-        if let Some(p) = rfd::FileDialog::new()
-            .add_filter("Все поддерживаемые", &["xmath", "xmcd", "txt"])
-            .add_filter("Рабочий лист xmath (*.xmath)", &["xmath"])
-            .add_filter("Mathcad 15 (*.xmcd)", &["xmcd"])
-            .add_filter("Текст, по области на строку (*.txt)", &["txt"])
-            .pick_file()
-        {
-            self.load(&p);
+    fn file_chosen(&mut self, ctx: &Context, kind: DlgKind, p: PathBuf, then: Option<Action>) {
+        match kind {
+            DlgKind::Open => self.load(&p),
+            DlgKind::Save => {
+                self.save_to(p);
+                self.continue_after_save(ctx, then);
+            }
         }
     }
 
@@ -325,9 +455,9 @@ impl App {
                 self.untitled_no += 1;
                 self.after_load();
             }
-            Action::Open => self.open_dialog(),
-            Action::Save => self.save(),
-            Action::SaveAs => self.save_as(),
+            Action::Open => self.open_dialog(ctx),
+            Action::Save => self.save_doc(ctx, None),
+            Action::SaveAs => self.save_as(ctx, None),
             Action::OpenExample(i) => {
                 if let Some((name, src)) = EXAMPLES.get(i) {
                     if let Ok(ws) = Worksheet::from_json(src) {
@@ -497,20 +627,24 @@ impl App {
         self.ws.regions.push(Region { id, x: pos.x, y: pos.y, kind });
         self.selection = vec![id];
         if edit {
-            self.begin_edit(id);
+            self.begin_edit(id, false);
         }
         self.changed();
         id
     }
 
-    fn begin_edit(&mut self, id: u64) {
+    /// `snapshot`: push an undo state now (already done when the region was just created).
+    fn begin_edit(&mut self, id: u64, snapshot: bool) {
         if self.editing == Some(id) {
             return;
         }
         self.finish_edit(false);
         self.editing = Some(id);
         self.focus_pending = true;
-        self.undo.push(self.ws.clone());
+        if snapshot {
+            self.undo.push(self.ws.clone());
+            self.edit_snapshot = true;
+        }
         self.redo.clear();
         if let Some(Region { kind: RegionKind::Plot { x, y, .. }, .. }) = self.region(id) {
             self.plot_buf = Some((id, y.join(", "), x.clone()));
@@ -521,6 +655,10 @@ impl App {
     fn finish_edit(&mut self, move_below: bool) {
         let Some(id) = self.editing.take() else { return };
         self.plot_buf = None;
+        // entering a region and leaving it unchanged must not leave an undo step behind
+        if std::mem::take(&mut self.edit_snapshot) && self.undo.last().is_some_and(|u| u.to_json() == self.ws.to_json()) {
+            self.undo.pop();
+        }
         let empty = match self.region(id).map(|r| &r.kind) {
             Some(RegionKind::Math { source }) => source.trim().is_empty(),
             Some(RegionKind::Text { text, .. }) => text.trim().is_empty(),
@@ -583,18 +721,39 @@ impl App {
     }
 
     /// Tab: select the next `■` placeholder.
-    fn next_placeholder(&mut self, ctx: &Context, id: u64) {
+    fn next_placeholder(&mut self, ctx: &Context, id: u64, back: bool) {
         let te = edit_id(id);
         let Some(Region { kind: RegionKind::Math { source }, .. }) = self.region(id) else { return };
         let chars: Vec<char> = source.chars().collect();
         let mut st = TextEditState::load(ctx, te).unwrap_or_default();
-        let from = st.cursor.char_range().map(|r| r.primary.index.max(r.secondary.index)).unwrap_or(0);
-        let find = |start: usize| (start..chars.len()).find(|&i| chars[i] == '■');
-        if let Some(p) = find(from).or_else(|| find(0)) {
+        let range = st.cursor.char_range().map(|r| (r.primary.index.min(r.secondary.index), r.primary.index.max(r.secondary.index)));
+        let (lo, hi) = range.unwrap_or((0, 0));
+        let target = if back {
+            let before = |end: usize| (0..end.min(chars.len())).rev().find(|&i| chars[i] == '■');
+            before(lo).or_else(|| before(chars.len()))
+        } else {
+            let after = |start: usize| (start..chars.len()).find(|&i| chars[i] == '■');
+            after(hi).or_else(|| after(0))
+        };
+        if let Some(p) = target {
             st.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(p), CCursor::new(p + 1))));
             st.store(ctx, te);
             self.focus_pending = true;
         }
+    }
+
+    /// Ctrl+B / Ctrl+I / Ctrl+U in a text region: 0 bold, 1 italic, 2 underline.
+    fn toggle_style(&mut self, which: u8) {
+        let Some(id) = self.format_target() else { return };
+        self.checkpoint();
+        if let Some(Region { kind: RegionKind::Text { style, .. }, .. }) = self.region_mut(id) {
+            match which {
+                0 => style.bold = !style.bold,
+                1 => style.italic = !style.italic,
+                _ => style.underline = !style.underline,
+            }
+        }
+        self.modified = true;
     }
 
     /// Ctrl+G: converts the letter before the caret to Greek (and back).
@@ -635,6 +794,8 @@ impl App {
             || self.dlg_function.is_some()
             || self.dlg_unit.is_some()
             || self.dlg_format.is_some()
+            || self.path_dlg.is_some()
+            || self.file_job.is_some()
             || self.confirm.is_some()
     }
 
@@ -643,6 +804,8 @@ impl App {
         let ctrl_shift = |k| KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, k);
         let plain = |k| KeyboardShortcut::new(Modifiers::NONE, k);
         let mut acts = Vec::new();
+        let mut fmt: Vec<u8> = Vec::new();
+        let in_text_region = self.editing.is_some_and(|id| matches!(self.region(id).map(|r| &r.kind), Some(RegionKind::Text { .. })));
         let editing_text = self.editing.is_some_and(|id| !matches!(self.region(id).map(|r| &r.kind), Some(RegionKind::Plot { .. })));
         ctx.input_mut(|i| {
             if i.consume_shortcut(&ctrl_shift(Key::S)) {
@@ -654,10 +817,25 @@ impl App {
                 (Key::S, Action::Save),
                 (Key::M, Action::InsertMatrix),
                 (Key::E, Action::InsertFunction),
-                (Key::U, Action::InsertUnit),
             ] {
                 if i.consume_shortcut(&ctrl(k)) {
                     acts.push(a);
+                }
+            }
+            // Ctrl+U inserts a unit in math, but underlines inside a text region
+            if i.consume_shortcut(&ctrl(Key::U)) {
+                if in_text_region {
+                    fmt.push(2);
+                } else {
+                    acts.push(Action::InsertUnit);
+                }
+            }
+            if in_text_region {
+                if i.consume_shortcut(&ctrl(Key::B)) {
+                    fmt.push(0);
+                }
+                if i.consume_shortcut(&ctrl(Key::I)) {
+                    fmt.push(1);
                 }
             }
             if i.consume_shortcut(&plain(Key::F9)) {
@@ -684,6 +862,9 @@ impl App {
         for a in acts {
             self.run(ctx, a);
         }
+        for f in fmt {
+            self.toggle_style(f);
+        }
 
         // Mathcad keystrokes inside a math region
         if let Some(id) = self.editing_math() {
@@ -698,6 +879,7 @@ impl App {
             let mut inserts: Vec<&'static str> = Vec::new();
             let mut greek = false;
             let mut tab = false;
+            let mut tab_back = false;
             ctx.input_mut(|i| {
                 for (k, s) in [
                     (Key::Num3, "≠"),
@@ -721,7 +903,9 @@ impl App {
                 if i.consume_shortcut(&ctrl(Key::G)) {
                     greek = true;
                 }
-                if i.consume_key(Modifiers::NONE, Key::Tab) {
+                if i.consume_key(Modifiers::SHIFT, Key::Tab) {
+                    tab_back = true;
+                } else if i.consume_key(Modifiers::NONE, Key::Tab) {
                     tab = true;
                 }
                 i.events.retain_mut(|ev| match ev {
@@ -773,8 +957,8 @@ impl App {
             if greek {
                 self.greek(ctx, id);
             }
-            if tab {
-                self.next_placeholder(ctx, id);
+            if tab || tab_back {
+                self.next_placeholder(ctx, id, tab_back);
             }
         } else if let Some(id) = self.editing {
             if ctx.memory(|m| m.has_focus(edit_id(id))) && ctx.input_mut(|i| i.consume_shortcut(&ctrl(Key::G))) {
@@ -785,7 +969,7 @@ impl App {
 
     /// Typing on the empty worksheet creates regions, like in Mathcad.
     fn sheet_keys(&mut self, ctx: &Context) {
-        if self.editing.is_some() || self.dialogs_open() || ctx.memory(|m| m.focused().is_some()) {
+        if self.editing.is_some() || self.dialogs_open() || ctx.wants_keyboard_input() {
             return;
         }
         let events = ctx.input(|i| i.events.clone());
@@ -843,20 +1027,49 @@ impl App {
 // =====================================================================
 // UI
 
+fn native_dialog(kind: DlgKind, name: &str) -> Option<PathBuf> {
+    match kind {
+        DlgKind::Save => rfd::FileDialog::new().add_filter("Рабочий лист xmath (*.xmath)", &["xmath"]).set_file_name(name).save_file(),
+        DlgKind::Open => rfd::FileDialog::new()
+            .add_filter("Все поддерживаемые", &["xmath", "xmcd", "txt"])
+            .add_filter("Рабочий лист xmath (*.xmath)", &["xmath"])
+            .add_filter("Mathcad 15 (*.xmcd)", &["xmcd"])
+            .add_filter("Текст, по области на строку (*.txt)", &["txt"])
+            .pick_file(),
+    }
+}
+
+/// Remembers the tooltip of the hovered control for the status bar.
+fn set_hint(ui: &Ui, resp: &egui::Response, tip: &str) {
+    if !tip.is_empty() && ui.rect_contains_pointer(resp.rect) {
+        let tip = tip.to_string();
+        ui.ctx().data_mut(|d| d.insert_temp(Id::new("xmath-hint"), tip));
+    }
+}
+
+/// Toolbar and palette buttons never take keyboard focus (Sense::CLICK is not
+/// focusable), so typing and Enter keep going to the worksheet.
+fn plain_button(ui: &mut Ui, b: egui::Button, enabled: bool, tip: &str) -> egui::Response {
+    let resp = ui.add_enabled(enabled, b.sense(Sense::CLICK));
+    set_hint(ui, &resp, tip);
+    if tip.is_empty() {
+        return resp;
+    }
+    if enabled {
+        resp.on_hover_text(tip)
+    } else {
+        resp.on_disabled_hover_text(format!("{tip} — пока не реализовано"))
+    }
+}
+
 fn tb_button(ui: &mut Ui, label: impl Into<egui::WidgetText>, tip: &str, enabled: bool) -> bool {
-    ui.add_enabled(enabled, egui::Button::new(label).min_size(Vec2::new(24.0, 22.0)))
-        .on_hover_text(tip)
-        .on_disabled_hover_text(format!("{tip} — пока не реализовано"))
-        .clicked()
+    plain_button(ui, egui::Button::new(label).min_size(Vec2::new(24.0, 22.0)), enabled, tip).clicked()
 }
 
 /// A toolbar button with a painted icon.
 fn icon_button(ui: &mut Ui, tip: &str, enabled: bool, draw: impl FnOnce(&egui::Painter, Rect, Color32)) -> bool {
-    let resp = ui
-        .add_enabled(enabled, egui::Button::new("").min_size(Vec2::new(24.0, 22.0)))
-        .on_hover_text(tip)
-        .on_disabled_hover_text(format!("{tip} — пока не реализовано"));
-    let color = if enabled { Color32::BLACK } else { Color32::GRAY };
+    let resp = plain_button(ui, egui::Button::new("").min_size(Vec2::new(24.0, 22.0)), enabled, tip);
+    let color = if enabled { Color32::BLACK } else { Color32::from_gray(160) };
     draw(ui.painter(), resp.rect.shrink(4.0), color);
     resp.clicked()
 }
@@ -870,10 +1083,6 @@ fn separator(ui: &mut Ui) {
         Stroke::new(1.0_f32, Color32::WHITE),
     );
     ui.add_space(2.0);
-}
-
-fn icon_text(p: &egui::Painter, r: Rect, s: &str, size: f32, c: Color32) {
-    p.text(r.center(), Align2::CENTER_CENTER, s, FontId::proportional(size), c);
 }
 
 fn icon_page(p: &egui::Painter, r: Rect, c: Color32) {
@@ -906,6 +1115,91 @@ fn icon_floppy(p: &egui::Painter, r: Rect, c: Color32) {
     p.rect_filled(r, 1.0, fill);
     p.rect_filled(Rect::from_min_size(r.left_top() + Vec2::new(3.0, 1.0), Vec2::new(7.0, 4.0)), 0.0, Color32::WHITE);
     p.rect_filled(Rect::from_min_size(r.left_top() + Vec2::new(2.0, 8.0), Vec2::new(9.0, 5.0)), 0.0, Color32::from_gray(220));
+}
+
+fn enabled_color(c: Color32, v: Color32) -> Color32 {
+    if c == Color32::BLACK {
+        v
+    } else {
+        Color32::from_gray(215)
+    }
+}
+
+fn outline(p: &egui::Painter, r: Rect, fill: Color32, c: Color32) {
+    p.rect_filled(r, 0.0, fill);
+    p.add(Shape::closed_line(vec![r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()], Stroke::new(1.0_f32, c)));
+}
+
+fn icon_printer(p: &egui::Painter, r: Rect, c: Color32) {
+    let m = r.center();
+    let st = Stroke::new(1.0_f32, c);
+    outline(p, Rect::from_min_size(m + Vec2::new(-4.0, -7.0), Vec2::new(8.0, 5.0)), Color32::WHITE, c);
+    outline(p, Rect::from_min_size(m + Vec2::new(-7.0, -3.0), Vec2::new(14.0, 6.0)), enabled_color(c, Color32::from_gray(170)), c);
+    outline(p, Rect::from_min_size(m + Vec2::new(-4.0, 1.0), Vec2::new(8.0, 6.0)), Color32::WHITE, c);
+    p.line_segment([m + Vec2::new(-2.0, 3.5), m + Vec2::new(2.0, 3.5)], st);
+    p.line_segment([m + Vec2::new(-2.0, 5.5), m + Vec2::new(2.0, 5.5)], st);
+}
+
+fn icon_preview(p: &egui::Painter, r: Rect, c: Color32) {
+    let m = r.center();
+    outline(p, Rect::from_min_size(m + Vec2::new(-7.0, -7.0), Vec2::new(10.0, 13.0)), Color32::WHITE, c);
+    for k in 0..3 {
+        let y = m.y - 4.5 + k as f32 * 3.0;
+        p.line_segment([Pos2::new(m.x - 5.0, y), Pos2::new(m.x + 1.0, y)], Stroke::new(1.0_f32, enabled_color(c, Color32::from_gray(150))));
+    }
+    let lens = m + Vec2::new(2.5, 1.5);
+    p.circle(lens, 4.0, enabled_color(c, Color32::from_rgba_unmultiplied(150, 200, 255, 160)), Stroke::new(1.3_f32, c));
+    p.line_segment([lens + Vec2::splat(2.9), lens + Vec2::splat(6.5)], Stroke::new(2.0_f32, c));
+}
+
+fn icon_copy(p: &egui::Painter, r: Rect, c: Color32) {
+    let m = r.center();
+    outline(p, Rect::from_min_size(m + Vec2::new(-6.5, -7.0), Vec2::new(9.0, 11.0)), Color32::WHITE, c);
+    outline(p, Rect::from_min_size(m + Vec2::new(-2.5, -3.0), Vec2::new(9.0, 11.0)), Color32::WHITE, c);
+    for k in 0..3 {
+        let y = m.y - 0.5 + k as f32 * 2.6;
+        p.line_segment([Pos2::new(m.x - 0.5, y), Pos2::new(m.x + 4.5, y)], Stroke::new(1.0_f32, enabled_color(c, Color32::from_gray(150))));
+    }
+}
+
+fn icon_paste(p: &egui::Painter, r: Rect, c: Color32) {
+    let m = r.center();
+    outline(p, Rect::from_min_size(m + Vec2::new(-7.0, -6.0), Vec2::new(11.0, 13.0)), enabled_color(c, Color32::from_rgb(190, 140, 70)), c);
+    outline(p, Rect::from_min_size(m + Vec2::new(-4.0, -8.0), Vec2::new(5.0, 3.5)), enabled_color(c, Color32::from_gray(150)), c);
+    outline(p, Rect::from_min_size(m + Vec2::new(-1.0, -2.0), Vec2::new(8.0, 10.0)), Color32::WHITE, c);
+    for k in 0..3 {
+        let y = m.y + 0.5 + k as f32 * 2.6;
+        p.line_segment([Pos2::new(m.x + 1.0, y), Pos2::new(m.x + 5.0, y)], Stroke::new(1.0_f32, enabled_color(c, Color32::from_gray(150))));
+    }
+}
+
+fn icon_cut(p: &egui::Painter, r: Rect, c: Color32) {
+    let m = r.center();
+    let st = Stroke::new(1.3_f32, c);
+    p.line_segment([m + Vec2::new(-5.0, -7.0), m + Vec2::new(2.0, 2.0)], st);
+    p.line_segment([m + Vec2::new(5.0, -7.0), m + Vec2::new(-2.0, 2.0)], st);
+    for dx in [-3.5_f32, 3.5] {
+        p.circle(m + Vec2::new(dx, 4.5), 2.3, Color32::WHITE, st);
+    }
+}
+
+/// Curved arrow: undo (`flip` false) or redo (mirrored).
+fn icon_undo(p: &egui::Painter, r: Rect, c: Color32, flip: bool) {
+    let m = r.center() + Vec2::Y * 0.5;
+    let sx = if flip { -1.0 } else { 1.0 };
+    let rad = 5.5;
+    let pt = |deg: f32| {
+        let t = deg.to_radians();
+        m + Vec2::new(sx * rad * t.cos(), rad * t.sin())
+    };
+    let pts: Vec<Pos2> = (0..=16).map(|k| pt(20.0 - k as f32 * (220.0 / 16.0))).collect();
+    let st = Stroke::new(1.6_f32, c);
+    p.add(Shape::line(pts.clone(), st));
+    let end = *pts.last().unwrap();
+    let prev = pts[pts.len() - 2];
+    let dir = (end - prev).normalized();
+    let perp = Vec2::new(-dir.y, dir.x);
+    p.add(Shape::convex_polygon(vec![end + dir * 4.0, end + perp * 3.2, end - perp * 3.2], c, Stroke::NONE));
 }
 
 fn icon_plot(p: &egui::Painter, r: Rect, c: Color32) {
@@ -1166,24 +1460,24 @@ impl App {
                 act = Some(Action::Save);
             }
             separator(ui);
-            tb_button(ui, "🖶", "Печать", false);
-            tb_button(ui, "🔍", "Предварительный просмотр", false);
-            tb_button(ui, RichText::new("ABC").size(9.0), "Орфография", false);
+            icon_button(ui, "Печать", false, icon_printer);
+            icon_button(ui, "Предварительный просмотр", false, icon_preview);
+            tb_button(ui, RichText::new("ABC").size(9.0).color(Color32::from_gray(160)), "Орфография", false);
             separator(ui);
-            if tb_button(ui, "✂", "Вырезать (Ctrl+X)", sel) {
+            if icon_button(ui, "Вырезать (Ctrl+X)", sel, icon_cut) {
                 act = Some(Action::Cut);
             }
-            if tb_button(ui, "🗐", "Копировать (Ctrl+C)", sel) {
+            if icon_button(ui, "Копировать (Ctrl+C)", sel, icon_copy) {
                 act = Some(Action::Copy);
             }
-            if tb_button(ui, "📋", "Вставить (Ctrl+V)", !self.clipboard.is_empty()) {
+            if icon_button(ui, "Вставить (Ctrl+V)", !self.clipboard.is_empty(), icon_paste) {
                 act = Some(Action::Paste);
             }
             separator(ui);
-            if tb_button(ui, "⟲", "Отменить (Ctrl+Z)", !self.undo.is_empty()) {
+            if icon_button(ui, "Отменить (Ctrl+Z)", !self.undo.is_empty(), |p, r, c| icon_undo(p, r, c, false)) {
                 act = Some(Action::Undo);
             }
-            if tb_button(ui, "⟳", "Повторить (Ctrl+Y)", !self.redo.is_empty()) {
+            if icon_button(ui, "Повторить (Ctrl+Y)", !self.redo.is_empty(), |p, r, c| icon_undo(p, r, c, true)) {
                 act = Some(Action::Redo);
             }
             separator(ui);
@@ -1331,7 +1625,9 @@ impl App {
                     painter.rect_filled(bar, 2.0, Color32::from_rgb(0, 84, 227));
                     painter.text(bar.left_center() + Vec2::X * 4.0, Align2::LEFT_CENTER, p.title(), FontId::proportional(12.0), Color32::WHITE);
                     let xr = Rect::from_center_size(bar.right_center() - Vec2::X * 9.0, Vec2::splat(14.0));
-                    let xresp = ui.interact(xr, Id::new(("palette-close", p.title())), Sense::click());
+                    // Sense::CLICK is not focusable: Enter/typing never reach the close button
+                    let xresp = ui.interact(xr, Id::new(("palette-close", p.title())), Sense::CLICK);
+                    set_hint(ui, &xresp, "Закрыть панель");
                     let xfill = if xresp.hovered() { Color32::from_rgb(232, 90, 60) } else { Color32::from_rgb(214, 70, 40) };
                     painter.rect_filled(xr, 2.0, xfill);
                     painter.text(xr.center(), Align2::CENTER_CENTER, "✕", FontId::proportional(10.0), Color32::WHITE);
@@ -1347,10 +1643,7 @@ impl App {
                         for (i, b) in btns.iter().enumerate() {
                             let enabled = !matches!(b.act, Act::Todo);
                             let text = RichText::new(b.label).size(if b.label.chars().count() > 3 { 11.0 } else { 13.0 });
-                            let mut r = ui.add_enabled(enabled, egui::Button::new(text).min_size(size));
-                            if !b.tip.is_empty() {
-                                r = r.on_hover_text(b.tip).on_disabled_hover_text(format!("{} — пока не реализовано", b.tip));
-                            }
+                            let r = plain_button(ui, egui::Button::new(text).min_size(size), enabled, b.tip);
                             if r.clicked() {
                                 acts.push(b.act);
                             }
@@ -1376,7 +1669,13 @@ impl App {
 
     fn status_bar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            let msg = if self.status.is_empty() { "Нажмите F1 для справки." } else { &self.status };
+            let msg = if !self.hint.is_empty() {
+                &self.hint
+            } else if self.status.is_empty() {
+                "Нажмите F1 для справки."
+            } else {
+                &self.status
+            };
             ui.label(RichText::new(msg).size(12.0));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let page = (self.cursor.y / PAGE_H).floor() as i32 + 1;
@@ -1468,7 +1767,14 @@ impl App {
 
             let mut new_rects = HashMap::new();
             let mut clicked_region = false;
-            let ids: Vec<u64> = self.ws.regions.iter().map(|r| r.id).collect();
+            // the region being edited is drawn last, so its live preview covers regions below
+            let mut ids: Vec<u64> = self.ws.regions.iter().map(|r| r.id).collect();
+            if let Some(e) = self.editing {
+                if let Some(i) = ids.iter().position(|x| *x == e) {
+                    let v = ids.remove(i);
+                    ids.push(v);
+                }
+            }
             for id in ids {
                 let Some(region) = self.region(id).cloned() else { continue };
                 let pos = to_screen(Pos2::new(region.x, region.y));
@@ -1491,8 +1797,11 @@ impl App {
                                     .font(font)
                                     .desired_width(w)
                                     .margin(Vec2::new(2.0, 1.0))
+                                    .frame(false)
+                                    .lock_focus(true)
                                     .text_color(Color32::from_rgb(0, 0, 140)),
                             );
+                            painter.rect_stroke(te_rect, 0.0, Stroke::new(1.0_f32, SELECT_BLUE), egui::StrokeKind::Outside);
                             if self.focus_pending {
                                 resp.request_focus();
                                 self.focus_pending = false;
@@ -1508,8 +1817,11 @@ impl App {
                             let prev_origin = te_rect.left_bottom() + Vec2::new(2.0, 4.0 + lay.asc);
                             let prev_rect = Rect::from_min_size(te_rect.left_bottom() + Vec2::new(0.0, 2.0), Vec2::new(lay.w + 4.0, lay.h() + 4.0));
                             if !src.trim().is_empty() {
-                                painter.rect_filled(prev_rect, 0.0, Color32::from_rgb(244, 247, 255));
+                                painter.rect_filled(prev_rect, 0.0, Color32::WHITE);
+                                painter.rect_stroke(prev_rect, 0.0, Stroke::new(1.0_f32, Color32::from_gray(190)), egui::StrokeKind::Inside);
                                 lay.paint(&painter, prev_origin);
+                                // swallow clicks so they do not reach regions under the preview
+                                ui.interact(prev_rect, Id::new(("preview", id)), Sense::CLICK);
                             }
                             region_rect = te_rect.union(prev_rect);
                             let enter = ctx.input(|i| i.key_pressed(Key::Enter));
@@ -1540,8 +1852,10 @@ impl App {
                                     .font(FontId::new(px(style.size, z), family))
                                     .desired_width(r.width())
                                     .desired_rows(1)
+                                    .frame(false)
                                     .margin(Vec2::new(2.0, 2.0)),
                             );
+                            painter.rect_stroke(resp.rect, 0.0, Stroke::new(1.0_f32, SELECT_BLUE), egui::StrokeKind::Outside);
                             if self.focus_pending {
                                 resp.request_focus();
                                 self.focus_pending = false;
@@ -1588,8 +1902,13 @@ impl App {
                                 painter.line_segment([Pos2::new(r.left(), r.bottom() + 3.0), Pos2::new(r.right().max(r.left() + 24.0), r.bottom() + 3.0)], Stroke::new(2.0_f32, lc));
                                 ly += fs * 2.4;
                             }
-                            let xl = if x.is_empty() { "■" } else { x.as_str() };
-                            painter.text(Pos2::new(plot_rect.center().x, label_row), Align2::CENTER_TOP, xl, FontId::proportional(fs), Color32::BLACK);
+                            // an empty abscissa shows the variable QuickPlot detected, in grey
+                            let (xl, xc) = match (x.is_empty(), &data.x_var) {
+                                (false, _) => (x.as_str(), Color32::BLACK),
+                                (true, Some(v)) => (v.as_str(), Color32::GRAY),
+                                (true, None) => ("■", Color32::BLACK),
+                            };
+                            painter.text(Pos2::new(plot_rect.center().x, label_row), Align2::CENTER_TOP, xl, FontId::proportional(fs), xc);
                         }
                         for e in &data.errors {
                             painter.text(Pos2::new(plot_rect.left(), bottom), Align2::LEFT_TOP, e, FontId::proportional(fs * 0.85), RED);
@@ -1603,9 +1922,34 @@ impl App {
                         if editing {
                             if let Some((bid, mut ybuf, mut xbuf)) = self.plot_buf.clone().filter(|b| b.0 == id) {
                                 let yr = Rect::from_min_size(Pos2::new(pos.x, plot_rect.center().y - fs), Vec2::new(legend_w - 6.0, fs * 1.6));
-                                let r1 = ui.put(yr, TextEdit::singleline(&mut ybuf).id(edit_id(id)).font(FontId::proportional(fs)).hint_text("f(x)"));
+                                let r1 = ui.put(yr, TextEdit::singleline(&mut ybuf).id(edit_id(id)).font(FontId::proportional(fs)).lock_focus(true).hint_text("f(x)"));
                                 let xr = Rect::from_center_size(Pos2::new(plot_rect.center().x, label_row + fs * 0.8), Vec2::new(140.0 * z, fs * 1.6));
-                                let r2 = ui.put(xr, TextEdit::singleline(&mut xbuf).id(Id::new(("xmath-plot-x", id))).font(FontId::proportional(fs)).hint_text("x"));
+                                let xhint = data.x_var.clone().unwrap_or_else(|| "x".into());
+                                let r2 = ui.put(
+                                    xr,
+                                    TextEdit::singleline(&mut xbuf)
+                                        .id(Id::new(("xmath-plot-x", id)))
+                                        .font(FontId::proportional(fs))
+                                        .lock_focus(true)
+                                        .horizontal_align(Align::Center)
+                                        .hint_text(RichText::new(xhint).color(Color32::GRAY)),
+                                );
+                                // Tab / Shift+Tab hop between the two fields
+                                let back = ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::Tab));
+                                let fwd = !back && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab));
+                                if (fwd && r1.has_focus()) || (back && r2.has_focus()) {
+                                    if fwd {
+                                        r2.request_focus();
+                                    } else {
+                                        r1.request_focus();
+                                    }
+                                } else if (fwd && r2.has_focus()) || (back && r1.has_focus()) {
+                                    if fwd {
+                                        r1.request_focus();
+                                    } else {
+                                        r2.request_focus();
+                                    }
+                                }
                                 if self.focus_pending {
                                     r1.request_focus();
                                     self.focus_pending = false;
@@ -1664,10 +2008,6 @@ impl App {
                     let r = region_rect.expand(2.0);
                     let pts = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
                     painter.extend(Shape::dashed_line(&pts, Stroke::new(1.0_f32, Color32::BLACK), 3.0, 2.0));
-                } else if editing && !matches!(region.kind, RegionKind::Plot { .. }) {
-                    // Mathcad shows the region being edited in a thin frame
-                    let r = region_rect.expand(1.0);
-                    painter.add(Shape::closed_line(vec![r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()], Stroke::new(1.0_f32, Color32::from_gray(150))));
                 }
                 new_rects.insert(id, Rect::from_min_max(to_ws(region_rect.min), to_ws(region_rect.max)));
             }
@@ -1753,7 +2093,7 @@ impl App {
                 }
             } else {
                 self.selection = vec![id];
-                self.begin_edit(id);
+                self.begin_edit(id, true);
             }
         }
     }
@@ -1971,6 +2311,36 @@ impl App {
             }
         }
 
+        if let Some(d) = &mut self.path_dlg {
+            let mut res: Option<bool> = None;
+            let title = if d.kind == DlgKind::Open { "Открыть файл" } else { "Сохранить как" };
+            egui::Window::new(title).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+                ui.label("Системный диалог недоступен. Введите путь к файлу:");
+                let r = ui.add(TextEdit::singleline(&mut d.text).desired_width(460.0));
+                if !r.has_focus() && !r.lost_focus() {
+                    r.request_focus();
+                }
+                if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                    res = Some(true);
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("ОК").clicked() {
+                        res = Some(true);
+                    }
+                    if ui.button("Отмена").clicked() {
+                        res = Some(false);
+                    }
+                });
+            });
+            if let Some(ok) = res {
+                let d = self.path_dlg.take().unwrap();
+                let text = d.text.trim().to_string();
+                if ok && !text.is_empty() {
+                    self.file_chosen(ctx, d.kind, PathBuf::from(text), d.then);
+                }
+            }
+        }
+
         if let Some(a) = self.confirm {
             let mut choice: Option<u8> = None;
             let name = self.doc_name();
@@ -1995,10 +2365,7 @@ impl App {
             match choice {
                 Some(0) => {
                     self.confirm = None;
-                    self.save();
-                    if !self.modified {
-                        self.do_action(ctx, a);
-                    }
+                    self.save_doc(ctx, Some(a));
                 }
                 Some(1) => {
                     self.confirm = None;
@@ -2070,12 +2437,21 @@ const HELP: &str = "\
   g — ускорение свободного падения, как в Mathcad.";
 
 impl eframe::App for App {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        storage.set_string("xmath-ui", self.ui_state());
+    }
+
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         if ctx.input(|i| i.viewport().close_requested()) && self.modified && !self.allow_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm = Some(Action::Exit);
         }
 
+        self.hint = ctx.data_mut(|d| d.remove_temp::<String>(Id::new("xmath-hint"))).unwrap_or_default();
+        if !self.hint.is_empty() {
+            ctx.request_repaint();
+        }
+        self.poll_dialog(ctx);
         self.shortcuts(ctx);
         self.sheet_keys(ctx);
 
