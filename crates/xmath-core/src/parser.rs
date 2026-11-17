@@ -10,7 +10,7 @@
 //! F = kN                   evaluation shown in the given unit
 //! ```
 
-use crate::ast::{BinOp, Expr, Stmt, Target, UnOp};
+use crate::ast::{BinOp, Expr, PStmt, Stmt, Target, UnOp};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +45,10 @@ enum Tok {
     RBrack,
     Comma,
     Semi,
+    LBrace,
+    RBrace,
+    Arrow,
+    In,
     Define,
     GlobalDefine,
     Eq,
@@ -90,6 +94,10 @@ fn tok_text(t: &Tok) -> &'static str {
         Tok::RBrack => "]",
         Tok::Comma => ",",
         Tok::Semi => ";",
+        Tok::LBrace => "{",
+        Tok::RBrace => "}",
+        Tok::Arrow => "←",
+        Tok::In => "∈",
         Tok::Define => ":=",
         Tok::GlobalDefine => "≡",
         Tok::Eq => "=",
@@ -227,7 +235,11 @@ fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
             ('*', '*') => (Tok::Caret, 2),
             (':', _) => (Tok::Define, 1),
             ('≔', _) => (Tok::Define, 1),
-            ('←', _) => (Tok::Define, 1),
+            ('<', '-') => (Tok::Arrow, 2),
+            ('←', _) => (Tok::Arrow, 1),
+            ('∈', _) => (Tok::In, 1),
+            ('{', _) => (Tok::LBrace, 1),
+            ('}', _) => (Tok::RBrace, 1),
             ('≡', _) => (Tok::GlobalDefine, 1),
             ('=', _) => (Tok::Eq, 1),
             ('+', _) => (Tok::Plus, 1),
@@ -371,7 +383,10 @@ impl Parser {
     }
 
     fn starts_primary(&self) -> bool {
-        matches!(self.peek(), Tok::Num(_) | Tok::Imag(_) | Tok::Ident(_) | Tok::LParen | Tok::Sqrt)
+        match self.peek() {
+            Tok::Ident(s) => !matches!(s.as_str(), "if" | "else" | "otherwise" | "on"),
+            t => matches!(t, Tok::Num(_) | Tok::Imag(_) | Tok::LParen | Tok::Sqrt),
+        }
     }
 
     fn mul_expr(&mut self) -> PResult<Expr> {
@@ -443,7 +458,7 @@ impl Parser {
             return Ok(items);
         }
         loop {
-            items.push(self.expr()?);
+            items.push(self.expr_oe()?);
             if self.eat(&Tok::Comma) {
                 continue;
             }
@@ -466,8 +481,9 @@ impl Parser {
                     Ok(Expr::Var(name))
                 }
             }
+            Tok::LBrace => self.program(pos),
             Tok::LParen => {
-                let e = self.expr()?;
+                let e = self.expr_oe()?;
                 self.expect(Tok::RParen)?;
                 Ok(e)
             }
@@ -478,7 +494,7 @@ impl Parser {
                     return Err(ParseError { msg: "пустая матрица".into(), pos });
                 }
                 loop {
-                    row.push(self.expr()?);
+                    row.push(self.expr_oe()?);
                     match self.next() {
                         Tok::Comma => {}
                         Tok::Semi => rows.push(std::mem::take(&mut row)),
@@ -498,7 +514,7 @@ impl Parser {
                 Ok(Expr::Matrix(rows))
             }
             Tok::Bar => {
-                let e = self.expr()?;
+                let e = self.expr_oe()?;
                 self.expect(Tok::Bar)?;
                 Ok(Expr::Abs(Box::new(e)))
             }
@@ -511,9 +527,165 @@ impl Parser {
         }
     }
 
+    // ------------------------------------------------------------ programs
+
+    fn is_kw(&self, kw: &str) -> bool {
+        matches!(self.peek(), Tok::Ident(s) if s == kw)
+    }
+
+    fn eat_kw(&mut self, kw: &str) -> bool {
+        if self.is_kw(kw) {
+            self.next();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn peek2(&self) -> &Tok {
+        &self.toks[(self.i + 1).min(self.toks.len() - 1)].tok
+    }
+
+    /// `expr [on error expr]...`
+    fn expr_oe(&mut self) -> PResult<Expr> {
+        let mut a = self.expr()?;
+        while self.is_kw("on") && matches!(self.peek2(), Tok::Ident(s) if s == "error") {
+            self.next();
+            self.next();
+            let b = self.expr()?;
+            a = Expr::OnError(Box::new(a), Box::new(b));
+        }
+        Ok(a)
+    }
+
+    /// Statements up to and including the closing `}` (the `{` is already consumed).
+    fn block_body(&mut self) -> PResult<Vec<PStmt>> {
+        let mut out = Vec::new();
+        loop {
+            while self.eat(&Tok::Semi) {}
+            if self.eat(&Tok::RBrace) {
+                return Ok(out);
+            }
+            let (s, braced) = self.pstmt()?;
+            out.push(s);
+            if self.eat(&Tok::Semi) || braced || *self.peek() == Tok::RBrace {
+                continue;
+            }
+            return self.err(format!("ожидалось ';' или '}}', найдено {}", self.peek().describe()));
+        }
+    }
+
+    fn block(&mut self) -> PResult<Vec<PStmt>> {
+        self.expect(Tok::LBrace)?;
+        self.block_body()
+    }
+
+    fn program(&mut self, pos: usize) -> PResult<Expr> {
+        let stmts = self.block_body()?;
+        if stmts.is_empty() {
+            return Err(ParseError { msg: "пустая программа".into(), pos });
+        }
+        Ok(Expr::Program(stmts))
+    }
+
+    /// `if cond { .. } [else if .. | else { .. } | otherwise { .. }]`, the `if` keyword is current.
+    fn if_block(&mut self) -> PResult<PStmt> {
+        self.next();
+        let cond = self.expr_oe()?;
+        let then = self.block()?;
+        let else_ = if self.eat_kw("otherwise") {
+            Some(self.block()?)
+        } else if self.eat_kw("else") {
+            if self.is_kw("if") {
+                Some(vec![self.if_block()?])
+            } else {
+                Some(self.block()?)
+            }
+        } else {
+            None
+        };
+        Ok(PStmt::If { cond, then, else_ })
+    }
+
+    /// One program statement; the flag tells whether it ended with a `}` block.
+    fn pstmt(&mut self) -> PResult<(PStmt, bool)> {
+        let call_follows = matches!(self.peek2(), Tok::LParen);
+        if let Tok::Ident(kw) = self.peek().clone() {
+            match kw.as_str() {
+                "if" => {
+                    let save = self.i;
+                    match self.if_block() {
+                        Ok(s) => return Ok((s, true)),
+                        // `if(a, b, c)` is the function
+                        Err(e) => {
+                            if !call_follows {
+                                return Err(e);
+                            }
+                            self.i = save;
+                        }
+                    }
+                }
+                "for" if !call_follows => {
+                    self.next();
+                    let var = match self.next() {
+                        Tok::Ident(v) => v,
+                        t => return self.err(format!("ожидалось имя переменной цикла, найдено {}", t.describe())),
+                    };
+                    if !(self.eat(&Tok::In) || self.eat_kw("in")) {
+                        return self.err(format!("ожидалось '∈' или 'in', найдено {}", self.peek().describe()));
+                    }
+                    let iter = self.range_or_expr()?;
+                    let body = self.block()?;
+                    return Ok((PStmt::For { var, iter, body }, true));
+                }
+                "while" if !call_follows => {
+                    self.next();
+                    let cond = self.expr_oe()?;
+                    let body = self.block()?;
+                    return Ok((PStmt::While { cond, body }, true));
+                }
+                _ => {}
+            }
+        }
+        let simple = if self.is_kw("break") && !call_follows {
+            self.next();
+            PStmt::Break
+        } else if self.is_kw("continue") && !call_follows {
+            self.next();
+            PStmt::Continue
+        } else if self.is_kw("return") && !call_follows {
+            self.next();
+            PStmt::Return(self.expr_oe()?)
+        } else {
+            let lhs_pos = self.pos();
+            let lhs = self.expr_oe()?;
+            if matches!(self.peek(), Tok::Arrow | Tok::Define) {
+                self.next();
+                let target = match to_target(lhs) {
+                    Ok(t @ (Target::Var(_) | Target::Indexed(..))) => t,
+                    Ok(_) => {
+                        return Err(ParseError {
+                            msg: "в программе можно присваивать только переменным и элементам векторов".into(),
+                            pos: lhs_pos,
+                        })
+                    }
+                    Err(msg) => return Err(ParseError { msg, pos: lhs_pos }),
+                };
+                PStmt::Assign(target, self.expr_oe()?)
+            } else {
+                PStmt::Expr(lhs)
+            }
+        };
+        if self.eat_kw("if") {
+            let cond = self.expr_oe()?;
+            return Ok((PStmt::If { cond, then: vec![simple], else_: None }, false));
+        }
+        Ok((simple, false))
+    }
+
     /// `a..b`, `a, b..c` or a plain expression.
     fn range_or_expr(&mut self) -> PResult<Expr> {
-        let first = self.expr()?;
+        let first = self.expr_oe()?;
         if self.eat(&Tok::Comma) {
             let second = self.expr()?;
             self.expect(Tok::DotDot)?;
@@ -531,7 +703,7 @@ impl Parser {
         let lhs_pos = self.pos();
         let lhs = self.range_or_expr()?;
         let stmt = match self.peek() {
-            Tok::Define | Tok::GlobalDefine => {
+            Tok::Define | Tok::GlobalDefine | Tok::Arrow => {
                 let global = self.next() == Tok::GlobalDefine;
                 let target = to_target(lhs).map_err(|msg| ParseError { msg, pos: lhs_pos })?;
                 let expr = self.range_or_expr()?;

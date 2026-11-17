@@ -1,7 +1,7 @@
 //! Expression evaluation in Mathcad order: every region sees the definitions
 //! made above / to the left of it.
 
-use crate::ast::{BinOp, Expr, Target, UnOp};
+use crate::ast::{BinOp, Expr, PStmt, Target, UnOp};
 use crate::builtins;
 use crate::units::{self, Dim};
 use crate::value::*;
@@ -28,11 +28,74 @@ impl Scope {
     }
 }
 
-#[derive(Default)]
+/// Maximum number of loop iterations in one program run.
+pub const MAX_LOOP_ITERATIONS: u64 = 10_000_000;
+
 pub struct Evaluator {
     /// All worksheet definitions, in evaluation order (append-only).
     pub defs: Vec<(String, Value)>,
     depth: Cell<usize>,
+    /// Loop iteration limit of a single program run.
+    pub max_iterations: u64,
+}
+
+impl Default for Evaluator {
+    fn default() -> Self {
+        Evaluator { defs: Vec::new(), depth: Cell::new(0), max_iterations: MAX_LOOP_ITERATIONS }
+    }
+}
+
+/// How a statement block finished.
+enum Flow {
+    /// Normal end; the value of the last evaluated statement (if any).
+    Normal(Option<Value>),
+    Break,
+    Continue,
+    Return(Value),
+}
+
+/// Mutable state of one running program.
+struct Frame {
+    sc: Scope,
+    /// Locals below this index belong to the enclosing scope and are never modified.
+    base: usize,
+    iters: u64,
+}
+
+impl Frame {
+    fn local_pos(&self, name: &str) -> Option<usize> {
+        self.sc.locals.iter().rposition(|(n, _)| n == name).filter(|i| *i >= self.base)
+    }
+
+    fn set(&mut self, name: &str, v: Value) {
+        let pos = self.local_pos(name);
+        let locals = Rc::make_mut(&mut self.sc.locals);
+        match pos {
+            Some(i) => locals[i].1 = v,
+            None => locals.push((name.to_string(), v)),
+        }
+    }
+}
+
+/// Stores `v` at the (zero based) index `ix` of `m`, growing the matrix when needed.
+fn set_element(m: &mut Matrix, ix: &[i64], v: Num) -> EResult<()> {
+    let (r, c) = match ix {
+        [r] => (*r, 0),
+        [r, c] => (*r, *c),
+        _ => return Err("слишком много индексов".into()),
+    };
+    if r < 0 || c < 0 {
+        return Err("индекс вне допустимых границ".into());
+    }
+    if (r as usize + 1) * (c as usize + 1) > MAX_RANGE_LEN {
+        return Err("матрица получилась бы слишком большой".into());
+    }
+    if m.rows == 0 && c == 0 {
+        *m = Matrix::zeros(0, 1);
+    }
+    m.ensure(r as usize, c as usize);
+    m.set(r as usize, c as usize, v);
+    Ok(())
 }
 
 pub const PI: f64 = std::f64::consts::PI;
@@ -251,6 +314,123 @@ impl Evaluator {
                 Value::Str(s) => Ok(Value::real(s.chars().count() as f64)),
                 other => Err(format!("нельзя взять модуль: {}", other.type_name())),
             },
+            Expr::OnError(a, b) => match self.eval(a, sc) {
+                Ok(v) => Ok(v),
+                Err(_) => self.eval(b, sc),
+            },
+            Expr::Program(stmts) => self.run_program(stmts, sc),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Programs
+
+    fn run_program(&self, stmts: &[PStmt], sc: &Scope) -> EResult<Value> {
+        let mut fr = Frame { sc: sc.clone(), base: sc.locals.len(), iters: 0 };
+        match self.exec_block(stmts, &mut fr)? {
+            Flow::Normal(Some(v)) | Flow::Return(v) => Ok(v),
+            Flow::Normal(None) => Err("программа не вернула значения".into()),
+            Flow::Break => Err("'break' вне цикла".into()),
+            Flow::Continue => Err("'continue' вне цикла".into()),
+        }
+    }
+
+    fn exec_block(&self, stmts: &[PStmt], fr: &mut Frame) -> EResult<Flow> {
+        let mut last = None;
+        for s in stmts {
+            match self.exec_stmt(s, fr)? {
+                Flow::Normal(Some(v)) => last = Some(v),
+                Flow::Normal(None) => {}
+                other => return Ok(other),
+            }
+        }
+        Ok(Flow::Normal(last))
+    }
+
+    fn tick(&self, fr: &mut Frame) -> EResult<()> {
+        fr.iters += 1;
+        if fr.iters > self.max_iterations {
+            return Err(format!("превышено допустимое число итераций цикла ({})", self.max_iterations));
+        }
+        Ok(())
+    }
+
+    fn exec_stmt(&self, s: &PStmt, fr: &mut Frame) -> EResult<Flow> {
+        match s {
+            PStmt::Expr(e) => Ok(Flow::Normal(Some(self.eval(e, &fr.sc)?))),
+            PStmt::Assign(Target::Var(name), e) => {
+                let v = self.eval(e, &fr.sc)?;
+                fr.set(name, v.clone());
+                Ok(Flow::Normal(Some(v)))
+            }
+            PStmt::Assign(Target::Indexed(name, idx), e) => {
+                let origin = self.origin(&fr.sc);
+                let ix = idx
+                    .iter()
+                    .map(|i| self.eval(i, &fr.sc)?.as_int().map(|k| k - origin))
+                    .collect::<EResult<Vec<i64>>>()?;
+                let v = self.eval(e, &fr.sc)?.as_num()?;
+                match fr.local_pos(name) {
+                    Some(i) => match &mut Rc::make_mut(&mut fr.sc.locals)[i].1 {
+                        Value::Matrix(m) => set_element(m, &ix, v)?,
+                        other => {
+                            return Err(format!("'{name}': элементу нельзя присвоить значение, найдено: {}", other.type_name()))
+                        }
+                    },
+                    None => {
+                        let mut m = Matrix::zeros(0, 0);
+                        set_element(&mut m, &ix, v)?;
+                        fr.set(name, Value::Matrix(m));
+                    }
+                }
+                Ok(Flow::Normal(Some(Value::Num(v))))
+            }
+            PStmt::Assign(Target::Func(..), _) => Err("в программе нельзя определять функции".into()),
+            PStmt::If { cond, then, else_ } => {
+                if self.eval(cond, &fr.sc)?.truthy()? {
+                    self.exec_block(then, fr)
+                } else if let Some(e) = else_ {
+                    self.exec_block(e, fr)
+                } else {
+                    Ok(Flow::Normal(None))
+                }
+            }
+            PStmt::While { cond, body } => {
+                let mut last = None;
+                while self.eval(cond, &fr.sc)?.truthy()? {
+                    self.tick(fr)?;
+                    match self.exec_block(body, fr)? {
+                        Flow::Normal(v) => last = v.or(last),
+                        Flow::Break => break,
+                        Flow::Continue => {}
+                        r @ Flow::Return(_) => return Ok(r),
+                    }
+                }
+                Ok(Flow::Normal(last))
+            }
+            PStmt::For { var, iter, body } => {
+                let items: Box<dyn Iterator<Item = Value>> = match self.eval(iter, &fr.sc)? {
+                    Value::Range(r) => Box::new(r.values().map(Value::Num).collect::<Vec<_>>().into_iter()),
+                    Value::Matrix(m) => Box::new(m.data.into_iter().map(Value::Num)),
+                    Value::Num(n) => Box::new(std::iter::once(Value::Num(n))),
+                    other => return Err(format!("цикл for: нельзя перебрать значения типа {}", other.type_name())),
+                };
+                let mut last = None;
+                for v in items {
+                    self.tick(fr)?;
+                    fr.set(var, v);
+                    match self.exec_block(body, fr)? {
+                        Flow::Normal(v) => last = v.or(last),
+                        Flow::Break => break,
+                        Flow::Continue => {}
+                        r @ Flow::Return(_) => return Ok(r),
+                    }
+                }
+                Ok(Flow::Normal(last))
+            }
+            PStmt::Break => Ok(Flow::Break),
+            PStmt::Continue => Ok(Flow::Continue),
+            PStmt::Return(e) => Ok(Flow::Return(self.eval(e, &fr.sc)?)),
         }
     }
 
@@ -618,23 +798,7 @@ impl Evaluator {
                         .map(|i| self.eval(i, s)?.as_int().map(|k| k - origin))
                         .collect::<EResult<Vec<i64>>>()?;
                     let v = self.eval(expr, s)?.as_num()?;
-                    let (r, c) = match ix.as_slice() {
-                        [r] => (*r, 0),
-                        [r, c] => (*r, *c),
-                        _ => return Err("слишком много индексов".into()),
-                    };
-                    if r < 0 || c < 0 {
-                        return Err("индекс вне допустимых границ".into());
-                    }
-                    if (r as usize + 1) * (c as usize + 1) > MAX_RANGE_LEN {
-                        return Err("матрица получилась бы слишком большой".into());
-                    }
-                    if m.rows == 0 && c == 0 {
-                        m = Matrix::zeros(0, 1);
-                    }
-                    m.ensure(r as usize, c as usize);
-                    m.set(r as usize, c as usize, v);
-                    Ok(())
+                    set_element(&mut m, &ix, v)
                 })?;
                 (name.clone(), Value::Matrix(m))
             }
@@ -699,6 +863,54 @@ pub fn free_vars(e: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
                 free_vars(b, bound, out);
             }
             free_vars(c, bound, out);
+        }
+        Expr::OnError(a, b) => {
+            free_vars(a, bound, out);
+            free_vars(b, bound, out);
+        }
+        Expr::Program(stmts) => {
+            let mark = bound.len();
+            block_free_vars(stmts, bound, out);
+            bound.truncate(mark);
+        }
+    }
+}
+
+/// Program locals (assigned names and `for` variables) are bound from their first assignment on.
+fn block_free_vars(stmts: &[PStmt], bound: &mut Vec<String>, out: &mut Vec<String>) {
+    for s in stmts {
+        match s {
+            PStmt::Assign(target, e) => {
+                free_vars(e, bound, out);
+                match target {
+                    Target::Var(n) => bound.push(n.clone()),
+                    Target::Indexed(n, idx) => {
+                        for i in idx {
+                            free_vars(i, bound, out);
+                        }
+                        bound.push(n.clone());
+                    }
+                    Target::Func(..) => {}
+                }
+            }
+            PStmt::Expr(e) | PStmt::Return(e) => free_vars(e, bound, out),
+            PStmt::If { cond, then, else_ } => {
+                free_vars(cond, bound, out);
+                block_free_vars(then, bound, out);
+                if let Some(e) = else_ {
+                    block_free_vars(e, bound, out);
+                }
+            }
+            PStmt::For { var, iter, body } => {
+                free_vars(iter, bound, out);
+                bound.push(var.clone());
+                block_free_vars(body, bound, out);
+            }
+            PStmt::While { cond, body } => {
+                free_vars(cond, bound, out);
+                block_free_vars(body, bound, out);
+            }
+            PStmt::Break | PStmt::Continue => {}
         }
     }
 }

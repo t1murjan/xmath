@@ -145,6 +145,21 @@ C := 10 μF
 ```
 One line = one statement: never put `R := 100 Ω   C := 10 μF` on a single line.
 
+### 8. Programs (loops, conditions)
+
+```
+sumsq(n) := { s ← 0; for i ∈ 1..n { s ← s + i^2 }; s }
+sumsq(10) =                          385
+g(x) := { return -1 if x < 0; sqrt(x) }
+newton(a) := { x ← a; while abs(x^2 - a) > 1e-12 { x ← (x + a/x)/2 }; x }
+safe(x) := { y ← 1/x on error 0; y }
+h(x) := { if x < 0 { "neg" } else if x == 0 { "zero" } otherwise { "pos" } }
+```
+
+Programs are `{ stmt; stmt; ... }` expressions: `←` assigns a local, `for i ∈ a..b { }`, `while c { }`, `if c { } otherwise { }`,
+`stmt if cond`, `break`, `continue`, `return e`, `e1 on error e2`. The value is the last statement (or `return`).
+Details in reference.md ("Programs").
+
 ## Common pitfalls
 
 - `g` is gravity (9.807 m/s^2); grams are `gm`. `10 gm = 0.01 kg`.

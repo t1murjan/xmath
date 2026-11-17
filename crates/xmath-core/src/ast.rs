@@ -75,12 +75,41 @@ pub enum Expr {
     Range(Box<Expr>, Option<Box<Expr>>, Box<Expr>),
     /// `|x|`: absolute value, vector length or determinant.
     Abs(Box<Expr>),
+    /// Mathcad program: `{ s ← 0; for i ∈ 1..n { s ← s + i }; s }`.
+    Program(Vec<PStmt>),
+    /// `expr1 on error expr2`: the value of `expr2` if `expr1` fails.
+    OnError(Box<Expr>, Box<Expr>),
+}
+
+/// A statement inside a program block.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PStmt {
+    /// Local assignment `x ← e` or `v[i] ← e` (the target is `Target::Var` or `Target::Indexed`).
+    Assign(Target, Expr),
+    /// A bare expression (its value is the value of the program if it is the last statement).
+    Expr(Expr),
+    /// `if cond { then } otherwise { else_ }`; the postfix form `stmt if cond` is a single-statement `then`.
+    If { cond: Expr, then: Vec<PStmt>, else_: Option<Vec<PStmt>> },
+    /// `for var ∈ iter { body }`.
+    For { var: String, iter: Expr, body: Vec<PStmt> },
+    /// `while cond { body }`.
+    While { cond: Expr, body: Vec<PStmt> },
+    Break,
+    Continue,
+    Return(Expr),
+}
+
+impl PStmt {
+    /// Statements that can take a postfix `if`.
+    pub fn is_simple(&self) -> bool {
+        matches!(self, PStmt::Assign(..) | PStmt::Expr(_) | PStmt::Break | PStmt::Continue | PStmt::Return(_))
+    }
 }
 
 impl Expr {
     pub fn precedence(&self) -> u8 {
         match self {
-            Expr::Range(..) => 0,
+            Expr::Range(..) | Expr::OnError(..) => 0,
             Expr::Binary(op, ..) => op.precedence(),
             Expr::Unary(UnOp::Not, _) => 3,
             Expr::Unary(UnOp::Neg, _) => 6,
@@ -201,6 +230,55 @@ impl fmt::Display for Expr {
                 write!(f, "..{c}")
             }
             Expr::Abs(a) => write!(f, "|{a}|"),
+            Expr::Program(stmts) => write_block(f, stmts),
+            Expr::OnError(a, b) => {
+                write_child(f, a, matches!(**a, Expr::Range(..)))?;
+                write!(f, " on error ")?;
+                write_child(f, b, b.precedence() == 0)
+            }
+        }
+    }
+}
+
+fn write_block(f: &mut fmt::Formatter<'_>, stmts: &[PStmt]) -> fmt::Result {
+    write!(f, "{{ ")?;
+    for (i, s) in stmts.iter().enumerate() {
+        if i > 0 {
+            write!(f, "; ")?;
+        }
+        write!(f, "{s}")?;
+    }
+    write!(f, " }}")
+}
+
+impl fmt::Display for PStmt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PStmt::Assign(t, e) => write!(f, "{t} ← {e}"),
+            PStmt::Expr(e) => write!(f, "{e}"),
+            PStmt::If { cond, then, else_ } => {
+                if else_.is_none() && then.len() == 1 && then[0].is_simple() {
+                    return write!(f, "{} if {cond}", then[0]);
+                }
+                write!(f, "if {cond} ")?;
+                write_block(f, then)?;
+                if let Some(e) = else_ {
+                    write!(f, " otherwise ")?;
+                    write_block(f, e)?;
+                }
+                Ok(())
+            }
+            PStmt::For { var, iter, body } => {
+                write!(f, "for {var} ∈ {iter} ")?;
+                write_block(f, body)
+            }
+            PStmt::While { cond, body } => {
+                write!(f, "while {cond} ")?;
+                write_block(f, body)
+            }
+            PStmt::Break => write!(f, "break"),
+            PStmt::Continue => write!(f, "continue"),
+            PStmt::Return(e) => write!(f, "return {e}"),
         }
     }
 }

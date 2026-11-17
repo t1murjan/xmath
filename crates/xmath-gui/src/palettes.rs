@@ -199,16 +199,18 @@ pub static BOOLEAN: &[Btn] = &[
 ];
 
 pub static PROGRAMMING: &[Btn] = &[
-    b("Add Line", "Добавить строку программы  ]", Todo),
-    b("←", "Локальное присваивание  {", Todo),
-    b("if", "Условие (функция if)", Insert("if(■, ■, ■)")),
-    b("otherwise", "Иначе", Todo),
-    b("for", "Цикл for", Todo),
-    b("while", "Цикл while", Todo),
-    b("break", "Прервать цикл", Todo),
-    b("continue", "Продолжить цикл", Todo),
-    b("return", "Возврат", Todo),
-    b("on error", "Обработка ошибки", Todo),
+    b("Программа", "Блок программы { ... }", Insert("{ ■ }")),
+    b("Add Line", "Добавить строку программы (;)", Insert("; ■")),
+    b("←", "Локальное присваивание", Insert(" ← ■")),
+    b("if", "Условие: if условие { ... }", Insert("if ■ { ■ }")),
+    b("otherwise", "Иначе: otherwise { ... }", Insert(" otherwise { ■ }")),
+    b("for", "Цикл for: for i ∈ 1..n { ... }", Insert("for ■ ∈ ■ { ■ }")),
+    b("while", "Цикл while: while условие { ... }", Insert("while ■ { ■ }")),
+    b("break", "Прервать цикл", Insert("break")),
+    b("continue", "Продолжить цикл", Insert("continue")),
+    b("return", "Возврат значения", Insert("return ■")),
+    b("on error", "Обработка ошибки: выражение on error значение", Insert(" on error ■")),
+    b("if()", "Функция if(условие, да, нет)", Insert("if(■, ■, ■)")),
 ];
 
 pub static GREEK: &[Btn] = &[

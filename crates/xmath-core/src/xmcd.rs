@@ -4,7 +4,7 @@
 //! kept as a text region (with a best-effort textual rendering) and reported
 //! in [`ImportResult::warnings`]. It never panics on malformed input.
 
-use crate::ast::{BinOp, Expr, Stmt, Target, UnOp};
+use crate::ast::{BinOp, Expr, PStmt, Stmt, Target, UnOp};
 use crate::parser::{parse_expr, parse_statement};
 use crate::worksheet::{Region, RegionKind, TextStyle, Worksheet};
 use roxmltree::{Document, Node};
@@ -189,28 +189,25 @@ fn convert_math(cx: &mut Cx, math: Node, w: Option<f32>) -> RegionKind {
         cx.warn("пустая математическая область");
         return note("[Пустая область]", w);
     };
-    if math.descendants().any(|n| n.is_element() && lname(n) == "program") {
-        cx.warn("программы (блоки Mathcad) не поддерживаются, область преобразована в текст");
-        return note(&format!("[Программа Mathcad не поддерживается]\n{}", dump(top)), w);
-    }
+    let has_program = math.descendants().any(|n| n.is_element() && lname(n) == "program");
+    let fallback = |cx: &mut Cx, why: String| {
+        if has_program {
+            cx.warn(format!("программа Mathcad не импортирована ({why}), область преобразована в текст"));
+            note(&format!("[Программа Mathcad не поддерживается]\n{}", dump(top)), w)
+        } else {
+            cx.warn(format!("{why}; область преобразована в текст"));
+            note(&dump(top), w)
+        }
+    };
     match conv_stmt(cx, top) {
         Ok(stmt) => {
             let src = stmt.to_string();
             match parse_statement(&src) {
                 Ok(_) => RegionKind::Math { source: src },
-                Err(e) => {
-                    cx.warn(format!(
-                        "сгенерированное выражение «{src}» не разбирается ({}), область преобразована в текст",
-                        e.msg
-                    ));
-                    note(&dump(top), w)
-                }
+                Err(e) => fallback(cx, format!("сгенерированное выражение «{src}» не разбирается: {}", e.msg)),
             }
         }
-        Err(e) => {
-            cx.warn(format!("{e}; область преобразована в текст"));
-            note(&dump(top), w)
-        }
+        Err(e) => fallback(cx, e),
     }
 }
 
@@ -362,6 +359,12 @@ fn conv(cx: &mut Cx, n: Node) -> R<Expr> {
             conv(cx, ks[0])
         }
         "apply" => conv_apply(cx, n),
+        "program" => conv_program(cx, n),
+        "onError" => {
+            let ks = kids(n);
+            need(&ks, 2, "onError")?;
+            Ok(Expr::OnError(Box::new(conv(cx, ks[0])?), Box::new(conv(cx, ks[1])?)))
+        }
         "matrix" => conv_matrix(cx, n),
         "range" => range_from(cx, &kids(n)),
         "vectorize" | "symEval" => {
@@ -501,6 +504,81 @@ fn conv_apply(cx: &mut Cx, n: Node) -> R<Expr> {
             Ok(Expr::Call(name, conv_all(cx, args)?))
         }
         other => Err(format!("неподдерживаемая операция <{other}>")),
+    }
+}
+
+// ------------------------------------------------------------------ programs
+
+fn conv_program(cx: &mut Cx, n: Node) -> R<Expr> {
+    let stmts = conv_pstmts(cx, &kids(n))?;
+    if stmts.is_empty() {
+        return Err("пустая программа".into());
+    }
+    Ok(Expr::Program(stmts))
+}
+
+/// Statements of a program; `otherwise` is attached to the preceding `if`.
+fn conv_pstmts(cx: &mut Cx, nodes: &[Node]) -> R<Vec<PStmt>> {
+    let mut out: Vec<PStmt> = Vec::new();
+    for n in nodes {
+        if lname(*n) == "otherwise" {
+            let ks = kids(*n);
+            need(&ks, 1, "otherwise")?;
+            let body = conv_body(cx, ks[0])?;
+            match out.last_mut() {
+                Some(PStmt::If { else_: e @ None, .. }) => *e = Some(body),
+                _ => return Err("otherwise без предшествующего if".into()),
+            }
+        } else {
+            out.push(conv_pstmt(cx, *n)?);
+        }
+    }
+    Ok(out)
+}
+
+/// A loop or branch body: a nested program is flattened, a single statement is wrapped.
+fn conv_body(cx: &mut Cx, n: Node) -> R<Vec<PStmt>> {
+    match lname(n) {
+        "program" => conv_pstmts(cx, &kids(n)),
+        _ => Ok(vec![conv_pstmt(cx, n)?]),
+    }
+}
+
+fn conv_pstmt(cx: &mut Cx, n: Node) -> R<PStmt> {
+    let ks = kids(n);
+    match lname(n) {
+        "localDefine" => {
+            need(&ks, 2, "localDefine")?;
+            let target = match conv_target(cx, ks[0])? {
+                t @ (Target::Var(_) | Target::Indexed(..)) => t,
+                Target::Func(..) => return Err("в программе нельзя определять функции".into()),
+            };
+            Ok(PStmt::Assign(target, conv(cx, ks[1])?))
+        }
+        "ifThen" => {
+            need(&ks, 2, "ifThen")?;
+            Ok(PStmt::If { cond: conv(cx, ks[0])?, then: conv_body(cx, ks[1])?, else_: None })
+        }
+        "for" => {
+            need(&ks, 3, "for")?;
+            let var = id_name(ks[0])?;
+            let iter = conv(cx, ks[1])?;
+            Ok(PStmt::For { var, iter, body: conv_body(cx, ks[2])? })
+        }
+        "while" => {
+            need(&ks, 2, "while")?;
+            Ok(PStmt::While { cond: conv(cx, ks[0])?, body: conv_body(cx, ks[1])? })
+        }
+        "break" => Ok(PStmt::Break),
+        "continue" => Ok(PStmt::Continue),
+        "return" => {
+            need(&ks, 1, "return")?;
+            Ok(PStmt::Return(conv(cx, ks[0])?))
+        }
+        "parens" if ks.len() == 1 && matches!(lname(ks[0]), "break" | "continue" | "return" | "localDefine") => {
+            conv_pstmt(cx, ks[0])
+        }
+        _ => Ok(PStmt::Expr(conv(cx, n)?)),
     }
 }
 

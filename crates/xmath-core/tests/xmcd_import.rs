@@ -101,7 +101,7 @@ fn text_plot_program_and_fallbacks() {
     assert_eq!(source(&ws, 2), "TEXT:Площадь A_1 и x^2 заданы ниже.");
     assert_eq!(source(&ws, 4), "PLOT:t|t^2|t", "{warns:?}");
     assert!(source(&ws, 5).starts_with("TEXT:[График не импортирован]"));
-    assert!(source(&ws, 6).starts_with("TEXT:[Программа Mathcad не поддерживается]"));
+    assert_eq!(source(&ws, 6), "g(n) := { s ← 0; return s }");
     assert!(source(&ws, 7).starts_with("TEXT:[Рисунок"));
     assert_eq!(source(&ws, 8), "foo(1) =");
     assert!(source(&ws, 9).starts_with("TEXT:"));
@@ -126,6 +126,22 @@ fn malformed_input_does_not_panic() {
     assert!(!r.warnings.is_empty());
     let r = import_xmcd("<worksheet/>").unwrap();
     assert!(r.worksheet.regions.is_empty());
+}
+
+#[test]
+fn programs_are_imported() {
+    let (ws, warns) = load("programs.xmcd");
+    assert_eq!(source(&ws, 1), "f(n) := { s ← 0; for i ∈ 1..n { s ← s + i^2 }; return s }", "{warns:?}");
+    assert_eq!(shown(&ws, 2), "385");
+    assert_eq!(source(&ws, 3), r#"h(x) := { if x < 0 { "neg" } otherwise { "pos" } }"#);
+    assert_eq!(shown(&ws, 4), "\"neg\"");
+    assert_eq!(source(&ws, 5), "w(a) := { i ← 0; while i < a { i ← i + 1; break if i == 5 }; i }");
+    assert_eq!(shown(&ws, 6), "5");
+    assert_eq!(source(&ws, 7), "k(x) := { y ← 1/x on error 0; y }");
+    assert_eq!(shown(&ws, 8), "0");
+    // unknown statements fall back to the text placeholder
+    assert!(source(&ws, 9).starts_with("TEXT:[Программа Mathcad не поддерживается]"));
+    assert!(warns.iter().any(|w| w.contains("weirdStatement")), "{warns:?}");
 }
 
 #[test]

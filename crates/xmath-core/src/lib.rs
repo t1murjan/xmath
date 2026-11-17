@@ -17,7 +17,10 @@ pub mod value;
 pub mod xmcd;
 pub mod worksheet;
 
-pub use ast::{BinOp, Expr, Stmt, Target, UnOp};
+#[cfg(test)]
+mod program_tests;
+
+pub use ast::{BinOp, Expr, PStmt, Stmt, Target, UnOp};
 pub use format::{FormatOptions, NumberText, Piece, ResultView, UnitPow, UnitSystem, UnitText};
 pub use parser::{parse_expr, parse_statement, ParseError};
 pub use worksheet::{Output, PlotData, Region, RegionKind, RegionOutput, Series, Worksheet};

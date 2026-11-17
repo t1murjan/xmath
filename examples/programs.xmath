@@ -1,0 +1,246 @@
+{
+ "version": 1,
+ "format": {
+  "precision": 3,
+  "exp_threshold": 3,
+  "zero_threshold": 15
+ },
+ "regions": [
+  {
+   "x": 24,
+   "y": 16,
+   "type": "text",
+   "text": "Программирование в xmath",
+   "width": 520.0,
+   "style": {
+    "size": 18.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 1
+  },
+  {
+   "x": 24,
+   "y": 52,
+   "type": "text",
+   "text": "Программы записываются в фигурных скобках, операторы разделяются точкой с запятой. Присваивание: ←, цикл: for i ∈ 1..n { ... }, условие: return x if условие или if условие { ... } otherwise { ... }.",
+   "width": 520.0,
+   "style": {
+    "size": 10.0,
+    "bold": false,
+    "italic": false,
+    "underline": false
+   },
+   "id": 2
+  },
+  {
+   "x": 24,
+   "y": 112,
+   "type": "text",
+   "text": "1. Сумма квадратов (цикл for)",
+   "width": 520.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 3
+  },
+  {
+   "x": 24,
+   "y": 140,
+   "type": "math",
+   "source": "sumsq(n) := { s ← 0; for i ∈ 1..n { s ← s + i^2 }; s }",
+   "id": 4
+  },
+  {
+   "x": 24,
+   "y": 230,
+   "type": "math",
+   "source": "sumsq(10) =",
+   "id": 5
+  },
+  {
+   "x": 24,
+   "y": 290,
+   "type": "text",
+   "text": "2. Кусочная функция (досрочный return)",
+   "width": 520.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 6
+  },
+  {
+   "x": 24,
+   "y": 318,
+   "type": "math",
+   "source": "pw(x) := { return -x if x < 0; return x^2 if x < 1; 2*x - 1 }",
+   "id": 7
+  },
+  {
+   "x": 24,
+   "y": 400,
+   "type": "math",
+   "source": "x := -2, -1.95..3",
+   "id": 8
+  },
+  {
+   "x": 24,
+   "y": 436,
+   "type": "plot",
+   "x_expr": "x",
+   "y_exprs": [
+    "pw(x)"
+   ],
+   "width": 380.0,
+   "height": 240.0,
+   "id": 9
+  },
+  {
+   "x": 440,
+   "y": 436,
+   "type": "math",
+   "source": "pw(-1.5) =",
+   "id": 10
+  },
+  {
+   "x": 440,
+   "y": 476,
+   "type": "math",
+   "source": "pw(0.5) =",
+   "id": 11
+  },
+  {
+   "x": 440,
+   "y": 516,
+   "type": "math",
+   "source": "pw(2) =",
+   "id": 12
+  },
+  {
+   "x": 24,
+   "y": 720,
+   "type": "text",
+   "text": "3. Итерация Ньютона (цикл while)",
+   "width": 520.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 13
+  },
+  {
+   "x": 24,
+   "y": 748,
+   "type": "math",
+   "source": "newton(a) := { x ← a; while abs(x^2 - a) > 1e-12 { x ← (x + a/x)/2 }; x }",
+   "id": 14
+  },
+  {
+   "x": 24,
+   "y": 890,
+   "type": "math",
+   "source": "newton(2) =",
+   "id": 15
+  },
+  {
+   "x": 240,
+   "y": 890,
+   "type": "math",
+   "source": "sqrt(2) =",
+   "id": 16
+  },
+  {
+   "x": 24,
+   "y": 950,
+   "type": "text",
+   "text": "4. Метод бисекции (return внутри цикла)",
+   "width": 520.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 17
+  },
+  {
+   "x": 24,
+   "y": 980,
+   "type": "math",
+   "source": "F(t) := t^3 - 2*t - 5",
+   "id": 18
+  },
+  {
+   "x": 24,
+   "y": 1020,
+   "type": "math",
+   "source": "bisect(f, a, b) := { lo ← a; hi ← b; for k ∈ 1..200 { m ← (lo + hi)/2; return m if abs(hi - lo) < 1e-12; if f(lo)*f(m) <= 0 { hi ← m } otherwise { lo ← m } }; (lo + hi)/2 }",
+   "id": 19
+  },
+  {
+   "x": 24,
+   "y": 1260,
+   "type": "math",
+   "source": "bisect(F, 2, 3) =",
+   "id": 20
+  },
+  {
+   "x": 24,
+   "y": 1330,
+   "type": "text",
+   "text": "5. Факториал (цикл for и обработка ошибок)",
+   "width": 520.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 21
+  },
+  {
+   "x": 24,
+   "y": 1360,
+   "type": "math",
+   "source": "fact(n) := { return 1 if n < 2; p ← 1; for i ∈ 2..n { p ← p*i }; p }",
+   "id": 22
+  },
+  {
+   "x": 24,
+   "y": 1480,
+   "type": "math",
+   "source": "fact(10) =",
+   "id": 23
+  },
+  {
+   "x": 240,
+   "y": 1480,
+   "type": "math",
+   "source": "safe_inv(x) := { 1/x on error 0 }",
+   "id": 24
+  },
+  {
+   "x": 24,
+   "y": 1540,
+   "type": "math",
+   "source": "safe_inv(4) =",
+   "id": 25
+  },
+  {
+   "x": 240,
+   "y": 1540,
+   "type": "math",
+   "source": "safe_inv(0) =",
+   "id": 26
+  }
+ ]
+}
