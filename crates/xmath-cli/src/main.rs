@@ -1,22 +1,53 @@
-//! `xmath-cli file.xmath` (JSON worksheet) or `xmath-cli file.txt`
-//! (one math region per line) prints every region with its result.
+//! `xmath-cli file.xmath` (JSON worksheet), `file.xmcd` (Mathcad 15) or
+//! `file.txt` (one math region per line) prints every region with its result.
+//! `--convert out.xmath` additionally saves the loaded worksheet as JSON.
 
 use std::process::ExitCode;
 use xmath_core::{evaluate_worksheet, Output, RegionKind, Worksheet};
 
 fn main() -> ExitCode {
-    let Some(path) = std::env::args().nth(1) else {
-        eprintln!("usage: xmath-cli <worksheet.xmath | lines.txt>");
+    let mut path: Option<String> = None;
+    let mut convert: Option<String> = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        if a == "--convert" {
+            convert = args.next();
+            if convert.is_none() {
+                eprintln!("--convert needs an output file");
+                return ExitCode::from(2);
+            }
+        } else if path.is_none() {
+            path = Some(a);
+        }
+    }
+    let Some(path) = path else {
+        eprintln!("usage: xmath-cli <worksheet.xmath | worksheet.xmcd | lines.txt> [--convert out.xmath]");
         return ExitCode::from(2);
     };
-    let src = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
         Err(e) => {
             eprintln!("cannot read {path}: {e}");
             return ExitCode::from(2);
         }
     };
-    let ws = if src.trim_start().starts_with('{') {
+    let src = String::from_utf8_lossy(&bytes).into_owned();
+    let head = src.trim_start_matches('\u{feff}').trim_start();
+    let is_xmcd = path.to_lowercase().ends_with(".xmcd") || (head.starts_with("<?xml") && head.contains("worksheet"));
+    let ws = if is_xmcd {
+        match xmath_core::xmcd::import_xmcd(&src) {
+            Ok(r) => {
+                for w in &r.warnings {
+                    eprintln!("warning: {w}");
+                }
+                r.worksheet
+            }
+            Err(e) => {
+                eprintln!("{path}: {e}");
+                return ExitCode::from(2);
+            }
+        }
+    } else if head.starts_with('{') {
         match Worksheet::from_json(&src) {
             Ok(ws) => ws,
             Err(e) => {
@@ -27,6 +58,12 @@ fn main() -> ExitCode {
     } else {
         Worksheet::from_lines(&src)
     };
+    if let Some(out) = &convert {
+        if let Err(e) = std::fs::write(out, ws.to_json()) {
+            eprintln!("cannot write {out}: {e}");
+            return ExitCode::from(2);
+        }
+    }
     let outputs = evaluate_worksheet(&ws);
     let mut errors = 0;
     for i in ws.evaluation_order() {

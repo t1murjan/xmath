@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.mathsoft.com/worksheet30" xmlns:ml="http://schemas.mathsoft.com/math30" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<settings><presentation><calculation><builtInVariables><arrayOrigin>1</arrayOrigin></builtInVariables></calculation><mathStyle><displayedPrecision>4</displayedPrecision></mathStyle></presentation></settings>
+<regions>
+<region region-id="1" left="36" top="18" width="90" height="21" align-x="0" align-y="0"><math optimize="false"><ml:define><ml:id xml:space="preserve">mass</ml:id><ml:apply><ml:mult style="auto"/><ml:real>5</ml:real><ml:id xml:space="preserve">kg</ml:id></ml:apply></ml:define></math></region>
+<region region-id="2" left="36" top="45" width="120" height="21"><math><ml:define><ml:id>a</ml:id><ml:apply><ml:mult/><ml:real>2</ml:real><ml:apply><ml:div/><ml:id>m</ml:id><ml:apply><ml:pow/><ml:id>s</ml:id><ml:real>2</ml:real></ml:apply></ml:apply></ml:apply></ml:define></math></region>
+<region region-id="3" left="36" top="72" width="120" height="21"><math><ml:define><ml:id>F</ml:id><ml:apply><ml:mult/><ml:id>mass</ml:id><ml:id>a</ml:id></ml:apply></ml:define></math></region>
+<region region-id="4" left="36" top="99" width="80" height="21"><math><ml:eval><ml:id>F</ml:id><ml:unitOverride><ml:id>N</ml:id></ml:unitOverride><ml:result><ml:real>10</ml:real></ml:result></ml:eval></math></region>
+<region region-id="5" left="36" top="126" width="160" height="21"><math><ml:define><ml:function><ml:id>f</ml:id><ml:boundVars><ml:id>x</ml:id><ml:id>y</ml:id></ml:boundVars></ml:function><ml:apply><ml:plus/><ml:apply><ml:pow/><ml:id>x</ml:id><ml:real>2</ml:real></ml:apply><ml:id>y</ml:id></ml:apply></ml:define></math></region>
+<region region-id="6" left="36" top="153" width="80" height="21"><math><ml:eval><ml:apply><ml:id>f</ml:id><ml:sequence><ml:real>3</ml:real><ml:real>1</ml:real></ml:sequence></ml:apply></ml:eval></math></region>
+<region region-id="7" left="36" top="180" width="80" height="21"><math><ml:eval><ml:apply><ml:sqrt/><ml:apply><ml:minus/><ml:real>16</ml:real></ml:apply></ml:apply></ml:eval></math></region>
+<region region-id="8" left="200" top="180" width="80" height="21"><math><ml:globalDefine><ml:id subscript="max">x</ml:id><ml:apply><ml:neg/><ml:real>3</ml:real></ml:apply></ml:globalDefine></math></region>
+<region region-id="9" left="36" top="207" width="80" height="21"><math><ml:eval><ml:apply><ml:absval/><ml:id subscript="max">x</ml:id></ml:apply></ml:eval></math></region>
+</regions>
+</worksheet>

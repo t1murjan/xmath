@@ -14,6 +14,7 @@ pub mod parser;
 pub mod special;
 pub mod units;
 pub mod value;
+pub mod xmcd;
 pub mod worksheet;
 
 pub use ast::{BinOp, Expr, Stmt, Target, UnOp};
