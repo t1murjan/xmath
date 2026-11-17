@@ -158,7 +158,7 @@ fn format_real(x: f64, o: &FormatOptions) -> NumberText {
     let fmt = |v: f64| trim_zeros(format!("{:.*}", o.precision, v * (1.0 + 4.0 * f64::EPSILON)));
     let fixed = fmt(x);
     // Numbers that would round to zero in fixed notation use the exponent form too.
-    let use_exp = e >= t || e < -t || fixed == "0" || fixed == "-0";
+    let use_exp = e >= t || e <= -t || fixed == "0" || fixed == "-0";
     if !use_exp {
         return NumberText(vec![Piece::Text(fixed)]);
     }
