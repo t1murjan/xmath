@@ -351,6 +351,7 @@ impl<'a> Ts<'a> {
             Expr::Num(x) => self.text(&Self::literal(*x), size),
             Expr::Imag(x) => self.text(&format!("{}i", Self::literal(*x)), size),
             Expr::Str(s) => self.text(&format!("\"{s}\""), size),
+            Expr::Var(n) if n.eq_ignore_ascii_case("given") => self.bold(self.text(n, size)),
             Expr::Var(n) => self.ident(n, size),
             Expr::Unary(UnOp::Neg, a) => {
                 let inner = self.expr(a, size);

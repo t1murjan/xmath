@@ -132,6 +132,21 @@ root(cos(x) - x, x, 0, 1) =         0.739
 
 Always pass an expression in `x` (`f(x)`), not a bare function name `f`, to `integrate`, `diff` and `root`.
 
+### Solve blocks
+
+Systems of equations: guesses, `Given` on its own line, constraints, then `Find`:
+
+```
+x := 1
+y := 1
+Given
+x^2 + y^2 == 5
+x + y == 3
+Find(x, y) =
+```
+
+`Minerr(x, y)` gives a least-squares answer for inconsistent systems; `Minimize(f, x)` / `Maximize(f, x)` optimize a user function `f(x)`; `r(a) := Find(x)` defines a function of a solve block. Do not put definitions between `Given` and `Find`.
+
 ### 6. Plot (via MCP)
 
 1. `create_worksheet` with lines `["x := 0, 0.1..6.28"]`.

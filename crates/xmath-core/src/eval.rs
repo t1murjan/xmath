@@ -607,6 +607,9 @@ impl Evaluator {
             let vals = self.eval_args(args, sc)?;
             return self.call_value(f, vals);
         }
+        if crate::solve::is_solve_name(name) {
+            return self.solve_block(name, args, sc);
+        }
         if let Some(r) = self.special_form(name, args, sc) {
             return r;
         }
