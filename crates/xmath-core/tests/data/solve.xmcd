@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.mathsoft.com/worksheet30" xmlns:ml="http://schemas.mathsoft.com/math30">
+<regions>
+<region region-id="1" left="36" top="18" width="60" height="21"><math><ml:define><ml:id>x</ml:id><ml:real>1</ml:real></ml:define></math></region>
+<region region-id="2" left="36" top="45" width="60" height="21"><math><ml:define><ml:id>y</ml:id><ml:real>1</ml:real></ml:define></math></region>
+<region region-id="3" left="36" top="72" width="60" height="21"><math><ml:provenance expr-id="1"><contentHash xmlns="http://schemas.mathsoft.com/provenance10">abc</contentHash><ml:id xml:space="preserve">Given</ml:id></ml:provenance></math></region>
+<region region-id="4" left="36" top="99" width="100" height="21"><math><ml:apply><ml:equal/><ml:apply><ml:plus/><ml:id>x</ml:id><ml:id>y</ml:id></ml:apply><ml:real>3</ml:real></ml:apply></math></region>
+<region region-id="5" left="36" top="126" width="100" height="21"><math><ml:apply><ml:equal/><ml:apply><ml:minus/><ml:id>x</ml:id><ml:id>y</ml:id></ml:apply><ml:real>1</ml:real></ml:apply></math></region>
+<region region-id="6" left="36" top="153" width="100" height="21"><math><ml:eval><ml:apply><ml:Find auto-method="true" method="linear"/><ml:sequence><ml:id>x</ml:id><ml:id>y</ml:id></ml:sequence></ml:apply></ml:eval></math></region>
+</regions>
+</worksheet>

@@ -154,6 +154,10 @@ pub const FUNCTION_DOCS: &[(&str, &str)] = &[
     ("vlookup", "vlookup(z, A, c): values in column c of rows whose first column matches z"),
     ("hlookup", "hlookup(z, A, r): values in row r of columns whose first row matches z"),
     ("rkfixed", "rkfixed(y0, x1, x2, n, D): RK4 ODE solution; D(x, y) returns the derivative vector; result columns [x, y...]"),
+    ("Find", "Find(x, y, ...): solve block result; needs a `Given` line and constraints (==, <, >, <=, >=) above, and guess values for x, y defined before Given; returns a scalar or a column vector"),
+    ("Minerr", "Minerr(x, y, ...): like Find but returns the best least-squares approximation when the constraints are inconsistent"),
+    ("Maximize", "Maximize(f, x, y, ...): point maximizing the function f(x, y) (optionally under constraints of a Given block), starting from the current x, y"),
+    ("Minimize", "Minimize(f, x, y, ...): point minimizing the function f(x, y) (optionally under constraints of a Given block), starting from the current x, y"),
     ("Rkadapt", "Rkadapt(y0, x1, x2, n, D): adaptive-step ODE solution (same layout as rkfixed)"),
 ];
 

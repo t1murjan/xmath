@@ -69,6 +69,25 @@ Error messages from the engine are in Russian (e.g. `Единицы измере
 * `root(expr, x)` (uses the current guess for `x` if defined) or bracketed `root(expr, x, a, b)`: `root(x^2-2, x, 0, 2) =` -> `1.414`
 * Pass expressions, not bare function names, to `integrate` / `diff` / `root` (`integrate(f, x, 0, 3)` with a user function `f` fails: write `integrate(f(x), x, 0, 3)`).
 
+### Solve blocks (Given / Find / Minerr / Minimize / Maximize)
+
+One region (line) each, in this order: guess values for the unknowns, a line `Given`, constraint lines (Boolean `==`, `<`, `>`, `<=`, `>=`, several allowed; units fine), then the closing call:
+
+```
+x := 1
+y := 1
+Given
+x^2 + y^2 == 5
+x + y == 3
+Find(x, y) =
+```
+
+* `Find(x)` returns a scalar, `Find(x, y)` a column vector; units of the guesses are kept. Error `Решение не найдено…` if no solution; use `Minerr(x, y)` for the best least-squares fit of inconsistent constraints.
+* `Minimize(f, x, y)` / `Maximize(f, x, y)`: `f` is a user function name; optimizes from the current `x`, `y`, honouring constraints of a preceding `Given` (works without `Given` too).
+* `sol := Find(x, y)` stores the vector; `[x; y] := Find(x, y)` assigns each unknown.
+* A function of a solve block: `r(a) := Find(x)` (constraints may use `a`); `r(9) =` re-solves.
+* Definitions are not allowed between `Given` and `Find` (error). `Given` without a closing call is flagged. Unknowns need guesses defined above (linear systems work from 0).
+
 ## 5. Vectors, matrices, ranges, tables
 
 * Matrix literal: `[1, 2; 3, 4]` (commas separate columns, semicolons separate rows). Column vector `[1; 2; 3]`, row vector `[1, 2, 3]`.

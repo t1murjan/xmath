@@ -19,6 +19,7 @@ pub const NAMES: &[&str] = &[
     "mode", "gcd", "lcm", "Φ", "heaviside", "δ", "kronecker", "sinc", "csgn", "qnorm", "dunif", "punif", "dexp",
     "pexp", "J0", "J1", "Jn", "Y0", "Y1", "Yn", "I0", "I1", "In", "K0", "K1", "Kn", "substr", "search", "str2num",
     "vec2str", "str2vec", "lookup", "match", "vlookup", "hlookup", "rkfixed", "Rkadapt",
+    "Find", "Minerr", "Maximize", "Minimize",
 ];
 
 pub(crate) fn arity(name: &str, args: &[Value], n: usize) -> EResult<()> {

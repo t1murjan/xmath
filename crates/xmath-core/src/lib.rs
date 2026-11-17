@@ -11,6 +11,7 @@ pub mod format;
 pub mod linalg;
 pub mod numeric;
 pub mod parser;
+pub mod solve;
 pub mod special;
 pub mod units;
 pub mod value;

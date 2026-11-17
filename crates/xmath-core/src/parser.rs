@@ -569,6 +569,11 @@ fn to_target(e: Expr) -> Result<Target, String> {
 }
 
 pub fn parse_statement(src: &str) -> Result<Stmt, ParseError> {
+    // `[x; y] := Find(x, y)` assigns the elements of a vector to several names
+    parse_statement_plain(src).or_else(|e| crate::solve::vector_define(src).ok_or(e))
+}
+
+fn parse_statement_plain(src: &str) -> Result<Stmt, ParseError> {
     let toks = lex(src)?;
     let mut p = Parser { toks, i: 0 };
     if *p.peek() == Tok::Eof {

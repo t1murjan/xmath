@@ -4,6 +4,7 @@
 use crate::ast::{Expr, Stmt};
 use crate::eval::{Evaluator, Scope};
 use crate::format::{FormatOptions, ResultView};
+use crate::solve;
 use crate::parser::{parse_expr, parse_statement, ParseError};
 use crate::value::{EResult, Num, Value};
 use serde::{Deserialize, Serialize};
@@ -219,18 +220,85 @@ impl Worksheet {
         }
 
         // Pass 2: everything else in document order.
+        let mut block: Option<SolveBlock> = None;
         for &i in &order {
             let region = &self.regions[i];
             let output = match (&region.kind, &parsed[i]) {
                 (_, Some(Ok(Stmt::Define { global: true, .. }))) => continue,
                 (RegionKind::Math { .. }, Some(Err(_))) => Output::None,
-                (RegionKind::Math { .. }, Some(Ok(stmt))) => self.eval_stmt(&mut ev, stmt),
+                (RegionKind::Math { .. }, Some(Ok(stmt))) => {
+                    self.eval_in_block(&mut ev, stmt, region.id, &mut block, &mut out)
+                }
                 (RegionKind::Plot { x, y, .. }, _) => Output::Plot(plot(&ev, x, y)),
                 _ => Output::None,
             };
             out.insert(region.id, RegionOutput { stmt: parsed[i].clone(), output });
         }
+        if let Some(b) = block {
+            flag_unclosed(&mut out, &b);
+        }
         out
+    }
+
+    /// Handles solve blocks: `Given`, constraint regions and the closing call.
+    fn eval_in_block(
+        &self,
+        ev: &mut Evaluator,
+        stmt: &Stmt,
+        id: u64,
+        block: &mut Option<SolveBlock>,
+        out: &mut HashMap<u64, RegionOutput>,
+    ) -> Output {
+        if matches!(stmt, Stmt::Show(Expr::Var(n)) if n.eq_ignore_ascii_case("given")) {
+            if let Some(old) = block.take() {
+                flag_unclosed(out, &old);
+            }
+            *block = Some(SolveBlock { given: id, constraints: Vec::new() });
+            return Output::None;
+        }
+        let Some(b) = block.as_mut() else {
+            return self.eval_stmt(ev, stmt);
+        };
+        let expr = match stmt {
+            Stmt::Define { expr, .. } | Stmt::Eval { expr, .. } | Stmt::Show(expr) => expr,
+        };
+        if solve::contains_solve(expr) {
+            let b = block.take().unwrap();
+            // constraint regions may only use defined names, the unknowns (and function parameters)
+            let mut known = solve::solve_call_vars(expr);
+            if let Stmt::Define { target: crate::ast::Target::Func(_, params), .. } = stmt {
+                known.extend(params.iter().cloned());
+            }
+            let sc = ev.top_scope();
+            for (cid, ce) in &b.constraints {
+                let mut names = Vec::new();
+                crate::eval::free_vars(ce, &mut Vec::new(), &mut names);
+                if let Some(n) = names.iter().find(|n| !known.contains(n) && ev.lookup(n, &sc).is_none()) {
+                    if let Some(o) = out.get_mut(cid) {
+                        o.output = Output::Error(format!("'{n}' не определена"));
+                    }
+                }
+            }
+            let cs: Vec<Expr> = b.constraints.iter().map(|(_, e)| e.clone()).collect();
+            let new_stmt = match stmt {
+                Stmt::Define { target, expr, global } => {
+                    Stmt::Define { target: target.clone(), expr: solve::inject(expr, &cs), global: *global }
+                }
+                Stmt::Eval { expr, unit } => Stmt::Eval { expr: solve::inject(expr, &cs), unit: unit.clone() },
+                Stmt::Show(expr) => Stmt::Show(solve::inject(expr, &cs)),
+            };
+            return self.eval_stmt(ev, &new_stmt);
+        }
+        match stmt {
+            Stmt::Define { .. } => Output::Error(
+                "Определения внутри блока решения недопустимы: поместите их выше Given или ниже Find".into(),
+            ),
+            Stmt::Show(e) if solve::is_constraint(e) => {
+                b.constraints.push((id, e.clone()));
+                Output::None
+            }
+            _ => self.eval_stmt(ev, stmt),
+        }
     }
 
     fn eval_stmt(&self, ev: &mut Evaluator, stmt: &Stmt) -> Output {
@@ -252,6 +320,18 @@ impl Worksheet {
             Stmt::Show(_) => Ok(Output::None),
         })();
         result.unwrap_or_else(Output::Error)
+    }
+}
+
+/// An open solve block: the `Given` region and the constraints collected so far.
+struct SolveBlock {
+    given: u64,
+    constraints: Vec<(u64, Expr)>,
+}
+
+fn flag_unclosed(out: &mut HashMap<u64, RegionOutput>, b: &SolveBlock) {
+    if let Some(o) = out.get_mut(&b.given) {
+        o.output = Output::Error("Given без Find, Minerr, Maximize или Minimize: блок решения не закрыт".into());
     }
 }
 

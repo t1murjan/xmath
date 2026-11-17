@@ -251,6 +251,9 @@ impl Evaluator {
             let vals = self.eval_args(args, sc)?;
             return self.call_value(f, vals);
         }
+        if crate::solve::is_solve_name(name) {
+            return self.solve_block(name, args, sc);
+        }
         if let Some(r) = self.special_form(name, args, sc) {
             return r;
         }
@@ -543,6 +546,11 @@ impl Evaluator {
     // Definitions
 
     pub fn define(&mut self, target: &Target, expr: &Expr) -> EResult<()> {
+        if let Target::Var(n) = target {
+            if n.starts_with('[') {
+                return self.define_vector(n, expr);
+            }
+        }
         let sc = self.top_scope();
         let (name, value) = match target {
             Target::Var(name) => {

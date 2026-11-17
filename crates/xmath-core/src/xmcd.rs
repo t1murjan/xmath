@@ -75,6 +75,12 @@ pub fn import_xmcd(xml: &str) -> Result<ImportResult, String> {
                 continue;
             };
             let kind = convert_region(&mut cx, body, w, h);
+            // Mathcad orders regions on one text line by their baseline (`align-y`), not by the
+            // top edge of tall regions (matrices, solve results); keep that order.
+            let y = match (&kind, num_attr(reg, "align-y")) {
+                (RegionKind::Math { .. }, Some(ay)) => y.max((ay - 9.0) * SCALE),
+                _ => y,
+            };
             ws.regions.push(Region { id, x, y, kind });
         }
     }
@@ -185,17 +191,30 @@ fn convert_region(cx: &mut Cx, body: Node, w: Option<f32>, h: Option<f32>) -> Re
 // ---------------------------------------------------------------------- math
 
 fn convert_math(cx: &mut Cx, math: Node, w: Option<f32>) -> RegionKind {
-    let Some(top) = kids(math).into_iter().next() else {
+    let Some(mut top) = kids(math).into_iter().next() else {
         cx.warn("пустая математическая область");
         return note("[Пустая область]", w);
     };
+    // `<ml:provenance>` wraps the real expression after its metadata children.
+    if lname(top) == "provenance" {
+        match kids(top).into_iter().find(|k| is_math_ns(*k)) {
+            Some(inner) => top = inner,
+            None => {
+                cx.warn("пустая математическая область");
+                return note("[Пустая область]", w);
+            }
+        }
+    }
     if math.descendants().any(|n| n.is_element() && lname(n) == "program") {
         cx.warn("программы (блоки Mathcad) не поддерживаются, область преобразована в текст");
         return note(&format!("[Программа Mathcad не поддерживается]\n{}", dump(top)), w);
     }
-    match conv_stmt(cx, top) {
-        Ok(stmt) => {
-            let src = stmt.to_string();
+    let res = match vector_lhs(cx, top) {
+        Some(r) => r,
+        None => conv_stmt(cx, top).map(|s| s.to_string()),
+    };
+    match res {
+        Ok(src) => {
             match parse_statement(&src) {
                 Ok(_) => RegionKind::Math { source: src },
                 Err(e) => {
@@ -212,6 +231,19 @@ fn convert_math(cx: &mut Cx, math: Node, w: Option<f32>) -> RegionKind {
             note(&dump(top), w)
         }
     }
+}
+
+/// `[x; y] := Find(x, y)`: a definition whose left side is a vector of names.
+fn vector_lhs(cx: &mut Cx, n: Node) -> Option<R<String>> {
+    if lname(n) != "define" {
+        return None;
+    }
+    let ks = kids(n);
+    if ks.len() != 2 || lname(ks[0]) != "matrix" || !kids(ks[0]).iter().all(|k| lname(*k) == "id") {
+        return None;
+    }
+    let names: R<Vec<String>> = kids(ks[0]).into_iter().map(id_name).collect();
+    Some(names.and_then(|names| Ok(format!("[{}] := {}", names.join("; "), conv(cx, ks[1])?))))
 }
 
 fn conv_stmt(cx: &mut Cx, n: Node) -> R<Stmt> {
@@ -361,6 +393,15 @@ fn conv(cx: &mut Cx, n: Node) -> R<Expr> {
             need(&ks, 1, "parens")?;
             conv(cx, ks[0])
         }
+        // `p := Find(p)` stored as an evaluation with its cached result: keep the expression
+        "eval" => {
+            let inner = kids(n).into_iter().find(|k| lname(*k) != "result" && lname(*k) != "unitOverride");
+            conv(cx, inner.ok_or("пустое вычисление")?)
+        }
+        "provenance" => {
+            let inner = kids(n).into_iter().find(|k| is_math_ns(*k)).ok_or("пустая обёртка provenance")?;
+            conv(cx, inner)
+        }
         "apply" => conv_apply(cx, n),
         "matrix" => conv_matrix(cx, n),
         "range" => range_from(cx, &kids(n)),
@@ -500,6 +541,8 @@ fn conv_apply(cx: &mut Cx, n: Node) -> R<Expr> {
             let name = id_name(head)?;
             Ok(Expr::Call(name, conv_all(cx, args)?))
         }
+        // solve-block closers: `Find(x, y)`, `Minimize(f, x)`, ...
+        "Find" | "Minerr" | "Maximize" | "Minimize" => Ok(Expr::Call(hn.to_string(), conv_all(cx, args)?)),
         other => Err(format!("неподдерживаемая операция <{other}>")),
     }
 }

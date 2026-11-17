@@ -129,6 +129,17 @@ fn malformed_input_does_not_panic() {
 }
 
 #[test]
+fn solve_block() {
+    let (ws, warns) = load("solve.xmcd");
+    assert!(warns.is_empty(), "{warns:?}");
+    assert_eq!(source(&ws, 3), "Given");
+    assert_eq!(source(&ws, 4), "x + y == 3");
+    assert_eq!(source(&ws, 6), "Find(x, y) =");
+    let v = shown(&ws, 6);
+    assert!(v.contains('2') && v.contains('1'), "{v}");
+}
+
+#[test]
 fn json_roundtrip() {
     let (ws, _) = load("units.xmcd");
     assert_eq!(Worksheet::from_json(&ws.to_json()).unwrap(), ws);
