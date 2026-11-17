@@ -47,6 +47,10 @@ f(3) =                        evaluate -> f(3) = 10
 M = kN*m                      evaluate and display in a unit
 i := 0..10    x := 0, 0.1..1  range variables (step 1 / step 0.1)
 v[i] := i^2                   indexed definition -> vector
+d := L/n =    d := L/n = mm   definition that also shows its value (optionally in a unit)
+[a; b; c] := M*v              vector definition (RHS must be a vector of the same length)
+M^<1>                         matrix column (from ORIGIN) -> column vector
+vectorize(v*w)  vectorize(f(v))  element-wise evaluation (Mathcad arrow); plain v*w is a dot product
 A := [1, 2; 3, 4]             matrix (commas: columns, semicolons: rows)
 A[0, 1] =  det(A) =  A^-1 =   index from ORIGIN = 0
 sum(k, 1, 10, k^2) =          385

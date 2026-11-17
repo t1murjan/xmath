@@ -189,6 +189,20 @@ fn convert_math(cx: &mut Cx, math: Node, w: Option<f32>) -> RegionKind {
         cx.warn("пустая математическая область");
         return note("[Пустая область]", w);
     };
+    // a bare comma list (axis labels next to plots, `a, b, c`) is shown as text
+    if lname(top) == "sequence" {
+        let mut items = Vec::new();
+        for k in kids(top) {
+            if lname(k) == "placeholder" {
+                continue;
+            }
+            match conv(cx, k) {
+                Ok(e) => items.push(e.to_string()),
+                Err(e) => cx.warn(format!("элемент списка отброшен ({e})")),
+            }
+        }
+        return note(&items.join(", "), w);
+    }
     let has_program = math.descendants().any(|n| n.is_element() && lname(n) == "program");
     let fallback = |cx: &mut Cx, why: String| {
         if has_program {
@@ -219,30 +233,19 @@ fn conv_stmt(cx: &mut Cx, n: Node) -> R<Stmt> {
                 return Err("определение должно содержать две части".into());
             }
             let target = conv_target(cx, ks[0])?;
-            let expr = conv(cx, ks[1])?;
-            Ok(Stmt::Define { target, expr, global: lname(n) == "globalDefine" })
+            // `d := expr = unit`: the right side is an `<eval>` holding the expression,
+            // the display unit and the cached result
+            let (expr, show) = if lname(ks[1]) == "eval" {
+                let (expr, unit) = conv_eval(cx, ks[1])?;
+                (expr, Some(unit))
+            } else {
+                (conv(cx, ks[1])?, None)
+            };
+            Ok(Stmt::Define { target, expr, global: lname(n) == "globalDefine", show })
         }
         "eval" => {
-            let mut expr = None;
-            let mut unit = None;
-            for k in &ks {
-                match lname(*k) {
-                    "result" => {}
-                    "unitOverride" => {
-                        if let Some(u) = kids(*k).into_iter().next() {
-                            if lname(u) != "placeholder" {
-                                match conv(cx, u) {
-                                    Ok(e) => unit = Some(e),
-                                    Err(e) => cx.warn(format!("единица вывода отброшена ({e})")),
-                                }
-                            }
-                        }
-                    }
-                    _ if expr.is_none() => expr = Some(conv(cx, *k)?),
-                    _ => {}
-                }
-            }
-            Ok(Stmt::Eval { expr: expr.ok_or("пустое вычисление")?, unit })
+            let (expr, unit) = conv_eval(cx, n)?;
+            Ok(Stmt::Eval { expr, unit })
         }
         "symEval" => {
             cx.warn("символьное вычисление (→) заменено численным (=)");
@@ -253,8 +256,48 @@ fn conv_stmt(cx: &mut Cx, n: Node) -> R<Stmt> {
     }
 }
 
+/// The content of an `<eval>`: the expression and its optional display unit
+/// (the cached `<result>` is recomputed).
+fn conv_eval(cx: &mut Cx, n: Node) -> R<(Expr, Option<Expr>)> {
+    let mut expr = None;
+    let mut unit = None;
+    for k in kids(n) {
+        match lname(k) {
+            "result" => {}
+            "unitOverride" => {
+                if let Some(u) = kids(k).into_iter().next() {
+                    if lname(u) != "placeholder" {
+                        match conv(cx, u) {
+                            Ok(e) => unit = Some(e),
+                            Err(e) => cx.warn(format!("единица вывода отброшена ({e})")),
+                        }
+                    }
+                }
+            }
+            _ if expr.is_none() => expr = Some(conv(cx, k)?),
+            _ => {}
+        }
+    }
+    Ok((expr.ok_or("пустое вычисление")?, unit))
+}
+
 fn conv_target(cx: &mut Cx, n: Node) -> R<Target> {
     match lname(n) {
+        "matrix" => {
+            let rows: usize = n.attribute("rows").and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+            let cols: usize = n.attribute("cols").and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+            if rows != 1 && cols != 1 {
+                return Err("недопустимая левая часть определения (матрица имён)".into());
+            }
+            let mut names = Vec::new();
+            for k in kids(n) {
+                names.push(id_name(k).map_err(|_| "недопустимая левая часть определения: в векторе должны быть имена".to_string())?);
+            }
+            if names.is_empty() {
+                return Err("пустой вектор имён".into());
+            }
+            Ok(Target::Vector(names))
+        }
         "function" => {
             let ks = kids(n);
             let name = id_name(*ks.first().ok_or("функция без имени")?)?;
@@ -367,8 +410,12 @@ fn conv(cx: &mut Cx, n: Node) -> R<Expr> {
         }
         "matrix" => conv_matrix(cx, n),
         "range" => range_from(cx, &kids(n)),
-        "vectorize" | "symEval" => {
-            cx.warn(format!("оператор <{}> отброшен", lname(n)));
+        "vectorize" => {
+            let ks = kids(n);
+            Ok(Expr::Vectorize(Box::new(conv(cx, *ks.first().ok_or("пустой оператор vectorize")?)?)))
+        }
+        "symEval" => {
+            cx.warn("оператор <symEval> отброшен");
             let ks = kids(n);
             conv(cx, *ks.first().ok_or("пустой оператор")?)
         }
@@ -487,9 +534,12 @@ fn conv_apply(cx: &mut Cx, n: Node) -> R<Expr> {
             Ok(Expr::Index(Box::new(base), idx))
         }
         "vectorize" => {
-            cx.warn("оператор векторизации отброшен");
             need(args, 1, "vectorize")?;
-            conv(cx, args[0])
+            Ok(Expr::Vectorize(Box::new(conv(cx, args[0])?)))
+        }
+        "matcol" => {
+            need(args, 2, "matcol")?;
+            Ok(Expr::MatCol(Box::new(conv(cx, args[0])?), Box::new(conv(cx, args[1])?)))
         }
         "transpose" => {
             need(args, 1, "transpose")?;
@@ -552,6 +602,7 @@ fn conv_pstmt(cx: &mut Cx, n: Node) -> R<PStmt> {
             let target = match conv_target(cx, ks[0])? {
                 t @ (Target::Var(_) | Target::Indexed(..)) => t,
                 Target::Func(..) => return Err("в программе нельзя определять функции".into()),
+                Target::Vector(_) => return Err("в программе нельзя использовать векторное определение".into()),
             };
             Ok(PStmt::Assign(target, conv(cx, ks[1])?))
         }
@@ -632,6 +683,11 @@ fn binding(cx: &mut Cx, op: Node, args: &[Node]) -> R<Expr> {
                 a.push(Expr::Num(order));
             }
             Ok(Expr::Call("diff".into(), a))
+        }
+        "summation" | "product" if bounds.is_empty() => {
+            // `Σ_i f(i)` over a range variable `i`
+            let f = if name == "summation" { "sum" } else { "prod" };
+            Ok(Expr::Call(f.into(), vec![v, body]))
         }
         "summation" | "product" => {
             if bounds.len() != 2 {

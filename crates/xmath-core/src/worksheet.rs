@@ -1,7 +1,7 @@
 //! The worksheet document: freely placed regions evaluated top-to-bottom,
 //! left-to-right, like in Mathcad.
 
-use crate::ast::{Expr, Stmt};
+use crate::ast::{Expr, Stmt, Target};
 use crate::eval::{Evaluator, Scope};
 use crate::format::{FormatOptions, ResultView};
 use crate::parser::{parse_expr, parse_statement, ParseError};
@@ -211,11 +211,8 @@ impl Worksheet {
 
         // Pass 1: global definitions (≡) are visible everywhere.
         for &i in &order {
-            if let Some(Ok(Stmt::Define { target, expr, global: true })) = &parsed[i] {
-                let output = match ev.define(target, expr) {
-                    Ok(()) => Output::None,
-                    Err(e) => Output::Error(e),
-                };
+            if let Some(Ok(Stmt::Define { target, expr, global: true, show })) = &parsed[i] {
+                let output = self.define_output(&mut ev, target, expr, show);
                 out.insert(self.regions[i].id, RegionOutput { stmt: parsed[i].clone(), output });
             }
         }
@@ -237,30 +234,42 @@ impl Worksheet {
 
     fn eval_stmt(&self, ev: &mut Evaluator, stmt: &Stmt) -> Output {
         let result: EResult<Output> = (|| match stmt {
-            Stmt::Define { target, expr, .. } => {
-                ev.define(target, expr)?;
-                Ok(Output::None)
-            }
+            Stmt::Define { target, expr, show, .. } => return Ok(self.define_output(ev, target, expr, show)),
             Stmt::Eval { expr, unit } => {
                 let sc = ev.top_scope();
                 let v = ev.eval_iterated(expr, &sc)?;
-                let u = match unit {
-                    None => None,
-                    Some(u) => Some(ev.eval(u, &sc)?.as_num().map_err(|_| "единица отображения должна быть скаляром".to_string())?),
-                };
-                // `T = °C`: offset display unit (zero point in kelvin), unless shadowed
-                let off = match (unit, u) {
-                    (Some(crate::Expr::Var(n)), Some(un)) => crate::units::offset_unit(n)
-                        .filter(|d| un.v.re == d.factor)
-                        .map_or(0.0, |d| d.offset_si()),
-                    _ => 0.0,
-                };
-                let view = ResultView::from_value_offset(&v, u, off, &self.format)?;
-                Ok(Output::Value { view, unit: unit.clone() })
+                self.value_output(ev, &v, unit)
             }
             Stmt::Show(_) => Ok(Output::None),
         })();
         result.unwrap_or_else(Output::Error)
+    }
+
+    /// Runs a definition; with a displayed value (`d := expr =`) the output is that value.
+    fn define_output(&self, ev: &mut Evaluator, target: &Target, expr: &Expr, show: &Option<Option<Expr>>) -> Output {
+        let r = ev.define_value(target, expr).and_then(|v| match show {
+            None => Ok(Output::None),
+            Some(unit) => self.value_output(ev, &v, unit),
+        });
+        r.unwrap_or_else(Output::Error)
+    }
+
+    /// The displayed result of a value in the optional display unit.
+    fn value_output(&self, ev: &Evaluator, v: &Value, unit: &Option<Expr>) -> EResult<Output> {
+        let sc = ev.top_scope();
+        let u = match unit {
+            None => None,
+            Some(u) => Some(ev.eval(u, &sc)?.as_num().map_err(|_| "единица отображения должна быть скаляром".to_string())?),
+        };
+        // `T = °C`: offset display unit (zero point in kelvin), unless shadowed
+        let off = match (unit, u) {
+            (Some(crate::Expr::Var(n)), Some(un)) => crate::units::offset_unit(n)
+                .filter(|d| un.v.re == d.factor)
+                .map_or(0.0, |d| d.offset_si()),
+            _ => 0.0,
+        };
+        let view = ResultView::from_value_offset(v, u, off, &self.format)?;
+        Ok(Output::Value { view, unit: unit.clone() })
     }
 }
 
