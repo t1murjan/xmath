@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/xmath-core", "crates/xmath-cli"]
+members = ["crates/xmath-core", "crates/xmath-cli", "crates/xmath-gui"]
 
 [workspace.package]
 version = "0.1.0"

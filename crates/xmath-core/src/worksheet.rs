@@ -54,8 +54,10 @@ pub enum RegionKind {
     },
     Plot {
         /// Abscissa expression (usually a range variable).
+        #[serde(rename = "x_expr")]
         x: String,
         /// Ordinate expressions.
+        #[serde(rename = "y_exprs")]
         y: Vec<String>,
         #[serde(default = "default_plot_w")]
         width: f32,
@@ -158,6 +160,8 @@ impl Worksheet {
     }
 
     pub fn to_json(&self) -> String {
+        // (plot expressions are stored as `x_expr`/`y_exprs`, so they don't clash
+        // with the region position `x`/`y`)
         serde_json::to_string_pretty(self).expect("worksheet serialization")
     }
 

@@ -1,0 +1,18 @@
+[package]
+name = "xmath-gui"
+description = "xmath desktop application with a Mathcad 15 style interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "xmath"
+path = "src/main.rs"
+
+[dependencies]
+xmath-core.workspace = true
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "wayland", "x11", "persistence"] }
+egui = "0.31"
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+serde_json.workspace = true

@@ -1,0 +1,204 @@
+{
+ "version": 1,
+ "format": {
+  "precision": 3,
+  "exp_threshold": 3,
+  "zero_threshold": 15
+ },
+ "regions": [
+  {
+   "x": 24,
+   "y": 16,
+   "type": "text",
+   "text": "Однопролётная балка под равномерной нагрузкой",
+   "width": 320.0,
+   "style": {
+    "size": 14.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 1
+  },
+  {
+   "x": 24,
+   "y": 52,
+   "type": "text",
+   "text": "Исходные данные",
+   "width": 320.0,
+   "style": {
+    "size": 10.0,
+    "bold": false,
+    "italic": false,
+    "underline": false
+   },
+   "id": 2
+  },
+  {
+   "x": 24,
+   "y": 80,
+   "type": "math",
+   "source": "L := 6 m",
+   "id": 3
+  },
+  {
+   "x": 200,
+   "y": 80,
+   "type": "math",
+   "source": "q := 12 kN/m",
+   "id": 4
+  },
+  {
+   "x": 24,
+   "y": 116,
+   "type": "math",
+   "source": "E := 2.1*10^5 MPa",
+   "id": 5
+  },
+  {
+   "x": 200,
+   "y": 116,
+   "type": "math",
+   "source": "I.x := 8356 cm^4",
+   "id": 6
+  },
+  {
+   "x": 400,
+   "y": 116,
+   "type": "math",
+   "source": "W.x := 557 cm^3",
+   "id": 7
+  },
+  {
+   "x": 24,
+   "y": 160,
+   "type": "text",
+   "text": "Усилия",
+   "width": 320.0,
+   "style": {
+    "size": 10.0,
+    "bold": false,
+    "italic": false,
+    "underline": false
+   },
+   "id": 8
+  },
+  {
+   "x": 24,
+   "y": 188,
+   "type": "math",
+   "source": "R := q*L/2",
+   "id": 9
+  },
+  {
+   "x": 200,
+   "y": 188,
+   "type": "math",
+   "source": "R = kN",
+   "id": 10
+  },
+  {
+   "x": 24,
+   "y": 224,
+   "type": "math",
+   "source": "M.max := q*L^2/8",
+   "id": 11
+  },
+  {
+   "x": 200,
+   "y": 224,
+   "type": "math",
+   "source": "M.max = kN*m",
+   "id": 12
+  },
+  {
+   "x": 24,
+   "y": 264,
+   "type": "math",
+   "source": "σ := M.max/W.x",
+   "id": 13
+  },
+  {
+   "x": 200,
+   "y": 264,
+   "type": "math",
+   "source": "σ = MPa",
+   "id": 14
+  },
+  {
+   "x": 24,
+   "y": 304,
+   "type": "text",
+   "text": "Прогиб",
+   "width": 320.0,
+   "style": {
+    "size": 10.0,
+    "bold": false,
+    "italic": false,
+    "underline": false
+   },
+   "id": 15
+  },
+  {
+   "x": 24,
+   "y": 332,
+   "type": "math",
+   "source": "f := 5*q*L^4/(384*E*I.x)",
+   "id": 16
+  },
+  {
+   "x": 260,
+   "y": 332,
+   "type": "math",
+   "source": "f = mm",
+   "id": 17
+  },
+  {
+   "x": 400,
+   "y": 332,
+   "type": "math",
+   "source": "L/f =",
+   "id": 18
+  },
+  {
+   "x": 24,
+   "y": 384,
+   "type": "text",
+   "text": "Эпюра моментов M(z), кН·м",
+   "width": 320.0,
+   "style": {
+    "size": 10.0,
+    "bold": false,
+    "italic": false,
+    "underline": false
+   },
+   "id": 19
+  },
+  {
+   "x": 24,
+   "y": 412,
+   "type": "math",
+   "source": "z := 0 m, 0.1 m..L",
+   "id": 20
+  },
+  {
+   "x": 24,
+   "y": 448,
+   "type": "math",
+   "source": "M(z) := q*z*(L - z)/2",
+   "id": 21
+  },
+  {
+   "x": 24,
+   "y": 488,
+   "type": "plot",
+   "x_expr": "z",
+   "y_exprs": [
+    "M(z)/(kN*m)"
+   ],
+   "width": 360.0,
+   "height": 220.0,
+   "id": 22
+  }
+ ]
+}

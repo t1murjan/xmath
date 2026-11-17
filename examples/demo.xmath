@@ -1,0 +1,324 @@
+{
+ "version": 1,
+ "format": {
+  "precision": 3,
+  "exp_threshold": 3,
+  "zero_threshold": 15
+ },
+ "regions": [
+  {
+   "x": 24,
+   "y": 16,
+   "type": "text",
+   "text": "Знакомство с xmath",
+   "width": 320.0,
+   "style": {
+    "size": 18.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 1
+  },
+  {
+   "x": 24,
+   "y": 56,
+   "type": "text",
+   "text": "Определения (:=) и вычисления (=). Щёлкните по формуле, чтобы изменить её.",
+   "width": 320.0,
+   "style": {
+    "size": 10.0,
+    "bold": false,
+    "italic": false,
+    "underline": false
+   },
+   "id": 2
+  },
+  {
+   "x": 24,
+   "y": 88,
+   "type": "math",
+   "source": "m := 7",
+   "id": 3
+  },
+  {
+   "x": 160,
+   "y": 88,
+   "type": "math",
+   "source": "p := 8",
+   "id": 4
+  },
+  {
+   "x": 24,
+   "y": 128,
+   "type": "math",
+   "source": "f(x) := x^3 + p*x^2 + m",
+   "id": 5
+  },
+  {
+   "x": 320,
+   "y": 128,
+   "type": "math",
+   "source": "g(x) := -p*x^2 - m",
+   "id": 6
+  },
+  {
+   "x": 24,
+   "y": 176,
+   "type": "math",
+   "source": "f(2) =",
+   "id": 7
+  },
+  {
+   "x": 160,
+   "y": 176,
+   "type": "math",
+   "source": "g(-1) =",
+   "id": 8
+  },
+  {
+   "x": 24,
+   "y": 216,
+   "type": "text",
+   "text": "№ 1. График и корень уравнения",
+   "width": 320.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 9
+  },
+  {
+   "x": 24,
+   "y": 248,
+   "type": "plot",
+   "x_expr": "x",
+   "y_exprs": [
+    "f(x)",
+    "g(x)"
+   ],
+   "width": 360.0,
+   "height": 220.0,
+   "id": 10
+  },
+  {
+   "x": 500,
+   "y": 264,
+   "type": "math",
+   "source": "root(f(x), x, -9, -8) =",
+   "id": 11
+  },
+  {
+   "x": 500,
+   "y": 312,
+   "type": "math",
+   "source": "polyroots([m, 0, p, 1]) =",
+   "id": 12
+  },
+  {
+   "x": 24,
+   "y": 520,
+   "type": "text",
+   "text": "Единицы измерения",
+   "width": 320.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 13
+  },
+  {
+   "x": 24,
+   "y": 552,
+   "type": "math",
+   "source": "L := 6 m",
+   "id": 14
+  },
+  {
+   "x": 160,
+   "y": 552,
+   "type": "math",
+   "source": "q := 12 kN/m",
+   "id": 15
+  },
+  {
+   "x": 24,
+   "y": 592,
+   "type": "math",
+   "source": "M := q*L^2/8",
+   "id": 16
+  },
+  {
+   "x": 220,
+   "y": 592,
+   "type": "math",
+   "source": "M =",
+   "id": 17
+  },
+  {
+   "x": 380,
+   "y": 592,
+   "type": "math",
+   "source": "M = kN*m",
+   "id": 18
+  },
+  {
+   "x": 24,
+   "y": 640,
+   "type": "math",
+   "source": "v := 72 kph",
+   "id": 19
+  },
+  {
+   "x": 220,
+   "y": 640,
+   "type": "math",
+   "source": "v = m/s",
+   "id": 20
+  },
+  {
+   "x": 24,
+   "y": 688,
+   "type": "text",
+   "text": "Ранжированные переменные и таблицы",
+   "width": 320.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 21
+  },
+  {
+   "x": 24,
+   "y": 720,
+   "type": "math",
+   "source": "i := 0..5",
+   "id": 22
+  },
+  {
+   "x": 160,
+   "y": 720,
+   "type": "math",
+   "source": "y[i] := i^2",
+   "id": 23
+  },
+  {
+   "x": 320,
+   "y": 720,
+   "type": "math",
+   "source": "y =",
+   "id": 24
+  },
+  {
+   "x": 440,
+   "y": 720,
+   "type": "math",
+   "source": "sqrt(i) =",
+   "id": 25
+  },
+  {
+   "x": 24,
+   "y": 880,
+   "type": "text",
+   "text": "Матрицы",
+   "width": 320.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 26
+  },
+  {
+   "x": 24,
+   "y": 912,
+   "type": "math",
+   "source": "A := [4, 3; 6, 3]",
+   "id": 27
+  },
+  {
+   "x": 220,
+   "y": 912,
+   "type": "math",
+   "source": "A^-1 =",
+   "id": 28
+  },
+  {
+   "x": 420,
+   "y": 912,
+   "type": "math",
+   "source": "|A| =",
+   "id": 29
+  },
+  {
+   "x": 24,
+   "y": 976,
+   "type": "math",
+   "source": "b := [10; 12]",
+   "id": 30
+  },
+  {
+   "x": 220,
+   "y": 976,
+   "type": "math",
+   "source": "lsolve(A, b) =",
+   "id": 31
+  },
+  {
+   "x": 24,
+   "y": 1048,
+   "type": "text",
+   "text": "Анализ",
+   "width": 320.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 32
+  },
+  {
+   "x": 24,
+   "y": 1080,
+   "type": "math",
+   "source": "integrate(sin(x), x, 0, π) =",
+   "id": 33
+  },
+  {
+   "x": 320,
+   "y": 1080,
+   "type": "math",
+   "source": "integrate(exp(-x^2), x, -∞, ∞) =",
+   "id": 34
+  },
+  {
+   "x": 24,
+   "y": 1136,
+   "type": "math",
+   "source": "x := 1",
+   "id": 35
+  },
+  {
+   "x": 160,
+   "y": 1136,
+   "type": "math",
+   "source": "diff(x^3, x) =",
+   "id": 36
+  },
+  {
+   "x": 360,
+   "y": 1136,
+   "type": "math",
+   "source": "sum(k, 1, 100, k^2) =",
+   "id": 37
+  }
+ ]
+}

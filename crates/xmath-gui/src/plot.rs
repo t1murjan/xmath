@@ -70,7 +70,7 @@ pub fn paint(painter: &Painter, rect: Rect, data: &PlotData, font: f32) {
     let sx = |x: f64| rect.left() + ((x - x0) / (x1 - x0)) as f32 * rect.width();
     let sy = |y: f64| rect.bottom() - ((y - y0) / (y1 - y0)) as f32 * rect.height();
 
-    let grid = Stroke::new(1.0, GRID);
+    let grid = Stroke::new(1.0_f32, GRID);
     let mut k = 0;
     loop {
         let x = x0 + k as f64 * xs;
@@ -93,7 +93,7 @@ pub fn paint(painter: &Painter, rect: Rect, data: &PlotData, font: f32) {
     // crossed axes through zero (or along the border when zero is outside)
     let ax_y = if y0 <= 0.0 && y1 >= 0.0 { sy(0.0) } else { rect.bottom() };
     let ax_x = if x0 <= 0.0 && x1 >= 0.0 { sx(0.0) } else { rect.left() };
-    let black = Stroke::new(1.0, Color32::BLACK);
+    let black = Stroke::new(1.0_f32, Color32::BLACK);
     painter.line_segment([Pos2::new(rect.left(), ax_y), Pos2::new(rect.right(), ax_y)], black);
     painter.line_segment([Pos2::new(ax_x, rect.top()), Pos2::new(ax_x, rect.bottom())], black);
 
@@ -125,7 +125,7 @@ pub fn paint(painter: &Painter, rect: Rect, data: &PlotData, font: f32) {
 
     let clip = painter.with_clip_rect(rect.expand(1.0));
     for (i, s) in data.series.iter().enumerate() {
-        let stroke = Stroke::new(2.0, TRACE_COLORS[i % TRACE_COLORS.len()]);
+        let stroke = Stroke::new(2.0_f32, TRACE_COLORS[i % TRACE_COLORS.len()]);
         let mut run: Vec<Pos2> = Vec::new();
         let flush = |run: &mut Vec<Pos2>| {
             if run.len() > 1 {
@@ -147,7 +147,7 @@ pub fn paint(painter: &Painter, rect: Rect, data: &PlotData, font: f32) {
     let r = rect;
     painter.add(Shape::closed_line(
         vec![r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()],
-        Stroke::new(1.0, Color32::from_gray(90)),
+        Stroke::new(1.0_f32, Color32::from_gray(90)),
     ));
 }
 
