@@ -246,7 +246,14 @@ impl Worksheet {
                     None => None,
                     Some(u) => Some(ev.eval(u, &sc)?.as_num().map_err(|_| "единица отображения должна быть скаляром".to_string())?),
                 };
-                let view = ResultView::from_value(&v, u, &self.format)?;
+                // `T = °C`: offset display unit (zero point in kelvin), unless shadowed
+                let off = match (unit, u) {
+                    (Some(crate::Expr::Var(n)), Some(un)) => crate::units::offset_unit(n)
+                        .filter(|d| un.v.re == d.factor)
+                        .map_or(0.0, |d| d.offset_si()),
+                    _ => 0.0,
+                };
+                let view = ResultView::from_value_offset(&v, u, off, &self.format)?;
                 Ok(Output::Value { view, unit: unit.clone() })
             }
             Stmt::Show(_) => Ok(Output::None),

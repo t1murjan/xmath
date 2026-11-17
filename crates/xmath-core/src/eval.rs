@@ -77,6 +77,33 @@ impl Evaluator {
         units::lookup(name).map(|u| Value::Num(Num::with_dim(u.factor, u.dim)))
     }
 
+    /// The built-in offset unit (`°C`, `°F`) named by `e`, unless the user
+    /// shadowed the name with a definition.
+    fn offset_unit_of(&self, e: &Expr, sc: &Scope) -> Option<&'static units::UnitDef> {
+        let Expr::Var(n) = e else { return None };
+        let ud = units::offset_unit(n)?;
+        match self.lookup(n, sc) {
+            Some(Value::Num(v)) if v.dim == ud.dim && v.v.re == ud.factor && v.v.im == 0.0 => Some(ud),
+            _ => None,
+        }
+    }
+
+    /// `e` has the shape `<expr> °C` (implicit or explicit multiplication).
+    fn is_offset_suffix(&self, e: &Expr, sc: &Scope) -> bool {
+        matches!(e, Expr::Binary(BinOp::Mul, _, t) if self.offset_unit_of(t, sc).is_some())
+    }
+
+    /// `x * °C` with a dimensionless real scalar `x` -> `(x + offset) K`.
+    fn offset_temperature(&self, x: &Value, t: &Expr, sc: &Scope) -> Option<Value> {
+        let ud = self.offset_unit_of(t, sc)?;
+        match x {
+            Value::Num(n) if n.dim.is_none() && n.v.im == 0.0 => {
+                Some(Value::Num(Num::with_dim((n.v.re + ud.offset) * ud.factor, ud.dim)))
+            }
+            _ => None,
+        }
+    }
+
     fn origin(&self, sc: &Scope) -> i64 {
         self.lookup("ORIGIN", sc).and_then(|v| v.as_int().ok()).unwrap_or(0)
     }
@@ -105,8 +132,20 @@ impl Evaluator {
                     }
                     _ => {}
                 }
-                let x = self.eval(a, sc)?;
+                // `x °C` / `x °F` (units.rs: offset units) is an absolute temperature;
+                // as the left operand of * / ^ the offset unit behaves like K.
+                let x = if matches!(op, BinOp::Mul | BinOp::Div | BinOp::Pow) && self.is_offset_suffix(a, sc) {
+                    let Expr::Binary(_, v, t) = &**a else { unreachable!() };
+                    mul(&self.eval(v, sc)?, &self.eval(t, sc)?)?
+                } else {
+                    self.eval(a, sc)?
+                };
                 let y = self.eval(b, sc)?;
+                if matches!(op, BinOp::Mul) {
+                    if let Some(t) = self.offset_temperature(&x, b, sc) {
+                        return Ok(t);
+                    }
+                }
                 match op {
                     BinOp::Add => add(&x, &y),
                     BinOp::Sub => sub(&x, &y),

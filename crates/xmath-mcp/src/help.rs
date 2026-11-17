@@ -170,7 +170,7 @@ fn dim_groups() -> Vec<(&'static str, Dim)> {
         ("luminous intensity", units::LUMINOSITY),
         ("area", units::AREA),
         ("volume", units::VOLUME),
-        ("frequency", units::FREQUENCY),
+        ("frequency / radioactivity (Hz, Bq, Ci)", units::FREQUENCY),
         ("velocity", units::VELOCITY),
         ("force", units::FORCE),
         ("pressure / stress", units::PRESSURE),
@@ -184,6 +184,11 @@ fn dim_groups() -> Vec<(&'static str, Dim)> {
         ("inductance", units::INDUCTANCE),
         ("magnetic flux", units::MAG_FLUX),
         ("magnetic flux density", units::MAG_FLUX_DENSITY),
+        ("illuminance", units::ILLUMINANCE),
+        ("absorbed dose (Gy, Sv)", units::DOSE),
+        ("dynamic viscosity", units::DYN_VISCOSITY),
+        ("kinematic viscosity", units::KIN_VISCOSITY),
+        ("dimensionless (angle, %)", Dim::NONE),
     ]
 }
 

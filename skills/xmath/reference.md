@@ -40,11 +40,24 @@ Write units right after the number: `5 kN`, `12 kN/m`, `210 GPa`, `30 deg`. Unit
 Use `expr = unit` to choose the display unit: `M = kN*m`, `sigma = MPa`, `L = mm`.
 Call `list_units` for the exact table. Highlights:
 
-* length: `m km dm cm mm μm nm in ft yd mi`; mass: `kg gm mg tonne lb`; time: `s ms min hr day week yr`
-* force: `N kN MN kgf tonnef lbf kip`; pressure/stress: `Pa kPa MPa GPa bar atm psi ksi mmHg`
-* energy/power: `J kJ MJ cal kcal Wh kWh eV BTU`, `W kW MW hp`
-* electric: `A mA kA V kV mV Ω kΩ MΩ S F μF nF pF H mH Wb T C`; frequency: `Hz kHz MHz rpm`
-* temperature: `K` (differences `Δ°C`). Area/volume: `ha L mL liter gal`. Speed: `kph mph`.
+* length: `m km dm cm mm μm nm pm Å in ft yd mi nmi mil au ly pc`; mass: `kg gm mg tonne mton lb oz ton slug amu` (`gm` = gram; `g` is gravity)
+* time: `s sec ms μs ns ps min hr day wk yr`; area: `ha acre`; volume: `L mL dL cL hL liter gal qt pt fl_oz bbl`; speed: `kph mph knot`
+* force: `N kN MN GN kgf tonnef dyne lbf kip ozf tonf`; pressure/stress: `Pa kPa MPa GPa hPa bar mbar atm at psi ksi torr mmHg inHg mmH2O inH2O`
+* energy/power: `J mJ kJ MJ GJ cal kcal Wh kWh MWh eV keV MeV BTU erg`, `W mW kW MW GW hp`
+* electric: `A mA μA kA V mV μV kV Ω mΩ kΩ MΩ S mS μS F mF μF nF pF H mH μH nH C mC μC Wb T mT gauss`
+* frequency: `Hz kHz MHz GHz THz rpm`; radioactivity/dose: `Bq Ci Gy Sv`; light: `cd lm lx`; amount: `mol mmol kmol`
+* viscosity: `P cP St cSt`; angle: `rad mrad deg ° rev arcmin arcsec`; `%`.
+
+**Temperature (Mathcad 15 rules).** `K` and `R` (Rankine) are absolute units; `°C` (`degC`) and `°F` (`degF`) are *offset* units;
+`Δ°C`, `Δ°F` are differences. `T := 25 °C` stores 298.15 K (`x °C` = `(x + 273.15) K`, `x °F` = `(x + 459.67)·5/9 K`) and
+`T = °C` shows 25 (`T = °F` 77, `T = K` 298.15). The offset applies only when `°C`/`°F` is the last factor of a scalar
+number (`25 °C`, `x °C`) and as a display unit; anywhere else (`5 °C/s`, `°C^2`, a bare `°C`) it behaves as `K` / `Δ°C`.
+Add differences with `Δ°C`: `T + 10 Δ°C`. Subtracting two temperatures gives kelvin. A user definition (`R := 8.314`) shadows a unit name.
+
+**Result units.** Results are shown in SI automatically: a derived unit when the dimension matches exactly (`N Pa J W C V Ω S F H Wb T`;
+energy is `J`, never `N·m`; frequency is `1/s`), else the shortest combination (`Pa·s`, `W/(m·K)`, `N/m`, `kg/m^3`, `m^2/s`).
+The worksheet option `unit_system` (`si`, `mks`, `cgs`, `us` in `format`) changes only the display: CGS shows `cm gm dyne erg`,
+US shows `ft lb lbf psi hp R`. If the display unit has another dimension the rest is appended: `5 N = kg` gives `5 m/s^2` (i.e. 5 m/s^2·kg).
 
 ## 4. Functions (call `list_functions` for the full list)
 

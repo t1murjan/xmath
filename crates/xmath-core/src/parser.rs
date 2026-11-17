@@ -184,6 +184,13 @@ fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
                     }
                 }
             }
+            // difference units `Δ°C`, `Δ°F` (the degree sign is not an identifier char)
+            if i == start + 1 && c == 'Δ' && at(i) == '°' && at(i + 1).is_alphabetic() {
+                i += 1;
+                while is_ident_continue(at(i)) {
+                    i += 1;
+                }
+            }
             let text: String = chars[start..i].iter().map(|c| c.1).collect();
             let tok = match text.as_str() {
                 "and" => Tok::And,
