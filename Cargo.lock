@@ -3597,6 +3597,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "xmath-mcp"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "xmath-core",
+]
+
+[[package]]
 name = "xml-rs"
 version = "0.8.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
