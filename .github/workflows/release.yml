@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            ext: tar.gz
+          - name: windows-x86_64
+            os: windows-latest
+            ext: zip
+          - name: macos
+            os: macos-latest
+            ext: tar.gz
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install GUI system libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev
+      - name: Build
+        run: cargo build --release --workspace
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="xmath-${{ github.ref_name }}-${{ matrix.name }}"
+          mkdir "$dir"
+          for b in xmath xmath-cli xmath-mcp; do
+            for f in "target/release/$b" "target/release/$b.exe"; do
+              if [ -f "$f" ]; then cp "$f" "$dir/"; fi
+            done
+          done
+          cp README.md LICENSE-MIT LICENSE-APACHE "$dir/"
+          if [ "${{ matrix.ext }}" = zip ]; then
+            7z a "$dir.zip" "$dir"
+          else
+            tar czf "$dir.tar.gz" "$dir"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: xmath-*.${{ matrix.ext }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
