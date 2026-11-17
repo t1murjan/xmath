@@ -11,3 +11,4 @@ num-complex = "0.4"
 libm = "0.2"
 serde.workspace = true
 serde_json.workspace = true
+roxmltree = "0.20"

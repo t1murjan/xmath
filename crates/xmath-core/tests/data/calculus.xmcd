@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.mathsoft.com/worksheet30" xmlns:ml="http://schemas.mathsoft.com/math30">
+<regions>
+<region region-id="1" left="36" top="18" width="90" height="40"><math><ml:eval><ml:apply><ml:integral auto="true"/><ml:lambda><ml:boundVars><ml:id>x</ml:id></ml:boundVars><ml:apply><ml:pow/><ml:id>x</ml:id><ml:real>2</ml:real></ml:apply></ml:lambda><ml:bounds><ml:real>0</ml:real><ml:real>3</ml:real></ml:bounds></ml:apply></ml:eval></math></region>
+<region region-id="3" left="36" top="60" width="90" height="21"><math><ml:define><ml:id>x</ml:id><ml:real>2</ml:real></ml:define></math></region>
+<region region-id="2" left="36" top="90" width="90" height="40"><math><ml:eval><ml:apply><ml:derivative order="1"/><ml:lambda><ml:boundVars><ml:id>x</ml:id></ml:boundVars><ml:apply><ml:pow/><ml:id>x</ml:id><ml:real>3</ml:real></ml:apply></ml:lambda><ml:id>x</ml:id></ml:apply></ml:eval></math></region>
+<region region-id="4" left="36" top="130" width="90" height="40"><math><ml:eval><ml:apply><ml:summation/><ml:lambda><ml:boundVars><ml:id>k</ml:id></ml:boundVars><ml:id>k</ml:id></ml:lambda><ml:bounds><ml:real>1</ml:real><ml:real>10</ml:real></ml:bounds></ml:apply></ml:eval></math></region>
+<region region-id="5" left="36" top="180" width="90" height="40"><math><ml:eval><ml:apply><ml:product/><ml:lambda><ml:boundVars><ml:id>k</ml:id></ml:boundVars><ml:id>k</ml:id></ml:lambda><ml:bounds><ml:real>1</ml:real><ml:real>5</ml:real></ml:bounds></ml:apply></ml:eval></math></region>
+<region region-id="6" left="36" top="230" width="90" height="21"><math><ml:define><ml:id>j</ml:id><ml:range><ml:real>1</ml:real><ml:real>4</ml:real></ml:range></ml:define></math></region>
+<region region-id="7" left="36" top="260" width="90" height="40"><math><ml:eval><ml:apply><ml:rangeSum/><ml:lambda><ml:boundVars><ml:id>j</ml:id></ml:boundVars><ml:apply><ml:pow/><ml:id>j</ml:id><ml:real>2</ml:real></ml:apply></ml:lambda></ml:apply></ml:eval></math></region>
+<region region-id="8" left="36" top="310" width="90" height="21"><math><ml:eval><ml:apply><ml:nthRoot/><ml:real>27</ml:real><ml:real>3</ml:real></ml:apply></ml:eval></math></region>
+<region region-id="9" left="36" top="337" width="90" height="21"><math><ml:eval><ml:apply><ml:factorial/><ml:real>5</ml:real></ml:apply></ml:eval></math></region>
+</regions>
+</worksheet>

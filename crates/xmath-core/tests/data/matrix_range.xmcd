@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.mathsoft.com/worksheet30" xmlns:ml="http://schemas.mathsoft.com/math30">
+<regions>
+<region region-id="1" left="36" top="18" width="90" height="60"><math><ml:define><ml:id>M</ml:id><ml:matrix rows="2" cols="3"><ml:real>1</ml:real><ml:real>4</ml:real><ml:real>2</ml:real><ml:real>5</ml:real><ml:real>3</ml:real><ml:real>6</ml:real></ml:matrix></ml:define></math></region>
+<region region-id="2" left="36" top="90" width="90" height="21"><math><ml:eval><ml:id>M</ml:id></ml:eval></math></region>
+<region region-id="3" left="36" top="117" width="90" height="21"><math><ml:eval><ml:apply><ml:indexer/><ml:id>M</ml:id><ml:sequence><ml:real>0</ml:real><ml:real>1</ml:real></ml:sequence></ml:apply></ml:eval></math></region>
+<region region-id="4" left="36" top="144" width="90" height="21"><math><ml:eval><ml:apply><ml:transpose/><ml:id>M</ml:id></ml:apply></ml:eval></math></region>
+<region region-id="5" left="36" top="171" width="90" height="21"><math><ml:define><ml:id>i</ml:id><ml:range><ml:real>0</ml:real><ml:real>4</ml:real></ml:range></ml:define></math></region>
+<region region-id="6" left="36" top="198" width="90" height="21"><math><ml:define><ml:apply><ml:indexer/><ml:id>v</ml:id><ml:id>i</ml:id></ml:apply><ml:apply><ml:pow/><ml:id>i</ml:id><ml:real>2</ml:real></ml:apply></ml:define></math></region>
+<region region-id="7" left="36" top="225" width="90" height="21"><math><ml:eval><ml:apply><ml:indexer/><ml:id>v</ml:id><ml:real>3</ml:real></ml:apply></ml:eval></math></region>
+<region region-id="8" left="36" top="252" width="90" height="21"><math><ml:define><ml:id>x</ml:id><ml:range><ml:sequence><ml:real>0</ml:real><ml:real>0.5</ml:real></ml:sequence><ml:real>2</ml:real></ml:range></ml:define></math></region>
+<region region-id="9" left="36" top="279" width="90" height="21"><math><ml:eval><ml:apply><ml:id>rows</ml:id><ml:id>M</ml:id></ml:apply></ml:eval></math></region>
+<region region-id="10" left="36" top="306" width="90" height="21"><math><ml:eval><ml:apply><ml:vectorize/><ml:apply><ml:id>sin</ml:id><ml:id>x</ml:id></ml:apply></ml:apply></ml:eval></math></region>
+</regions>
+</worksheet>

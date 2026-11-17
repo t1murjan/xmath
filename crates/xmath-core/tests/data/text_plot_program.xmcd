@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.mathsoft.com/worksheet30" xmlns:ml="http://schemas.mathsoft.com/math30">
+<regions>
+<region region-id="1" left="36" top="18" width="300" height="40"><text use-page-width="false" push-down="false" lock-width="false"><p style="Normal" margin-left="0" text-align="left"><inlineAttr size="14"><b>Расчёт балки</b></inlineAttr></p><p style="Normal"><b>Второй абзац<br/>с переносом</b></p></text></region>
+<region region-id="2" left="36" top="70" width="300" height="40"><text><p>Площадь A<sub>1</sub> и x<sup>2</sup> заданы ниже.</p></text></region>
+<region region-id="3" left="36" top="120" width="300" height="21"><math><ml:define><ml:id>t</ml:id><ml:range><ml:real>0</ml:real><ml:real>10</ml:real></ml:range></ml:define></math></region>
+<region region-id="4" left="36" top="150" width="300" height="200"><plot><xyPlot><xyAxes><xAxis><ml:sequence><ml:id>t</ml:id></ml:sequence></xAxis><yAxis><ml:sequence><ml:apply><ml:pow/><ml:id>t</ml:id><ml:real>2</ml:real></ml:apply><ml:id>t</ml:id></ml:sequence></yAxis></xyAxes></xyPlot></plot></region>
+<region region-id="5" left="36" top="400" width="300" height="100"><plot><xyPlot><ml:placeholder/></xyPlot></plot></region>
+<region region-id="6" left="36" top="520" width="200" height="100"><math><ml:define><ml:function><ml:id>g</ml:id><ml:boundVars><ml:id>n</ml:id></ml:boundVars></ml:function><ml:program><ml:localDefine><ml:id>s</ml:id><ml:real>0</ml:real></ml:localDefine><ml:return><ml:id>s</ml:id></ml:return></ml:program></ml:define></math></region>
+<region region-id="7" left="36" top="640" width="200" height="100"><picture><png/></picture></region>
+<region region-id="8" left="36" top="760" width="200" height="30"><math><ml:eval><ml:apply><ml:id>foo</ml:id><ml:real>1</ml:real></ml:apply><ml:result><ml:real>1</ml:real></ml:result></ml:eval></math></region>
+<region region-id="9" left="36" top="800" width="200" height="30"><math><ml:eval><ml:weird><ml:real>1</ml:real></ml:weird></ml:eval></math></region>
+<region region-id="10" left="36" top="840" width="200" height="30"><math><ml:eval><ml:placeholder/></ml:eval></math></region>
+</regions>
+</worksheet>
