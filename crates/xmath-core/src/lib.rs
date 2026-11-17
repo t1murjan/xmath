@@ -7,6 +7,7 @@ pub mod ast;
 pub mod builtins;
 mod builtins_ext;
 pub mod eval;
+mod fitting;
 pub mod format;
 pub mod linalg;
 pub mod numeric;

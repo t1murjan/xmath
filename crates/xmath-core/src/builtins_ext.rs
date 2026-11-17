@@ -393,6 +393,18 @@ fn interp(args: &[Value]) -> EResult<Value> {
     }
     let kind = vs.data[0].v.re.round() as u8;
     let coef: Vec<f64> = vs.data[3..].iter().map(|n| n.v.re).collect();
+    if kind == 5 {
+        // loess: vs = [5, n, 0, span]
+        if coef.len() != 1 || vs.data[1].v.re as usize != xy.x.len() {
+            return Err("interp: vs не соответствует vx и vy".into());
+        }
+        return map1(&args[3], |t| {
+            if t.dim != xy.dx {
+                return Err("Единицы измерения не совпадают".into());
+            }
+            Ok(Num::with_dim(crate::fitting::loess_at(&xy.x, &xy.y, coef[0], t.v.re), xy.dy))
+        });
+    }
     if kind == 4 {
         return map1(&args[3], |t| {
             if t.dim != xy.dx {
@@ -852,7 +864,7 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
         "match" => match_fn(args, origin),
         "vlookup" => vh_lookup(args, origin, true),
         "hlookup" => vh_lookup(args, origin, false),
-        _ => return None,
+        _ => return crate::fitting::call(name, args),
     };
     Some(r)
 }

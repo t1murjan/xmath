@@ -270,8 +270,9 @@ impl Evaluator {
                 Ok(Value::Matrix(Matrix::new(nrows, ncols, data)))
             }
             Expr::Range(first, second, last) => {
-                let a = self.eval(first, sc)?.as_num()?;
-                let c = self.eval(last, sc)?.as_num()?;
+                let mut a = self.eval(first, sc)?.as_num()?;
+                let mut c = self.eval(last, sc)?.as_num()?;
+                unify_zero_dims(&mut a, &mut c);
                 if !a.is_real() || !c.is_real() {
                     return Err("границы диапазона должны быть вещественными".into());
                 }
@@ -280,7 +281,8 @@ impl Evaluator {
                 }
                 let step = match second {
                     Some(b) => {
-                        let b = self.eval(b, sc)?.as_num()?;
+                        let mut b = self.eval(b, sc)?.as_num()?;
+                        unify_zero_dims(&mut b, &mut a);
                         if b.dim != a.dim {
                             return Err("границы диапазона имеют разные единицы измерения".into());
                         }
@@ -480,6 +482,9 @@ impl Evaluator {
         if matches!(name, "rkfixed" | "Rkadapt" | "rkadapt") {
             return self.builtin_ode(name, &vals);
         }
+        if let Some(r) = crate::fitting::call_with(name, &vals, &|f, a| self.call_value(f, a)) {
+            return r.map_err(|e| format!("{name}: {e}"));
+        }
         if let Some(r) = builtins::call(name, &vals, self.origin(sc)) {
             return r.map_err(|e| format!("{name}: {e}"));
         }
@@ -634,8 +639,9 @@ impl Evaluator {
 
     fn integrate(&self, args: &[Expr], sc: &Scope) -> EResult<Value> {
         let var = self.bound_var(&args[1], "integrate")?;
-        let a = self.eval(&args[2], sc)?.as_num()?;
-        let b = self.eval(&args[3], sc)?.as_num()?;
+        let mut a = self.eval(&args[2], sc)?.as_num()?;
+        let mut b = self.eval(&args[3], sc)?.as_num()?;
+        unify_zero_dims(&mut a, &mut b);
         if a.dim != b.dim {
             return Err("пределы имеют разные единицы измерения".into());
         }
@@ -681,8 +687,9 @@ impl Evaluator {
     fn root(&self, args: &[Expr], sc: &Scope) -> EResult<Value> {
         let var = self.bound_var(&args[1], "root")?;
         if args.len() == 4 {
-            let a = self.eval(&args[2], sc)?.as_num()?;
-            let b = self.eval(&args[3], sc)?.as_num()?;
+            let mut a = self.eval(&args[2], sc)?.as_num()?;
+            let mut b = self.eval(&args[3], sc)?.as_num()?;
+            unify_zero_dims(&mut a, &mut b);
             if a.dim != b.dim {
                 return Err("границы интервала имеют разные единицы измерения".into());
             }

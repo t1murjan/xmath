@@ -68,6 +68,10 @@ Interpolation: `linterp(vx, vy, x)`; polynomials: `polyroots([c0; c1; c2])` (coe
 Special: `factorial gamma erf erfc dnorm pnorm`; conditional: `if(cond, a, b)`.
 Linear algebra: `eigenvals eigenvecs eigenvec rank cholesky lu qr svd svds geninv rref norm1 norm2 normi cond2 diag csort rsort`.
 Fitting: `lspline pspline cspline` + `interp(vs, vx, vy, x)`, `regress(vx, vy, k)` (also usable with `interp`), `slope intercept line corr`.
+Curve fits (return a column vector of parameters; `vg` is an initial guess): `expfit(vx, vy[, vg])` a*e^(b*x)+c; `lgsfit(vx, vy, vg)` a/(1+b*e^(-c*x)); `logfit(vx, vy, vg)` a*ln(x+b)+c; `lnfit(vx, vy)` a*ln(x)+b; `pwrfit(vx, vy, vg)` a*x^b+c; `sinfit(vx, vy, vg)` a*sin(x+b)+c; `medfit(vx, vy)`; `linfit(vx, vy, F)` with `F(x)` returning a vector of basis functions; `genfit(vx, vy, vg, F)` with `F(x, u)` returning `f` or `[f; df/du0; ...]` (Levenberg-Marquardt).
+Smoothing: `loess(vx, vy, span)` (use as `interp(loess(vx, vy, span), vx, vy, x)`), `ksmooth(vx, vy, b)`, `medsmooth(vy, n)`, `supsmooth(vx, vy)`; linear prediction `predict(v, m, n)` (Burg; needs at least 2m points).
+Random numbers (fixed seed, reproducible): `rnd(x)`, and vector generators `runif(m, a, b) rnorm(m, mu, sigma) rexp(m, r) rpois(m, lambda) rbinom(m, n, p) rgamma rchisq rbeta rt rlnorm rweibull rcauchy rlogis rgeom`; discrete distributions `dbinom pbinom dpois ppois`.
+A plain `0` is compatible with any units (`max(0, 3 m)`, `integrate(f, t, 0, 1 m)`, ranges `0 .. 1 m`). Negative numbers take the principal branch: `(-8)^(1/3) = 1 + 1.732i`; use `nthroot(-8, 3) = -2` for the real root.
 More statistics: `cvar skew kurt hist gmean hmean mode qnorm dunif punif dexp pexp`; integers: `gcd lcm`; `Φ` (Heaviside), `δ` (Kronecker), `sinc csgn`.
 Bessel: `J0 J1 Jn Y0 Y1 Yn I0 I1 In K0 K1 Kn`. Strings: `concat num2str str2num substr search strlen vec2str str2vec`. Tables: `lookup match vlookup hlookup`.
 ODEs: `rkfixed(y0, x1, x2, n, D)` / `Rkadapt(...)` where `D(x, y)` is a user function returning the derivative vector; the result matrix has columns `[x, y0, y1, ...]`.

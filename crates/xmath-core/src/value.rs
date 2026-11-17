@@ -21,7 +21,9 @@ impl Num {
     }
 
     pub fn new(v: C64, dim: Dim) -> Num {
-        Num { v, dim }
+        // `+ 0.0` turns a negative-zero imaginary part into +0, so that
+        // `-8` is `-8 + 0i` and complex functions take the principal branch
+        Num { v: C64::new(v.re, v.im + 0.0), dim }
     }
 
     pub fn with_dim(x: f64, dim: Dim) -> Num {
@@ -255,6 +257,18 @@ fn units_mismatch() -> String {
     "Единицы измерения не совпадают".into()
 }
 
+/// A plain (dimensionless) zero is compatible with any units, as in Mathcad:
+/// gives both numbers the same dimension if one of them is such a zero.
+pub fn unify_zero_dims(a: &mut Num, b: &mut Num) {
+    if a.dim != b.dim {
+        if a.dim.is_none() && a.v == C64::new(0.0, 0.0) {
+            a.dim = b.dim;
+        } else if b.dim.is_none() && b.v == C64::new(0.0, 0.0) {
+            b.dim = a.dim;
+        }
+    }
+}
+
 pub fn num_add(a: Num, b: Num) -> EResult<Num> {
     if a.dim != b.dim {
         // Mathcad allows adding plain zero to anything.
@@ -285,6 +299,8 @@ pub fn num_div(a: Num, b: Num) -> EResult<Num> {
 }
 
 pub fn cpow(base: C64, e: C64) -> C64 {
+    let base = C64::new(base.re, base.im + 0.0);
+    let e = C64::new(e.re, e.im + 0.0);
     if e.im == 0.0 {
         let p = e.re;
         if base.im == 0.0 && (base.re >= 0.0 || p.fract() == 0.0) {
