@@ -202,7 +202,7 @@ fn line_shapes(pts: Vec<Pos2>, stroke: Stroke, style: LineStyle) -> Vec<Shape> {
 /// Draws a short sample of a trace (for legends and the format dialog).
 pub fn sample(painter: &Painter, a: Pos2, b: Pos2, color: Color32, style: LineStyle, width: f32) {
     if style == LineStyle::Points {
-        painter.circle_filled(a.lerp(b, 0.5), width + 1.0, color);
+        painter.circle_filled(a.lerp(b, 0.5), width * 0.5 + 1.0, color);
     } else {
         for sh in line_shapes(vec![a, b], Stroke::new(width, color), style) {
             painter.add(sh);
@@ -260,7 +260,7 @@ pub fn paint(painter: &Painter, rect: Rect, data: &PlotData, v: &View, font: f32
         let ok = |p: &[f64; 2]| p[0].is_finite() && p[1].is_finite() && (!ax.log_x || p[0] > 0.0) && (!ax.log_y || p[1] > 0.0);
         if style == LineStyle::Points {
             for p in s.points.iter().filter(|p| ok(p)).step_by((s.points.len() / 2000).max(1)) {
-                clip.circle_filled(Pos2::new(sx(p[0]), sy(p[1])), width + 0.8, color);
+                clip.circle_filled(Pos2::new(sx(p[0]), sy(p[1])), width * 0.5 + 1.0, color);
             }
             continue;
         }

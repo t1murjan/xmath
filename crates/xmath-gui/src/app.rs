@@ -872,6 +872,7 @@ impl App {
         let plain = |k| KeyboardShortcut::new(Modifiers::NONE, k);
         let mut acts = Vec::new();
         let mut fmt: Vec<u8> = Vec::new();
+        let kbd_focus = ctx.wants_keyboard_input();
         let in_text_region = self.editing.is_some_and(|id| matches!(self.region(id).map(|r| &r.kind), Some(RegionKind::Text { .. })));
         let editing_text = self.editing.is_some_and(|id| !matches!(self.region(id).map(|r| &r.kind), Some(RegionKind::Plot { .. })));
         ctx.input_mut(|i| {
@@ -911,7 +912,7 @@ impl App {
             if i.consume_shortcut(&plain(Key::F1)) {
                 acts.push(Action::Help);
             }
-            if !editing_text {
+            if !editing_text && !kbd_focus {
                 if i.consume_shortcut(&ctrl(Key::Z)) {
                     acts.push(Action::Undo);
                 }
