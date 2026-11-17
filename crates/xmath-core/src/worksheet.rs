@@ -465,9 +465,6 @@ impl Worksheet {
                 return self.eval_stmt(ev, stmt, snap);
             };
             return match stmt {
-                Stmt::Define { .. } => Output::Error(
-                    "Определения внутри блока решения недопустимы: поместите их выше Given или ниже Find".into(),
-                ),
                 Stmt::Show(e) if solve::is_constraint(e) => {
                     b.constraints.push((id, e.clone()));
                     Output::None

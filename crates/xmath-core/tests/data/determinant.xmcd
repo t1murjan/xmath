@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.mathsoft.com/worksheet30" xmlns:ml="http://schemas.mathsoft.com/math30">
+<regions>
+<region region-id="1" left="36" top="18" width="60" height="21"><math><ml:define><ml:id>M</ml:id><ml:matrix rows="2" cols="2"><ml:real>1</ml:real><ml:real>3</ml:real><ml:real>2</ml:real><ml:real>4</ml:real></ml:matrix></ml:define></math></region>
+<region region-id="2" left="36" top="45" width="60" height="21"><math><ml:eval><ml:apply><ml:determinant/><ml:id>M</ml:id></ml:apply></ml:eval></math></region>
+</regions>
+</worksheet>

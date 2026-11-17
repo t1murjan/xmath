@@ -664,6 +664,12 @@ fn conv_apply(cx: &mut Cx, n: Node) -> R<Expr> {
             need(args, 1, "absval")?;
             Ok(Expr::Abs(Box::new(conv(cx, args[0])?)))
         }
+        "determinant" => {
+            need(args, 1, "determinant")?;
+            Ok(Expr::Abs(Box::new(conv(cx, args[0])?)))
+        }
+        // solve-block closers: `Find(x, y)`, `Minerr(...)`, `Maximize(f, x)`, `Minimize(f, x)`
+        "Find" | "Minerr" | "Maximize" | "Minimize" => Ok(Expr::Call(hn.to_string(), conv_all(cx, args)?)),
         "equal" => two(cx, BinOp::Eq, "equal"),
         "notEqual" => two(cx, BinOp::Ne, "notEqual"),
         "lessThan" => two(cx, BinOp::Lt, "lessThan"),

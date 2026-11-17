@@ -144,9 +144,6 @@ fn errors() {
     // Given without Find
     let outs = run("x := 1\nGiven\nx^2 == 4");
     assert!(err_of(&outs[1]).unwrap().contains("Given"));
-    // definition inside the block
-    let outs = run("x := 1\nGiven\nz := 3\nx == z\nFind(x) =");
-    assert!(err_of(&outs[2]).unwrap().contains("Определения внутри блока"));
     // undefined name in a constraint is reported on its own region
     let outs = run("x := 1\nGiven\nx == q\nFind(x) =");
     assert!(err_of(&outs[2]).unwrap().contains("'q'"));
@@ -156,4 +153,25 @@ fn errors() {
     // Find outside a block
     let outs = run("x := 1\nFind(x) =");
     assert!(err_of(outs.last().unwrap()).unwrap().contains("Given"));
+}
+
+#[test]
+fn definition_inside_block_is_allowed() {
+    // like in Mathcad files: the guess may be defined between Given and Find
+    let v = values("Given\nx^2 == 4\nx := 1\nFind(x) =");
+    close(v[0], 2.0);
+}
+
+#[test]
+fn vector_unknown() {
+    let v = values("Q := [1; 1]\nGiven\nQ[0] + Q[1] == 3\nQ[0] - Q[1] == 1\nFind(Q) =");
+    close(v[0], 2.0);
+    close(v[1], 1.0);
+}
+
+#[test]
+fn ctol_respected() {
+    // x^2 == 2 solved to ~1e-3 only passes with a loose tolerance; the default must still find the root
+    let v = values("CTOL := 0.1\nx := 1\nGiven\nx^2 == 2\nFind(x) =");
+    close(v[0], 2f64.sqrt());
 }

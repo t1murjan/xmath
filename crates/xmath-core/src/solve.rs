@@ -161,11 +161,18 @@ fn components(v: &Value) -> EResult<Vec<Num>> {
     }
 }
 
-struct Unknown {
-    name: String,
+/// One scalar component of an unknown (a vector unknown has several).
+struct Slot {
     dim: Dim,
     complex: bool,
     scale: f64,
+}
+
+struct Unknown {
+    name: String,
+    /// Shape of a vector/matrix unknown; `None` for a scalar.
+    shape: Option<(usize, usize)>,
+    slots: Vec<Slot>,
 }
 
 struct Problem<'a> {
@@ -180,20 +187,37 @@ struct Problem<'a> {
 }
 
 impl<'a> Problem<'a> {
-    fn values(&self, z: &[f64]) -> Vec<Num> {
+    /// Values of all components, in order.
+    fn nums(&self, z: &[f64]) -> Vec<Num> {
         let mut k = 0;
-        self.unknowns
-            .iter()
-            .map(|u| {
-                let re = z[k] * u.scale;
-                let im = if u.complex {
+        let mut out = Vec::new();
+        for u in &self.unknowns {
+            for sl in &u.slots {
+                let re = z[k] * sl.scale;
+                let im = if sl.complex {
                     k += 1;
-                    z[k] * u.scale
+                    z[k] * sl.scale
                 } else {
                     0.0
                 };
                 k += 1;
-                Num::new(C64::new(re, im), u.dim)
+                out.push(Num::new(C64::new(re, im), sl.dim));
+            }
+        }
+        out
+    }
+
+    /// The unknowns as values (scalars or matrices).
+    fn values(&self, z: &[f64]) -> Vec<Value> {
+        let mut it = self.nums(z).into_iter();
+        self.unknowns
+            .iter()
+            .map(|u| {
+                let data: Vec<Num> = it.by_ref().take(u.slots.len()).collect();
+                match u.shape {
+                    None => Value::Num(data[0]),
+                    Some((r, c)) => Value::Matrix(Matrix::new(r, c, data)),
+                }
             })
             .collect()
     }
@@ -201,7 +225,7 @@ impl<'a> Problem<'a> {
     fn scope(&self, z: &[f64]) -> Scope {
         let mut sc = self.sc.clone();
         for (u, v) in self.unknowns.iter().zip(self.values(z)) {
-            sc = sc.with(&u.name, Value::Num(v));
+            sc = sc.with(&u.name, v);
         }
         sc
     }
@@ -271,21 +295,28 @@ impl<'a> Problem<'a> {
     fn z0(&self) -> Vec<f64> {
         let mut z = Vec::new();
         for u in &self.unknowns {
-            let g = self.ev.lookup_def(&u.name, self.sc).and_then(|v| v.as_num().ok()).unwrap_or_else(Num::zero);
-            z.push(g.v.re / u.scale);
-            if u.complex {
-                z.push(g.v.im / u.scale);
+            let g = self.ev.lookup_def(&u.name, self.sc);
+            let nums: Vec<Num> = match g {
+                Some(Value::Num(n)) => vec![n],
+                Some(Value::Matrix(m)) => m.data,
+                _ => vec![Num::zero(); u.slots.len()],
+            };
+            for (sl, g) in u.slots.iter().zip(nums) {
+                z.push(g.v.re / sl.scale);
+                if sl.complex {
+                    z.push(g.v.im / sl.scale);
+                }
             }
         }
         z
     }
 
     fn result(&self, z: &[f64]) -> Value {
-        let vals = self.values(z);
+        let mut vals = self.values(z);
         if vals.len() == 1 {
-            Value::Num(vals[0])
+            vals.pop().unwrap()
         } else {
-            Value::Matrix(Matrix::column(vals))
+            Value::Matrix(Matrix::column(self.nums(z)))
         }
     }
 }
@@ -506,8 +537,10 @@ impl Evaluator {
             let Expr::Var(n) = a else {
                 return Err(format!("{name}: неизвестная должна быть именем переменной"));
             };
-            let g = match self.lookup_def(n, sc) {
-                Some(Value::Num(g)) => g,
+            let guess = self.lookup_def(n, sc);
+            let (shape, nums) = match guess {
+                Some(Value::Num(g)) => (None, vec![g]),
+                Some(Value::Matrix(m)) => (Some((m.rows, m.cols)), m.data),
                 Some(other) => {
                     return Err(format!("начальное приближение '{n}' должно быть числом, найдено: {}", other.type_name()))
                 }
@@ -515,13 +548,19 @@ impl Evaluator {
                 // missing guess only if that does not work
                 None if !optimize => {
                     missing.get_or_insert_with(|| n.clone());
-                    Num::zero()
+                    (None, vec![Num::zero()])
                 }
                 None => return Err(guess_error(n)),
             };
-            let complex = g.v.im != 0.0;
-            let mag = if complex { g.v.re.abs().max(g.v.im.abs()) } else { g.v.re.abs() };
-            unknowns.push(Unknown { name: n.clone(), dim: g.dim, complex, scale: if mag > 0.0 { mag } else { 1.0 } });
+            let slots = nums
+                .iter()
+                .map(|g| {
+                    let complex = g.v.im != 0.0;
+                    let mag = if complex { g.v.re.abs().max(g.v.im.abs()) } else { g.v.re.abs() };
+                    Slot { dim: g.dim, complex, scale: if mag > 0.0 { mag } else { 1.0 } }
+                })
+                .collect();
+            unknowns.push(Unknown { name: n.clone(), shape, slots });
         }
         let mut cons = Vec::new();
         for c in cs {
@@ -560,7 +599,7 @@ impl Evaluator {
         };
         let f_at = |z: &[f64]| -> EResult<f64> {
             let v = match &func {
-                Some(f) => self.call_value(f, p.values(z).into_iter().map(Value::Num).collect())?,
+                Some(f) => self.call_value(f, p.values(z))?,
                 None => self.eval(obj, &p.scope(z))?,
             };
             let n = v.as_num()?;

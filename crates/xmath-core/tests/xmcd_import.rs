@@ -147,6 +147,25 @@ fn programs_are_imported() {
 }
 
 #[test]
+fn solve_block() {
+    let (ws, warns) = load("solve.xmcd");
+    assert!(warns.is_empty(), "{warns:?}");
+    assert_eq!(source(&ws, 3), "Given");
+    assert_eq!(source(&ws, 4), "x + y == 3");
+    assert_eq!(source(&ws, 6), "Find(x, y) =");
+    let v = shown(&ws, 6);
+    assert!(v.contains('2') && v.contains('1'), "{v}");
+}
+
+#[test]
+fn determinant() {
+    let (ws, warns) = load("determinant.xmcd");
+    assert!(warns.is_empty(), "{warns:?}");
+    assert_eq!(source(&ws, 2), "|M| =");
+    assert!(shown(&ws, 2).contains("-2") || shown(&ws, 2).contains("−2"), "{}", shown(&ws, 2));
+}
+
+#[test]
 fn json_roundtrip() {
     let (ws, _) = load("units.xmcd");
     assert_eq!(Worksheet::from_json(&ws.to_json()).unwrap(), ws);
