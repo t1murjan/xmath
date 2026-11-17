@@ -1,0 +1,13 @@
+[package]
+name = "xmath-core"
+description = "Calculation engine of xmath: parser, units, evaluator and worksheet model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+num-complex = "0.4"
+libm = "0.2"
+serde.workspace = true
+serde_json.workspace = true
