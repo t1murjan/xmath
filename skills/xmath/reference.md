@@ -36,7 +36,7 @@ linear text. Everything defined above (smaller `y`) is visible below; `≡` (glo
 
 Write units right after the number: `5 kN`, `12 kN/m`, `210 GPa`, `30 deg`. Units are first-class:
 `5 kN * 3 m` is a moment/energy (shown as `1.5·10^4 J` by default, `= kN*m` gives `15 kN*m`), `kN/m * m^2` is fine, `5 m + 3 s` is an error
-("the units do not match"). Dimensionless angle units: `rad`, `deg` (or `°`), `%`.
+("Единицы измерения не совпадают" — units mismatch). Dimensionless angle units: `rad`, `deg` (or `°`), `%`.
 Use `expr = unit` to choose the display unit: `M = kN*m`, `sigma = MPa`, `L = mm`.
 Call `list_units` for the exact table. Highlights:
 
@@ -48,11 +48,17 @@ Call `list_units` for the exact table. Highlights:
 
 ## 4. Functions (call `list_functions` for the full list)
 
-Trig (radians unless you pass `deg`): `sin cos tan cot sec csc asin acos atan atan2(y,x) sinh cosh tanh ...`
+Trig (radians unless you pass `deg`): `sin cos tan cot sec csc asin acos atan atan2(x,y) sinh cosh tanh ...`
 Analysis: `exp ln log sqrt nthroot(x,n) abs floor ceil round trunc mod(a,b) sign min max`
 Statistics: `mean median stdev var`; vectors/matrices: `length rows cols last identity transpose det tr lsolve augment stack submatrix cross norme sort reverse`
 Interpolation: `linterp(vx, vy, x)`; polynomials: `polyroots([c0; c1; c2])` (coefficients from the constant term up).
 Special: `factorial gamma erf erfc dnorm pnorm`; conditional: `if(cond, a, b)`.
+Linear algebra: `eigenvals eigenvecs eigenvec rank cholesky lu qr svd svds geninv rref norm1 norm2 normi cond2 diag csort rsort`.
+Fitting: `lspline pspline cspline` + `interp(vs, vx, vy, x)`, `regress(vx, vy, k)` (also usable with `interp`), `slope intercept line corr`.
+More statistics: `cvar skew kurt hist gmean hmean mode qnorm dunif punif dexp pexp`; integers: `gcd lcm`; `Φ` (Heaviside), `δ` (Kronecker), `sinc csgn`.
+Bessel: `J0 J1 Jn Y0 Y1 Yn I0 I1 In K0 K1 Kn`. Strings: `concat num2str str2num substr search strlen vec2str str2vec`. Tables: `lookup match vlookup hlookup`.
+ODEs: `rkfixed(y0, x1, x2, n, D)` / `Rkadapt(...)` where `D(x, y)` is a user function returning the derivative vector; the result matrix has columns `[x, y0, y1, ...]`.
+Error messages from the engine are in Russian (e.g. `Единицы измерения не совпадают` = units mismatch, `'x' не определена` = undefined variable).
 
 ### Calculus and solving (the variable name is the second argument)
 

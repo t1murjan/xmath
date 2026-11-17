@@ -174,7 +174,7 @@ mod tests {
         assert!(t.contains("54 kN*m"), "{t}");
         let res = &r["result"]["structuredContent"]["results"];
         assert_eq!(res[3]["result"], "54 kN*m");
-        assert!(res[4]["error"].as_str().unwrap().contains("units"));
+        assert!(res[4]["error"].as_str().unwrap().contains("Единицы"), "{}", res[4]["error"]);
         assert!(res[5]["error"].is_string());
         assert_eq!(r["result"]["structuredContent"]["errors"], 2);
     }

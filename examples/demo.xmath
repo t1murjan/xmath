@@ -38,7 +38,7 @@
    "x": 24,
    "y": 88,
    "type": "math",
-   "source": "m := 7",
+   "source": "c := 7",
    "id": 3
   },
   {
@@ -52,14 +52,14 @@
    "x": 24,
    "y": 128,
    "type": "math",
-   "source": "f(x) := x^3 + p*x^2 + m",
+   "source": "f(x) := x^3 + p*x^2 + c",
    "id": 5
   },
   {
    "x": 320,
    "y": 128,
    "type": "math",
-   "source": "g(x) := -p*x^2 - m",
+   "source": "g(x) := -p*x^2 - c",
    "id": 6
   },
   {
@@ -114,7 +114,7 @@
    "x": 500,
    "y": 312,
    "type": "math",
-   "source": "polyroots([m, 0, p, 1]) =",
+   "source": "polyroots([c, 0, p, 1]) =",
    "id": 12
   },
   {
