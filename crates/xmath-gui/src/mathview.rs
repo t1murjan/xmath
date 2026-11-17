@@ -80,8 +80,6 @@ pub const RED: Color32 = Color32::from_rgb(220, 0, 0);
 pub struct Ts<'a> {
     pub fonts: &'a Fonts,
     pub color: Color32,
-    #[allow(dead_code)]
-    pub size: f32,
     /// Matrix cell being edited in place: its address and the width of the
     /// editor box. The cell is laid out as an empty box of (at least) that width.
     pub edit_cell: Option<(usize, f32)>,
@@ -90,8 +88,8 @@ pub struct Ts<'a> {
 const ASC: f32 = 0.80;
 
 impl<'a> Ts<'a> {
-    pub fn new(fonts: &'a Fonts, size: f32) -> Ts<'a> {
-        Ts { fonts, color: Color32::BLACK, size, edit_cell: None }
+    pub fn new(fonts: &'a Fonts) -> Ts<'a> {
+        Ts { fonts, color: Color32::BLACK, edit_cell: None }
     }
 
     pub fn text_c(&self, s: &str, size: f32, color: Color32) -> Lay {
@@ -136,7 +134,8 @@ impl<'a> Ts<'a> {
         let shift = (base.asc - exp.asc * 0.55).max(size * 0.45);
         let mut out = Lay::default();
         out.w = base.w + exp.w + size * 0.05;
-        out.asc = base.asc.max(shift + exp.asc);
+        // Mathcad reserves the exponent's full line box above the base
+        out.asc = base.asc.max(shift + exp.asc) + size * 0.3;
         out.desc = base.desc.max(exp.desc - shift);
         let bw = base.w;
         out.place(base, 0.0, 0.0);
@@ -145,7 +144,7 @@ impl<'a> Ts<'a> {
     }
 
     fn sub(&self, base: Lay, sub: Lay, size: f32) -> Lay {
-        let shift = size * 0.28;
+        let shift = size * 0.12;
         let mut out = Lay::default();
         out.w = base.w + sub.w;
         out.asc = base.asc.max(sub.asc - shift);
@@ -158,7 +157,7 @@ impl<'a> Ts<'a> {
 
     fn frac(&self, num: Lay, den: Lay, size: f32) -> Lay {
         let pad = size * 0.15;
-        let gap = size * 0.12;
+        let gap = size * 0.2;
         let axis = self.axis(size);
         let w = num.w.max(den.w) + 2.0 * pad;
         let mut out = Lay { w, asc: axis + gap + num.h(), desc: (den.h() + gap - axis).max(0.0), items: vec![], boxes: vec![] };
@@ -218,7 +217,7 @@ impl<'a> Ts<'a> {
         }
         let dw = match kind {
             '(' => (size * 0.12 + h * 0.06).min(size * 0.5),
-            '[' => size * 0.3,
+            '[' => size * 0.5,
             _ => size * 0.2,
         };
         let pad = size * 0.08;
@@ -264,7 +263,7 @@ impl<'a> Ts<'a> {
         let rows = cells.len();
         let cols = cells.first().map_or(0, |r| r.len());
         let hgap = size * 0.9;
-        let vgap = size * 0.25;
+        let vgap = size * 0.47;
         let mut colw = vec![0f32; cols];
         let mut rasc = vec![0f32; rows];
         let mut rdesc = vec![0f32; rows];
@@ -329,7 +328,8 @@ impl<'a> Ts<'a> {
     // Expressions
 
     pub fn ident(&self, name: &str, size: f32) -> Lay {
-        let split = name.char_indices().skip(1).find(|(_, c)| *c == '.' || *c == '_');
+        // like in Mathcad only a dot starts a literal subscript; an underscore is an ordinary letter
+        let split = name.char_indices().skip(1).find(|(_, c)| *c == '.');
         match split {
             Some((i, _)) if i + 1 < name.len() => {
                 let base = self.text(&name[..i], size);
@@ -340,14 +340,21 @@ impl<'a> Ts<'a> {
         }
     }
 
-    fn literal(x: f64) -> String {
+    /// A number literal; very large/small values are shown as `m·10ⁿ` with a real superscript.
+    fn literal(&self, x: f64, size: f32) -> Lay {
         if x.is_infinite() || x >= 1e300 {
-            "∞".into()
+            self.text("∞", size)
         } else if x != 0.0 && (x.abs() >= 1e15 || x.abs() < 1e-5) {
             let s = format!("{x:e}");
-            s.replace('e', "·10^")
+            let (m, e) = s.split_once('e').unwrap_or((&s, "0"));
+            let ten = self.sup(self.text("10", size), self.text(&e.replace('-', "−"), size * 0.75), size);
+            if m == "1" {
+                ten
+            } else {
+                self.hcat(vec![self.text(&m.replace('-', "−"), size), self.text("·", size), ten])
+            }
         } else {
-            format!("{x}")
+            self.text(&format!("{x}").replace('-', "−"), size)
         }
     }
 
@@ -378,8 +385,8 @@ impl<'a> Ts<'a> {
 
     pub fn expr(&self, e: &Expr, size: f32) -> Lay {
         match e {
-            Expr::Num(x) => self.text(&Self::literal(*x), size),
-            Expr::Imag(x) => self.text(&format!("{}i", Self::literal(*x)), size),
+            Expr::Num(x) => self.literal(*x, size),
+            Expr::Imag(x) => self.hcat(vec![self.literal(*x, size), self.text("i", size)]),
             Expr::Str(s) => self.text(&format!("\"{s}\""), size),
             Expr::Var(n) if n.eq_ignore_ascii_case("given") => self.bold(self.text(n, size)),
             Expr::Var(n) => self.ident(n, size),
@@ -466,10 +473,11 @@ impl<'a> Ts<'a> {
             Expr::Range(a, b, c) => {
                 let mut parts = vec![self.expr(a, size)];
                 if let Some(b) = b {
-                    parts.push(self.text(", ", size));
+                    parts.push(self.text(",", size));
+                    parts.push(self.space(size * 0.25));
                     parts.push(self.expr(b, size));
                 }
-                parts.push(self.text(" .. ", size));
+                parts.push(self.text("..", size));
                 parts.push(self.expr(c, size));
                 self.hcat(parts)
             }
@@ -686,7 +694,11 @@ impl<'a> Ts<'a> {
                     parts.push(self.text(" × ", size));
                     let ten = self.text("10", size);
                     let exp = self.text(&e.to_string().replace('-', "−"), size * 0.75);
-                    parts.push(self.sup(ten, exp, size));
+                    let ten_asc = ten.asc;
+                    let mut l = self.sup(ten, exp, size);
+                    // results do not reserve the extra exponent box (matrix rows stay compact)
+                    l.asc = l.asc.min(ten_asc + size * 0.05);
+                    parts.push(l);
                 }
             }
         }

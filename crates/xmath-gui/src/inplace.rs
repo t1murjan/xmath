@@ -606,7 +606,7 @@ impl App {
         let out = self.outputs.get(&id);
         let error = out.and_then(|o| o.error());
         let mut lay = ctx.fonts(|f| {
-            let mut ts = Ts::new(f, fs);
+            let mut ts = Ts::new(f);
             if error.is_some() {
                 ts.color = RED;
             }
@@ -618,7 +618,7 @@ impl App {
             ts.statement(&st, result, fs)
         });
         resolve_boxes(&mut st, &mut lay.boxes);
-        let origin = pos + Vec2::new(2.0, 2.0 + lay.asc);
+        let origin = pos + Vec2::new(2.0, 3.0 + lay.asc);
         lay.paint(ui.painter(), origin);
         let hits: Vec<(Node, Rect)> = lay.boxes.iter().map(|(n, r)| (*n, r.translate(origin.to_vec2()))).collect();
         let slot = hits

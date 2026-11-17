@@ -6,6 +6,7 @@ use crate::palettes::{self, Act, Palette};
 use crate::plot;
 use egui::text::{CCursor, CCursorRange, LayoutJob, TextFormat};
 use egui::text_edit::TextEditState;
+use egui::scroll_area::ScrollBarVisibility;
 use egui::{
     Align, Align2, Color32, Context, CursorIcon, Event, FontFamily, FontId, Id, Key, KeyboardShortcut, Layout,
     Modifiers, Pos2, Rect, RichText, ScrollArea, Sense, Shape, Stroke, TextEdit, Ui, Vec2,
@@ -79,6 +80,7 @@ pub enum Action {
     Help,
     About,
     Zoom(u32),
+    ZoomFitWidth,
 }
 
 pub static EXAMPLES: &[(&str, &str)] = &[
@@ -223,6 +225,19 @@ pub struct App {
     pending: Vec<Action>,
     has_bold_font: bool,
     import_log: Vec<String>,
+    /// Debug harness (`XMATH_DUMP_RECTS=path`): writes the rendered region sizes and exits.
+    dump_rects: Option<PathBuf>,
+    dump_frames: u32,
+    /// Scroll state of the worksheet canvas (screen pixels), from the last frame.
+    scroll_off: Vec2,
+    view_size: Vec2,
+    content_size: Vec2,
+    /// New scroll offset requested by the keyboard / zoom (applied on the next frame).
+    scroll_req: Option<Vec2>,
+    /// Worksheet rectangle to scroll into view on the next frame.
+    reveal: Option<Rect>,
+    /// The rectangle of the edited region last time it was revealed.
+    last_edit_rect: Option<(u64, Rect)>,
 }
 
 impl App {
@@ -280,6 +295,14 @@ impl App {
             pending: Vec::new(),
             has_bold_font,
             import_log: Vec::new(),
+            dump_rects: std::env::var_os("XMATH_DUMP_RECTS").map(PathBuf::from),
+            dump_frames: 0,
+            scroll_off: Vec2::ZERO,
+            view_size: Vec2::new(1000.0, 700.0),
+            content_size: Vec2::ZERO,
+            scroll_req: None,
+            reveal: None,
+            last_edit_rect: None,
         };
         if let Some(st) = cc.storage.and_then(|s| s.get_string("xmath-ui")) {
             app.restore_ui(&st);
@@ -604,6 +627,12 @@ impl App {
             Action::Help => self.show_help = true,
             Action::About => self.show_about = true,
             Action::Zoom(p) => self.zoom = p as f32 / 100.0,
+            Action::ZoomFitWidth => {
+                let right = self.rects.values().map(|r| r.right()).fold(PAGE_W, f32::max);
+                let old = self.zoom;
+                self.zoom = (((self.view_size.x - 8.0).max(200.0) / (right + 16.0)) * 100.0).floor().clamp(25.0, 400.0) / 100.0;
+                self.scroll_req = Some(Vec2::new(0.0, self.scroll_off.y / old * self.zoom));
+            }
         }
     }
 
@@ -1063,15 +1092,40 @@ impl App {
         for ev in events {
             match ev {
                 Event::Text(t) => typed.push_str(&t),
-                Event::Key { key, pressed: true, modifiers, .. } if modifiers.is_none() => match key {
-                    Key::Delete | Key::Backspace => self.delete_selection(),
-                    Key::ArrowUp => self.cursor.y = (self.cursor.y - GRID).max(0.0),
-                    Key::ArrowDown => self.cursor.y += GRID,
-                    Key::ArrowLeft => self.cursor.x = (self.cursor.x - GRID).max(0.0),
-                    Key::ArrowRight => self.cursor.x += GRID,
-                    Key::Enter => self.cursor.y += GRID * 3.0,
-                    _ => {}
-                },
+                Event::Key { key, pressed: true, modifiers, .. } if modifiers.is_none() => {
+                    let moved = self.cursor;
+                    match key {
+                        Key::Delete | Key::Backspace => self.delete_selection(),
+                        Key::ArrowUp => self.cursor.y = (self.cursor.y - GRID).max(0.0),
+                        Key::ArrowDown => self.cursor.y += GRID,
+                        Key::ArrowLeft => self.cursor.x = (self.cursor.x - GRID).max(0.0),
+                        Key::ArrowRight => self.cursor.x += GRID,
+                        Key::Enter => self.cursor.y += GRID * 3.0,
+                        Key::PageUp | Key::PageDown => {
+                            // scroll by (almost) a screen; the crosshair travels with the view
+                            let dy = (self.view_size.y * 0.9 / self.zoom / GRID).round() * GRID;
+                            let dy = if key == Key::PageUp { -dy } else { dy };
+                            let new_y = (self.cursor.y + dy).max(0.0);
+                            let off = (self.scroll_off.y + (new_y - self.cursor.y) * self.zoom).max(0.0);
+                            self.scroll_req = Some(Vec2::new(self.scroll_off.x, off));
+                            self.cursor.y = new_y;
+                        }
+                        _ => {}
+                    }
+                    if self.cursor != moved && !matches!(key, Key::PageUp | Key::PageDown) {
+                        self.reveal = Some(Rect::from_center_size(self.cursor, Vec2::splat(GRID * 2.0)));
+                    }
+                }
+                Event::Key { key: key @ (Key::Home | Key::End), pressed: true, modifiers, .. } if modifiers.command && !modifiers.shift => {
+                    if key == Key::End {
+                        let last = self.rects.values().map(|r| r.bottom()).fold(0.0, f32::max);
+                        self.cursor = snap(Pos2::new(24.0, last + 16.0));
+                    } else {
+                        self.cursor = Pos2::new(24.0, 24.0);
+                        self.scroll_req = Some(Vec2::ZERO);
+                    }
+                    self.reveal = Some(Rect::from_center_size(self.cursor, Vec2::splat(GRID * 2.0)));
+                }
                 Event::Copy => self.run(ctx, Action::Copy),
                 Event::Cut => self.run(ctx, Action::Cut),
                 Event::Paste(_) => self.run(ctx, Action::Paste),
@@ -1112,6 +1166,23 @@ impl App {
 
 // =====================================================================
 // UI
+
+/// Windows-like scroll bars: wide, solid and always taking space.
+fn classic_scrollbars(ui: &mut Ui) {
+    let style = ui.style_mut();
+    style.spacing.scroll = egui::style::ScrollStyle::solid();
+    style.spacing.scroll.bar_width = 16.0;
+    style.spacing.scroll.bar_inner_margin = 0.0;
+    style.spacing.scroll.handle_min_length = 24.0;
+    let v = &mut style.visuals;
+    v.extreme_bg_color = Color32::from_gray(238);
+    v.widgets.inactive.bg_fill = Color32::from_gray(200);
+    v.widgets.hovered.bg_fill = Color32::from_gray(160);
+    v.widgets.active.bg_fill = Color32::from_gray(110);
+    v.widgets.inactive.corner_radius = egui::CornerRadius::ZERO;
+    v.widgets.hovered.corner_radius = egui::CornerRadius::ZERO;
+    v.widgets.active.corner_radius = egui::CornerRadius::ZERO;
+}
 
 fn native_dialog(kind: DlgKind, name: &str) -> Option<PathBuf> {
     match kind {
@@ -1438,6 +1509,10 @@ impl App {
                         if menu_item(ui, &format!("{z}%"), "", true) {
                             act = Some(Action::Zoom(z));
                         }
+                    }
+                    ui.separator();
+                    if menu_item(ui, "По ширине", "", true) {
+                        act = Some(Action::ZoomFitWidth);
                     }
                 });
                 if menu_item(ui, "Обновить", "Ctrl+R", true) {
@@ -1771,8 +1846,8 @@ impl App {
             };
             ui.label(RichText::new(msg).size(12.0));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let page = (self.cursor.y / PAGE_H).floor() as i32 + 1;
-                status_box(ui, &format!("Стр. {page}"), 56.0);
+                let page = (self.scroll_off.y / self.zoom / PAGE_H).floor().max(0.0) as i32 + 1;
+                status_box(ui, &format!("Страница {page}"), 84.0);
                 status_box(ui, "NUM", 40.0);
                 status_box(ui, if self.auto_calc { "АВТО" } else { "ВРУЧН." }, 56.0);
             });
@@ -1805,7 +1880,7 @@ impl App {
         let fs = px(BASE_PT, self.zoom);
         let out = self.outputs.get(&id);
         ctx.fonts(|f| {
-            let mut ts = Ts::new(f, fs);
+            let mut ts = Ts::new(f);
             let err = out.and_then(|o| o.error());
             let parsed = match out.and_then(|o| o.stmt.clone()) {
                 Some(Ok(s)) => Ok(s),
@@ -1834,19 +1909,30 @@ impl App {
         let ctx = ui.ctx().clone();
         let z = self.zoom;
         let fs = px(BASE_PT, z);
+        // the canvas reaches just past the last region in both directions
         let bottom = self
             .ws
             .regions
             .iter()
             .map(|r| r.y + self.rects.get(&r.id).map_or(40.0, |q| q.height()))
             .fold(self.cursor.y, f32::max);
-        let height = (bottom + 600.0).max(PAGE_H);
-
-        ScrollArea::both().id_salt("sheet").auto_shrink([false, false]).show(ui, |ui| {
+        let right = self
+            .ws
+            .regions
+            .iter()
+            .map(|r| r.x + self.rects.get(&r.id).map_or(40.0, |q| q.width()))
+            .fold(self.cursor.x, f32::max);
+        let orig_style = ui.style().clone();
+        classic_scrollbars(ui);
+        let mut area = ScrollArea::both().id_salt("sheet").auto_shrink([false, false]).scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible);
+        if let Some(o) = self.scroll_req.take() {
+            area = area.scroll_offset(o);
+        }
+        let inner_style = orig_style.clone();
+        let out = area.show(ui, |ui| {
+            ui.set_style(inner_style);
             let avail = ui.available_size();
-            // wide regions beyond the page margin stay reachable by scrolling
-            let content_w = self.rects.values().map(|r| r.right()).fold(PAGE_W, f32::max);
-            let size = Vec2::new(((content_w + 200.0) * z).max(avail.x), (height * z).max(avail.y));
+            let size = Vec2::new(((right + 120.0) * z).max(avail.x), ((bottom + 240.0) * z).max(avail.y));
             let visible = ui.clip_rect();
             let (rect, bg) = ui.allocate_exact_size(size, Sense::click_and_drag());
             let origin = rect.min;
@@ -1881,7 +1967,7 @@ impl App {
                 let editing = self.editing == Some(id);
                 let selected = self.selection.contains(&id);
                 // regions far outside the viewport are not laid out again (large worksheets)
-                if !editing && !selected {
+                if !editing && !selected && self.dump_rects.is_none() {
                     if let Some(r) = self.rects.get(&id).copied() {
                         let sr = Rect::from_min_max(to_screen(r.min), to_screen(r.max));
                         if !sr.expand(64.0).intersects(visible) {
@@ -1917,7 +2003,7 @@ impl App {
                             let w = (tw + fs * 2.0).max(fs * 6.0);
                             // the box replaces the formula: its text baseline is the baseline of the region
                             let asc = self.math_layout(&ctx, id, source).0.asc;
-                            let te_top = pos.y + 2.0 + asc - fs * 0.95 - 1.0;
+                            let te_top = pos.y + 3.0 + asc - fs * 0.95 - 1.0;
                             let te_rect = Rect::from_min_size(Pos2::new(pos.x, te_top.max(pos.y - fs)), Vec2::new(w, fs * 1.6));
                             painter.rect_filled(te_rect, 0.0, Color32::WHITE);
                             let resp = ui.put(
@@ -1964,9 +2050,9 @@ impl App {
                         } else {
                             let (lay, err) = self.math_layout(&ctx, id, source);
                             error = err;
-                            anchor_updates.push((id, [0.0, (lay.asc + 2.0) / z]));
-                            region_rect = Rect::from_min_size(pos, Vec2::new(lay.w + 4.0, lay.h() + 4.0));
-                            let origin = pos + Vec2::new(2.0, 2.0 + lay.asc);
+                            anchor_updates.push((id, [0.0, (lay.asc + 3.0) / z]));
+                            region_rect = Rect::from_min_size(pos, Vec2::new(lay.w + 4.0, lay.h() + 6.0));
+                            let origin = pos + Vec2::new(2.0, 3.0 + lay.asc);
                             lay.paint(&painter, origin);
                             self.hits.insert(id, lay.boxes.iter().map(|(n, r)| (*n, r.translate(origin.to_vec2()))).collect());
                         }
@@ -2020,7 +2106,11 @@ impl App {
                     }
                     RegionKind::Plot { x, y, width, height, x_min, x_max, y_min, y_max, fmt, .. } => {
                         let legend_w = LEGEND_W * z;
-                        let plot_rect = Rect::from_min_size(pos + Vec2::new(legend_w, 0.0), Vec2::new(width * z, height * z));
+                        // like in Mathcad the region size includes the label placeholders around the plot
+                        let plot_rect = Rect::from_min_size(
+                            pos + Vec2::new(legend_w, 0.0),
+                            Vec2::new((width * z - legend_w).max(60.0), (height * z - fs * 2.0).max(40.0)),
+                        );
                         let data = match self.outputs.get(&id).map(|o| &o.output) {
                             Some(Output::Plot(d)) => d.clone(),
                             _ => Default::default(),
@@ -2163,6 +2253,21 @@ impl App {
                 new_rects.insert(id, Rect::from_min_max(to_ws(region_rect.min), to_ws(region_rect.max)));
             }
             self.rects = new_rects;
+            // keep the edited region in view while it is created or grows
+            if let Some(e) = self.editing {
+                if let Some(r) = self.rects.get(&e).copied() {
+                    if self.last_edit_rect != Some((e, r)) {
+                        self.last_edit_rect = Some((e, r));
+                        self.reveal = Some(r);
+                    }
+                }
+            } else {
+                self.last_edit_rect = None;
+            }
+            if let Some(r) = self.reveal.take() {
+                let sr = Rect::from_min_max(to_screen(r.min), to_screen(r.max)).expand(24.0);
+                ui.scroll_to_rect(sr, None);
+            }
             self.images.retain(|id| self.ws.regions.iter().any(|r| r.id == id));
             // the baseline of the math regions decides the evaluation order (like in Mathcad);
             // this is layout bookkeeping, so the document is not marked as modified
@@ -2214,6 +2319,42 @@ impl App {
                 }
             }
         });
+        self.scroll_off = out.state.offset;
+        self.view_size = out.inner_rect.size();
+        self.content_size = out.content_size;
+        ui.set_style(orig_style);
+    }
+
+    /// `XMATH_DUMP_RECTS`: once the evaluation has settled, write `id kind x y w h` (worksheet
+    /// pixels, math regions without the 4 px padding) for every region and quit.
+    fn dump_rects_tick(&mut self, ctx: &Context) {
+        let Some(path) = self.dump_rects.clone() else { return };
+        ctx.request_repaint();
+        if self.ws.regions.is_empty() || self.dirty || self.evaluating || self.rects.len() != self.ws.regions.len() {
+            return;
+        }
+        self.dump_frames += 1;
+        if self.dump_frames < 5 {
+            return;
+        }
+        let mut out = String::new();
+        for r in &self.ws.regions {
+            if let Some(q) = self.rects.get(&r.id) {
+                let src = match &r.kind {
+                    RegionKind::Math { source } => source.replace(['\n', '\t'], " "),
+                    _ => String::new(),
+                };
+                let (kind, pad) = match r.kind {
+                    RegionKind::Math { .. } => ("math", 4.0), // width pad; the 2 px extra height stays
+                    RegionKind::Text { .. } => ("text", 4.0),
+                    RegionKind::Plot { .. } => ("plot", 0.0),
+                    RegionKind::Image { .. } => ("image", 0.0),
+                };
+                out.push_str(&format!("{} {} {:.2} {:.2} {:.2} {:.2} {}\n", r.id, kind, r.x, r.y, q.width() - pad, q.height() - pad, src));
+            }
+        }
+        let _ = std::fs::write(path, out);
+        std::process::exit(0);
     }
 
     fn pending_rect_fix(&self, id: u64, r: Rect, to_ws: impl Fn(Pos2) -> Pos2, rects: &mut HashMap<u64, Rect>) {
@@ -3003,6 +3144,7 @@ impl eframe::App for App {
         }
 
         self.drive_evaluation(ctx);
+        self.dump_rects_tick(ctx);
 
         let title = format!("xmath - [{}{}]", self.doc_name(), if self.modified { " *" } else { "" });
         if title != self.title {
