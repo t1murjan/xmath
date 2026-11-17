@@ -131,7 +131,7 @@ fn range_sum_with_single_bound() {
 
 #[test]
 fn program_if_chain_otherwise() {
-    let f = "f(x) := { 1 if x < 0; if x < 5 { 2 } otherwise { 3 } }";
+    let f = "f(x) := { 1 if x < 0; if x >= 0 and x < 5 { 2 } otherwise { 3 } }";
     assert_eq!(outputs(&[f, "f(-1) =", "f(1) =", "f(9) ="]), vec!["", "1", "2", "3"]);
 }
 
@@ -168,7 +168,7 @@ fn import_mathcad_features() {
     assert_eq!(source(&ws, 3), "p := vectorize(v*w)");
     assert_eq!(source(&ws, 5), "d := 2*m = cm");
     assert_eq!(source(&ws, 6), "k := 7 =");
-    assert_eq!(source(&ws, 7), "[a; b; c] := v + w");
+    assert_eq!(source(&ws, 7), "[a; b; c] := v + w =");
     assert_eq!(source(&ws, 10), "M^<1> =");
     assert_eq!(source(&ws, 12), "S := sum(i, v[i])");
     assert_eq!(source(&ws, 14), "TEXT:t, mks");

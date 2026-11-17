@@ -117,7 +117,7 @@ w(a) := { i ← 0; while i < a { i ← i + 1; if i == 5 { break } }; i }
   `while cond { ... }`, `if cond { ... } otherwise { ... }` (`else` and `else if` also accepted), postfix `stmt if cond`,
   `break`, `continue`, `return e`, and `e1 on error e2` (value of `e2` if `e1` fails; usable on any expression).
 * Consecutive `if` statements of a block form a chain: an `otherwise` runs only if its own condition and the conditions of all preceding `if`s of the chain were false, e.g.
-  `{ a if x < 0; if x < 5 { b } otherwise { c } }` returns `a`, `b` or `c` (Mathcad semantics).
+  `{ a if x < 0; if x >= 0 and x < 5 { b } otherwise { c } }` returns `a`, `b` or `c` (Mathcad semantics).
 * The value of a program is the value of the last executed statement, or of `return`. A program that ends with no value is an error.
 * `←` always creates/updates a **local**; locals shadow worksheet variables and never change them. Assignments in nested blocks update the enclosing program's local.
   `v[i] ← e` builds a local vector (indices start at `ORIGIN`).

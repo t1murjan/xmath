@@ -431,7 +431,7 @@ impl<'a> Ts<'a> {
                 let b = self.expr(m, size);
                 let b = self.paren_if(b, m.precedence() < 9, size);
                 let small = size * 0.75;
-                let idx = self.hcat(vec![self.text("⟨", small), self.expr(j, small), self.text("⟩", small)]);
+                let idx = self.hcat(vec![self.text("<", small), self.expr(j, small), self.text(">", small)]);
                 self.sup(b, idx, size)
             }
             Expr::OnError(a, b) => {
