@@ -80,6 +80,28 @@ Error messages from the engine are in Russian (e.g. `Единицы измере
 * Range variables may appear in: indexed definitions (`v[i] := ...`), evaluations (`x^2 =`), and plots. They cannot be used as ordinary scalars in
   a plain definition (`y := x^2` with `x` a range is an error / ambiguous) — use `y[i] := ...` instead.
 
+### Programs (Mathcad programming blocks)
+
+A program is an expression in braces; statements are separated by `;` (a trailing `;` is allowed, and `;` is optional after a `}`).
+It can be the right-hand side of `:=` for variables and functions, or be used inside any expression.
+
+```
+f(n) := { s ← 0; for i ∈ 1..n { s ← s + i^2 }; s }
+g(x) := { return -1 if x < 0; sqrt(x) }
+h(x) := { if x < 0 { "neg" } else if x == 0 { "zero" } otherwise { "pos" } }
+k(x) := { y ← 1/x on error 0; y }
+w(a) := { i ← 0; while i < a { i ← i + 1; if i == 5 { break } }; i }
+```
+
+* Statements: `x ← e` / `v[i] ← e` (local assignment; ASCII `<-`), `for i ∈ range { ... }` (ASCII `in`; range `1..n`, `0, 2..10`, or a vector),
+  `while cond { ... }`, `if cond { ... } otherwise { ... }` (`else` and `else if` also accepted), postfix `stmt if cond`,
+  `break`, `continue`, `return e`, and `e1 on error e2` (value of `e2` if `e1` fails; usable on any expression).
+* The value of a program is the value of the last executed statement, or of `return`. A program that ends with no value is an error.
+* `←` always creates/updates a **local**; locals shadow worksheet variables and never change them. Assignments in nested blocks update the enclosing program's local.
+  `v[i] ← e` builds a local vector (indices start at `ORIGIN`).
+* Loop iteration limit: 10 000 000 per program run (error in Russian).
+* Beware: `for i ∈ 2..n` with `n < 2` counts down (2, 1) — guard with `return 1 if n < 2`. Write `a < -1` with a space (`a<-1` is an assignment arrow).
+
 ## 6. Plots
 
 A plot region has an x expression (usually a range variable) and one or more y expressions.

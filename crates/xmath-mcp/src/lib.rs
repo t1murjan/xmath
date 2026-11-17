@@ -16,6 +16,7 @@ Syntax (one statement per line/region): `x := 5 m` defines; `f(x) := x^2` define
 `expr =` shows the result; `expr = kN*m` shows it in a unit; ranges `i := 0..10`, `x := 0, 0.1..1`; indexed `v[i] := i^2`; \
 matrices `[1, 2; 3, 4]`; `|x|`, `n!`, implicit multiplication `5 kN`, complex `2i`; \
 sum(k,a,b,f), prod, integrate(expr, x, a, b), diff(expr, x, x0), root(expr, x, a, b), if(c,a,b), lsolve, polyroots. \
+Programs: `f(n) := { s ← 0; for i ∈ 1..n { s ← s + i^2 }; s }` (also `<-`, `in`; `while c { }`, `if c { } otherwise { }`, `return e if c`, `break`, `continue`, `e1 on error e2`). \
 Use `^` for powers, never `**`. `g` is gravity (9.807 m/s^2), grams are `gm`; indices start at 0 (ORIGIN). \
 Regions are evaluated top-to-bottom then left-to-right, so define before use. \
 Adding incompatible units (`5 m + 3 s`) is an error reported per line. Call `syntax_help` for the full reference, \

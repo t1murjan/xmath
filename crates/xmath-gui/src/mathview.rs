@@ -4,7 +4,7 @@
 use egui::epaint::text::{FontId, Fonts, Galley};
 use egui::{Color32, Painter, Pos2, Shape, Stroke, Vec2};
 use std::sync::Arc;
-use xmath_core::ast::{BinOp, Expr, Stmt, Target, UnOp};
+use xmath_core::ast::{BinOp, Expr, PStmt, Stmt, Target, UnOp};
 use xmath_core::{NumberText, Piece, ResultView, UnitText};
 
 #[derive(Clone)]
@@ -425,7 +425,90 @@ impl<'a> Ts<'a> {
                 self.hcat(parts)
             }
             Expr::Abs(a) => self.fence(self.expr(a, size), '|', size),
+            Expr::Program(stmts) => self.program(stmts, size),
+            Expr::OnError(a, b) => {
+                let la = self.expr(a, size);
+                let lb = self.expr(b, size);
+                self.hcat(vec![la, self.kw(" on error ", size), lb])
+            }
         }
+    }
+
+    /// A bold keyword (padded with the spaces given in `s`).
+    fn kw(&self, s: &str, size: f32) -> Lay {
+        self.bold(self.text(s, size))
+    }
+
+    /// Mathcad program: a vertical bar on the left, one statement per line.
+    pub fn program(&self, stmts: &[PStmt], size: f32) -> Lay {
+        let rows = self.program_rows(stmts, size);
+        let vgap = size * 0.22;
+        let total_h: f32 = rows.iter().map(|r| r.h()).sum::<f32>() + vgap * rows.len().saturating_sub(1) as f32;
+        let axis = self.axis(size);
+        let top = -axis - total_h / 2.0;
+        let indent = size * 0.55;
+        let width = rows.iter().map(|r| r.w).fold(0.0f32, f32::max);
+        let mut out = Lay { w: indent + width + size * 0.2, asc: -top + size * 0.1, desc: total_h + top + size * 0.1, items: vec![] };
+        let mut y = top;
+        for r in rows {
+            let base = y + r.asc;
+            y += r.h() + vgap;
+            out.place(r, indent, base);
+        }
+        out.items.push(Item::Line {
+            a: Vec2::new(size * 0.15, top - size * 0.05),
+            b: Vec2::new(size * 0.15, top + total_h + size * 0.05),
+            w: (size / 14.0).max(1.0),
+            color: self.color,
+        });
+        out
+    }
+
+    fn block_row(&self, body: &[PStmt], size: f32) -> Lay {
+        self.hcat(vec![self.space(size * 0.9), self.program(body, size)])
+    }
+
+    fn program_rows(&self, stmts: &[PStmt], size: f32) -> Vec<Lay> {
+        let mut rows = Vec::new();
+        for s in stmts {
+            match s {
+                PStmt::Assign(t, e) => {
+                    let lt = self.target(t, size);
+                    rows.push(self.hcat(vec![lt, self.op("←", size), self.expr(e, size)]));
+                }
+                PStmt::Expr(e) => rows.push(self.expr(e, size)),
+                PStmt::If { cond, then, else_ } => {
+                    if else_.is_none() && then.len() == 1 && then[0].is_simple() {
+                        let simple = self.program_rows(then, size).remove(0);
+                        rows.push(self.hcat(vec![simple, self.kw(" if ", size), self.expr(cond, size)]));
+                    } else {
+                        rows.push(self.hcat(vec![self.kw("if ", size), self.expr(cond, size)]));
+                        rows.push(self.block_row(then, size));
+                        if let Some(e) = else_ {
+                            rows.push(self.kw("otherwise", size));
+                            rows.push(self.block_row(e, size));
+                        }
+                    }
+                }
+                PStmt::For { var, iter, body } => {
+                    rows.push(self.hcat(vec![
+                        self.kw("for ", size),
+                        self.ident(var, size),
+                        self.kw(" ∈ ", size),
+                        self.expr(iter, size),
+                    ]));
+                    rows.push(self.block_row(body, size));
+                }
+                PStmt::While { cond, body } => {
+                    rows.push(self.hcat(vec![self.kw("while ", size), self.expr(cond, size)]));
+                    rows.push(self.block_row(body, size));
+                }
+                PStmt::Break => rows.push(self.kw("break", size)),
+                PStmt::Continue => rows.push(self.kw("continue", size)),
+                PStmt::Return(e) => rows.push(self.hcat(vec![self.kw("return ", size), self.expr(e, size)])),
+            }
+        }
+        rows
     }
 
     fn bold(&self, mut l: Lay) -> Lay {
