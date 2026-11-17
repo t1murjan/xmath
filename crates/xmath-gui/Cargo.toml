@@ -14,5 +14,5 @@ path = "src/main.rs"
 xmath-core.workspace = true
 eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "wayland", "x11", "persistence"] }
 egui = "0.31"
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
 serde_json.workspace = true

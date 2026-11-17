@@ -114,6 +114,8 @@ pub struct PlotData {
     pub series: Vec<Series>,
     /// Errors per y-expression (or for the x-expression).
     pub errors: Vec<String>,
+    /// Variable swept along the x-axis (QuickPlot detection), if any.
+    pub x_var: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -293,6 +295,7 @@ fn plot(ev: &Evaluator, x_src: &str, y_srcs: &[String]) -> PlotData {
         }
     };
 
+    data.x_var = sweep_var.clone();
     match sweep_var {
         Some(name) => {
             let values: Vec<Num> = match ev.lookup(&name, &sc) {
