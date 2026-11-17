@@ -223,7 +223,7 @@ impl ResultView {
                 None => Ok(n),
                 Some(u) => {
                     if u.v.norm() == 0.0 {
-                        return Err("the display unit is zero".into());
+                        return Err("единица отображения равна нулю".into());
                     }
                     Ok(Num::new(n.v / u.v, n.dim.div(u.dim)))
                 }

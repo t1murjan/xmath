@@ -67,11 +67,11 @@ enum Tok {
 impl Tok {
     fn describe(&self) -> String {
         match self {
-            Tok::Num(x) => format!("number {x}"),
-            Tok::Imag(x) => format!("number {x}i"),
+            Tok::Num(x) => format!("число {x}"),
+            Tok::Imag(x) => format!("число {x}i"),
             Tok::Ident(s) => format!("'{s}'"),
-            Tok::Str(_) => "string".into(),
-            Tok::Eof => "end of expression".into(),
+            Tok::Str(_) => "строка".into(),
+            Tok::Eof => "конец выражения".into(),
             other => format!("'{}'", tok_text(other)),
         }
     }
@@ -157,7 +157,7 @@ fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
             }
             let text: String = chars[start..i].iter().map(|c| c.1).collect();
             let value: f64 = text.parse().map_err(|_| ParseError {
-                msg: format!("invalid number '{text}'"),
+                msg: format!("неверное число '{text}'"),
                 pos,
             })?;
             if (at(i) == 'i' || at(i) == 'j') && !is_ident_continue(at(i + 1)) {
@@ -200,7 +200,7 @@ fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
                 i += 1;
             }
             if i >= chars.len() {
-                return Err(ParseError { msg: "unterminated string".into(), pos });
+                return Err(ParseError { msg: "незакрытая строка".into(), pos });
             }
             let text: String = chars[start..i].iter().map(|c| c.1).collect();
             i += 1;
@@ -247,10 +247,10 @@ fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
             ('√', _) => (Tok::Sqrt, 1),
             ('…', _) => (Tok::DotDot, 1),
             ('■', _) => {
-                return Err(ParseError { msg: "fill in the placeholder ■".into(), pos });
+                return Err(ParseError { msg: "Заполните поле ввода ■".into(), pos });
             }
             _ => {
-                return Err(ParseError { msg: format!("unexpected character '{c}'"), pos });
+                return Err(ParseError { msg: format!("недопустимый символ '{c}'"), pos });
             }
         };
         toks.push(Token { tok, pos });
@@ -301,7 +301,7 @@ impl Parser {
         if self.eat(&t) {
             Ok(())
         } else {
-            self.err(format!("expected '{}' but found {}", tok_text(&t), self.peek().describe()))
+            self.err(format!("ожидалось '{}', найдено {}", tok_text(&t), self.peek().describe()))
         }
     }
 
@@ -420,7 +420,7 @@ impl Parser {
                     self.next();
                     let idx = self.list(Tok::RBrack)?;
                     if idx.is_empty() {
-                        return self.err("empty index");
+                        return self.err("пустой индекс");
                     }
                     e = Expr::Index(Box::new(e), idx);
                 }
@@ -468,7 +468,7 @@ impl Parser {
                 let mut rows = vec![];
                 let mut row = vec![];
                 if self.eat(&Tok::RBrack) {
-                    return Err(ParseError { msg: "empty matrix".into(), pos });
+                    return Err(ParseError { msg: "пустая матрица".into(), pos });
                 }
                 loop {
                     row.push(self.expr()?);
@@ -480,13 +480,13 @@ impl Parser {
                             break;
                         }
                         t => {
-                            return self.err(format!("expected ',', ';' or ']' but found {}", t.describe()))
+                            return self.err(format!("ожидалось ',', ';' или ']', найдено {}", t.describe()))
                         }
                     }
                 }
                 let n = rows[0].len();
                 if rows.iter().any(|r| r.len() != n) {
-                    return Err(ParseError { msg: "matrix rows have different lengths".into(), pos });
+                    return Err(ParseError { msg: "строки матрицы имеют разную длину".into(), pos });
                 }
                 Ok(Expr::Matrix(rows))
             }
@@ -499,8 +499,8 @@ impl Parser {
                 let e = self.power()?;
                 Ok(Expr::Call("sqrt".into(), vec![e]))
             }
-            Tok::Eof => Err(ParseError { msg: "incomplete expression".into(), pos }),
-            t => Err(ParseError { msg: format!("unexpected {}", t.describe()), pos }),
+            Tok::Eof => Err(ParseError { msg: "незаконченное выражение".into(), pos }),
+            t => Err(ParseError { msg: format!("неожиданно: {}", t.describe()), pos }),
         }
     }
 
@@ -533,7 +533,7 @@ impl Parser {
             Tok::Eq => {
                 self.next();
                 if matches!(lhs, Expr::Range(..)) {
-                    return Err(ParseError { msg: "a range cannot be evaluated directly".into(), pos: lhs_pos });
+                    return Err(ParseError { msg: "диапазон нельзя вычислить напрямую".into(), pos: lhs_pos });
                 }
                 let unit = if *self.peek() == Tok::Eof { None } else { Some(self.expr()?) };
                 Stmt::Eval { expr: lhs, unit }
@@ -541,7 +541,7 @@ impl Parser {
             _ => Stmt::Show(lhs),
         };
         if *self.peek() != Tok::Eof {
-            return self.err(format!("unexpected {}", self.peek().describe()));
+            return self.err(format!("неожиданно: {}", self.peek().describe()));
         }
         Ok(stmt)
     }
@@ -555,16 +555,16 @@ fn to_target(e: Expr) -> Result<Target, String> {
             for a in args {
                 match a {
                     Expr::Var(p) => params.push(p),
-                    other => return Err(format!("function parameter must be a name, found '{other}'")),
+                    other => return Err(format!("параметр функции должен быть именем, найдено '{other}'")),
                 }
             }
             Ok(Target::Func(n, params))
         }
         Expr::Index(base, idx) => match *base {
             Expr::Var(n) => Ok(Target::Indexed(n, idx)),
-            other => Err(format!("cannot assign to '{other}'")),
+            other => Err(format!("нельзя присвоить значение '{other}'")),
         },
-        other => Err(format!("cannot define '{other}': left side must be a name or a function")),
+        other => Err(format!("нельзя определить '{other}': слева должно быть имя или функция")),
     }
 }
 
@@ -572,7 +572,7 @@ pub fn parse_statement(src: &str) -> Result<Stmt, ParseError> {
     let toks = lex(src)?;
     let mut p = Parser { toks, i: 0 };
     if *p.peek() == Tok::Eof {
-        return p.err("empty region");
+        return p.err("пустая область");
     }
     p.statement()
 }
@@ -582,7 +582,7 @@ pub fn parse_expr(src: &str) -> Result<Expr, ParseError> {
     let mut p = Parser { toks, i: 0 };
     let e = p.range_or_expr()?;
     if *p.peek() != Tok::Eof {
-        return p.err(format!("unexpected {}", p.peek().describe()));
+        return p.err(format!("неожиданно: {}", p.peek().describe()));
     }
     Ok(e)
 }

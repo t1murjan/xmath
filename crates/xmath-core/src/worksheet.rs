@@ -244,7 +244,7 @@ impl Worksheet {
                 let v = ev.eval_iterated(expr, &sc)?;
                 let u = match unit {
                     None => None,
-                    Some(u) => Some(ev.eval(u, &sc)?.as_num().map_err(|_| "the display unit must be a scalar".to_string())?),
+                    Some(u) => Some(ev.eval(u, &sc)?.as_num().map_err(|_| "единица отображения должна быть скаляром".to_string())?),
                 };
                 let view = ResultView::from_value(&v, u, &self.format)?;
                 Ok(Output::Value { view, unit: unit.clone() })
@@ -287,7 +287,7 @@ fn plot(ev: &Evaluator, x_src: &str, y_srcs: &[String]) -> PlotData {
             Ok(Expr::Var(n)) if matches!(ev.lookup(&n, &sc), None | Some(Value::Range(_))) => Some(n),
             Ok(_) => None,
             Err(e) => {
-                data.errors.push(format!("x-axis: {}", e.msg));
+                data.errors.push(format!("ось X: {}", e.msg));
                 return data;
             }
         }
@@ -328,7 +328,7 @@ fn plot(ev: &Evaluator, x_src: &str, y_srcs: &[String]) -> PlotData {
             let xs = match parse_expr(x_src).map_err(|e| e.msg).and_then(|e| vector_of(ev, &e, &sc)) {
                 Ok(v) => v,
                 Err(e) => {
-                    data.errors.push(format!("x-axis: {e}"));
+                    data.errors.push(format!("ось X: {e}"));
                     return data;
                 }
             };
@@ -339,7 +339,7 @@ fn plot(ev: &Evaluator, x_src: &str, y_srcs: &[String]) -> PlotData {
                         points: xs.iter().zip(&yv).map(|(x, y)| [x.v.re, y.v.re]).collect(),
                     }),
                     Ok(yv) => data.errors.push(format!(
-                        "{label}: has {} values but the x-axis has {}",
+                        "{label}: {} значений, а по оси X — {}",
                         yv.len(),
                         xs.len()
                     )),
@@ -356,6 +356,6 @@ fn vector_of(ev: &Evaluator, e: &Expr, sc: &Scope) -> EResult<Vec<Num>> {
         Value::Matrix(m) if m.is_vector() => Ok(m.data),
         Value::Num(n) => Ok(vec![n]),
         Value::Range(r) => Ok(r.values().collect()),
-        other => Err(format!("expected a vector, found {}", other.type_name())),
+        other => Err(format!("ожидался вектор, найдено: {}", other.type_name())),
     }
 }
