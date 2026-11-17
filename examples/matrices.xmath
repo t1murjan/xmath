@@ -1,0 +1,38 @@
+{
+ "version": 1,
+ "format": {
+  "precision": 3,
+  "exp_threshold": 3,
+  "zero_threshold": 15
+ },
+ "regions": [
+  {
+   "x": 24,
+   "y": 24,
+   "type": "math",
+   "source": "I3 := [0.41; 0.41; 0.43; 0.42; 0.44]",
+   "id": 1
+  },
+  {
+   "x": 24,
+   "y": 200,
+   "type": "math",
+   "source": "A := [1, 2; 3, 4]",
+   "id": 2
+  },
+  {
+   "x": 24,
+   "y": 330,
+   "type": "math",
+   "source": "A^-1 =",
+   "id": 3
+  },
+  {
+   "x": 240,
+   "y": 220,
+   "type": "math",
+   "source": "I3 =",
+   "id": 4
+  }
+ ]
+}

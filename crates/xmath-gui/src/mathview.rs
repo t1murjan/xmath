@@ -2,7 +2,7 @@
 //! matrices) in the style of Mathcad 15 worksheets.
 
 use egui::epaint::text::{FontId, Fonts, Galley};
-use egui::{Color32, Painter, Pos2, Shape, Stroke, Vec2};
+use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2};
 use std::sync::Arc;
 use xmath_core::ast::{BinOp, Expr, PStmt, Stmt, Target, UnOp};
 use xmath_core::{NumberText, Piece, ResultView, UnitText};
@@ -14,6 +14,19 @@ pub enum Item {
     Path { pts: Vec<Vec2>, w: f32, color: Color32 },
 }
 
+/// A meaningful node of a laid-out statement that can be clicked.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Node {
+    /// A cell of a matrix literal. `mat` is the address of the `Expr::Matrix`
+    /// while laying out; `inplace::resolve_boxes` turns it into the matrix
+    /// ordinal of the statement.
+    Cell { mat: usize, row: usize, col: usize },
+    /// The target (name) of a definition.
+    Target,
+    /// The whole right-hand side of a definition.
+    Rhs,
+}
+
 /// A laid-out box. Coordinates are relative to the left end of the baseline;
 /// `asc` extends upwards (negative y) and `desc` downwards.
 #[derive(Clone, Default)]
@@ -22,6 +35,8 @@ pub struct Lay {
     pub asc: f32,
     pub desc: f32,
     pub items: Vec<Item>,
+    /// Hit boxes (relative to the baseline origin, like `items`).
+    pub boxes: Vec<(Node, Rect)>,
 }
 
 impl Lay {
@@ -31,6 +46,7 @@ impl Lay {
 
     fn place(&mut self, other: Lay, dx: f32, dy: f32) {
         let d = Vec2::new(dx, dy);
+        self.boxes.extend(other.boxes.into_iter().map(|(n, r)| (n, r.translate(d))));
         for it in other.items {
             self.items.push(match it {
                 Item::Text { off, galley, color } => Item::Text { off: off + d, galley, color },
@@ -64,14 +80,18 @@ pub const RED: Color32 = Color32::from_rgb(220, 0, 0);
 pub struct Ts<'a> {
     pub fonts: &'a Fonts,
     pub color: Color32,
+    #[allow(dead_code)]
     pub size: f32,
+    /// Matrix cell being edited in place: its address and the width of the
+    /// editor box. The cell is laid out as an empty box of (at least) that width.
+    pub edit_cell: Option<(usize, f32)>,
 }
 
 const ASC: f32 = 0.80;
 
 impl<'a> Ts<'a> {
     pub fn new(fonts: &'a Fonts, size: f32) -> Ts<'a> {
-        Ts { fonts, color: Color32::BLACK, size }
+        Ts { fonts, color: Color32::BLACK, size, edit_cell: None }
     }
 
     pub fn text_c(&self, s: &str, size: f32, color: Color32) -> Lay {
@@ -83,6 +103,7 @@ impl<'a> Ts<'a> {
             asc,
             desc: sz.y - asc,
             items: vec![Item::Text { off: Vec2::new(0.0, -asc), galley, color }],
+            boxes: vec![],
         }
     }
 
@@ -140,7 +161,7 @@ impl<'a> Ts<'a> {
         let gap = size * 0.12;
         let axis = self.axis(size);
         let w = num.w.max(den.w) + 2.0 * pad;
-        let mut out = Lay { w, asc: axis + gap + num.h(), desc: (den.h() + gap - axis).max(0.0), items: vec![] };
+        let mut out = Lay { w, asc: axis + gap + num.h(), desc: (den.h() + gap - axis).max(0.0), items: vec![], boxes: vec![] };
         let (nw, nd) = (num.w, num.desc);
         let (dw, da) = (den.w, den.asc);
         out.place(num, (w - nw) / 2.0, -axis - gap - nd);
@@ -170,7 +191,7 @@ impl<'a> Ts<'a> {
             Vec2::new(x0 + tick, top),
             Vec2::new(w, top),
         ];
-        let mut out = Lay { w, asc: -top + 1.0, desc: bottom, items: vec![] };
+        let mut out = Lay { w, asc: -top + 1.0, desc: bottom, items: vec![], boxes: vec![] };
         let iw = inner.w;
         let _ = iw;
         out.place(inner, x0 + tick + size * 0.05, 0.0);
@@ -201,7 +222,7 @@ impl<'a> Ts<'a> {
             _ => size * 0.2,
         };
         let pad = size * 0.08;
-        let mut out = Lay { w: 2.0 * dw + 2.0 * pad + inner.w, asc: -top + 1.0, desc: bottom + 1.0, items: vec![] };
+        let mut out = Lay { w: 2.0 * dw + 2.0 * pad + inner.w, asc: -top + 1.0, desc: bottom + 1.0, items: vec![], boxes: vec![] };
         let right = out.w;
         let mut side = |x0: f32, dir: f32| match kind {
             '(' => {
@@ -235,6 +256,11 @@ impl<'a> Ts<'a> {
     }
 
     pub fn matrix(&self, cells: Vec<Vec<Lay>>, size: f32) -> Lay {
+        self.matrix_id(cells, size, None)
+    }
+
+    /// `id`: address of the matrix literal; hit boxes of its cells are recorded.
+    pub fn matrix_id(&self, cells: Vec<Vec<Lay>>, size: f32, id: Option<usize>) -> Lay {
         let rows = cells.len();
         let cols = cells.first().map_or(0, |r| r.len());
         let hgap = size * 0.9;
@@ -253,7 +279,7 @@ impl<'a> Ts<'a> {
         let total_w: f32 = colw.iter().sum::<f32>() + hgap * cols.saturating_sub(1) as f32;
         let axis = self.axis(size);
         let top = -axis - total_h / 2.0;
-        let mut out = Lay { w: total_w, asc: -top, desc: total_h + top, items: vec![] };
+        let mut out = Lay { w: total_w, asc: -top, desc: total_h + top, items: vec![], boxes: vec![] };
         let mut y = top;
         for (i, row) in cells.into_iter().enumerate() {
             let base = y + rasc[i];
@@ -261,6 +287,10 @@ impl<'a> Ts<'a> {
             for (j, c) in row.into_iter().enumerate() {
                 let cw = c.w;
                 // numbers are right-aligned in Mathcad matrices
+                if let Some(mat) = id {
+                    let r = Rect::from_min_max(Pos2::new(x, base - rasc[i]), Pos2::new(x + colw[j], base + rdesc[i]));
+                    out.boxes.push((Node::Cell { mat, row: i, col: j }, r));
+                }
                 out.place(c, x + (colw[j] - cw), base);
                 x += colw[j] + hgap;
             }
@@ -277,7 +307,7 @@ impl<'a> Ts<'a> {
         let sh = s.h();
         let s_base = -axis + sh / 2.0 - s.desc;
         let w = s.w.max(above.as_ref().map_or(0.0, |l| l.w)).max(below.as_ref().map_or(0.0, |l| l.w));
-        let mut out = Lay { w, asc: axis + sh / 2.0, desc: (sh / 2.0 - axis).max(0.0), items: vec![] };
+        let mut out = Lay { w, asc: axis + sh / 2.0, desc: (sh / 2.0 - axis).max(0.0), items: vec![], boxes: vec![] };
         let sw = s.w;
         out.place(s, (w - sw) / 2.0, s_base);
         if let Some(a) = above {
@@ -412,8 +442,26 @@ impl<'a> Ts<'a> {
                 self.sub(b, s, size)
             }
             Expr::Matrix(rows) => {
-                let cells = rows.iter().map(|r| r.iter().map(|c| self.expr(c, size)).collect()).collect();
-                self.matrix(cells, size)
+                let cells = rows
+                    .iter()
+                    .map(|r| {
+                        r.iter()
+                            .map(|c| {
+                                let l = self.expr(c, size);
+                                match self.edit_cell {
+                                    Some((p, w)) if p == c as *const Expr as usize => Lay {
+                                        w: l.w.max(w),
+                                        asc: l.asc.max(size * ASC),
+                                        desc: l.desc.max(size * 0.25),
+                                        ..Default::default()
+                                    },
+                                    _ => l,
+                                }
+                            })
+                            .collect()
+                    })
+                    .collect();
+                self.matrix_id(cells, size, Some(e as *const Expr as usize))
             }
             Expr::Range(a, b, c) => {
                 let mut parts = vec![self.expr(a, size)];
@@ -450,7 +498,7 @@ impl<'a> Ts<'a> {
         let y = -inner.asc - gap;
         let w = inner.w.max(size * 0.5);
         let lw = (size / 14.0).max(1.0);
-        let mut out = Lay { w, asc: -y + head + 1.0, desc: inner.desc, items: vec![] };
+        let mut out = Lay { w, asc: -y + head + 1.0, desc: inner.desc, items: vec![], boxes: vec![] };
         let off = (w - inner.w) / 2.0;
         out.place(inner, off, 0.0);
         let (a, b) = (Vec2::new(size * 0.05, y), Vec2::new(w - size * 0.05, y));
@@ -477,7 +525,7 @@ impl<'a> Ts<'a> {
         let top = -axis - total_h / 2.0;
         let indent = size * 0.55;
         let width = rows.iter().map(|r| r.w).fold(0.0f32, f32::max);
-        let mut out = Lay { w: indent + width + size * 0.2, asc: -top + size * 0.1, desc: total_h + top + size * 0.1, items: vec![] };
+        let mut out = Lay { w: indent + width + size * 0.2, asc: -top + size * 0.1, desc: total_h + top + size * 0.1, items: vec![], boxes: vec![] };
         let mut y = top;
         for r in rows {
             let base = y + r.asc;
@@ -716,7 +764,18 @@ impl<'a> Ts<'a> {
         match stmt {
             Stmt::Define { target, expr, global, show } => {
                 let sym = if *global { "≡" } else { ":=" };
-                let mut parts = vec![self.target(target, size), self.op(sym, size), self.expr(expr, size)];
+                let mut lt = self.target(target, size);
+                if let Some((0, w)) = self.edit_cell {
+                    // definition target being edited in place (see `inplace`)
+                    lt = Lay { w: lt.w.max(w), asc: lt.asc.max(size * ASC), desc: lt.desc.max(size * 0.25), ..Default::default() };
+                }
+                let lo = self.op(sym, size);
+                let lr = self.expr(expr, size);
+                let (tr, rr) = (
+                    Rect::from_min_max(Pos2::new(0.0, -lt.asc), Pos2::new(lt.w, lt.desc)),
+                    Rect::from_min_max(Pos2::new(lt.w + lo.w, -lr.asc), Pos2::new(lt.w + lo.w + lr.w, lr.desc)),
+                );
+                let mut parts = vec![lt, lo, lr];
                 if let Some(unit) = show {
                     parts.push(self.op("=", size));
                     match result {
@@ -737,7 +796,10 @@ impl<'a> Ts<'a> {
                         }
                     }
                 }
-                self.hcat(parts)
+                let mut out = self.hcat(parts);
+                out.boxes.push((Node::Target, tr));
+                out.boxes.push((Node::Rhs, rr));
+                out
             }
             Stmt::Eval { expr, unit } => {
                 let mut parts = vec![self.expr(expr, size), self.op("=", size)];

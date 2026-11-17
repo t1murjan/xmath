@@ -1,7 +1,7 @@
 //! The main window: Mathcad 15 style menus, toolbars, palettes, worksheet
 //! canvas and status bar.
 
-use crate::mathview::{Lay, Ts, RED};
+use crate::mathview::{Lay, Node, Ts, RED};
 use crate::palettes::{self, Act, Palette};
 use crate::plot;
 use egui::text::{CCursor, CCursorRange, LayoutJob, TextFormat};
@@ -15,9 +15,12 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use xmath_core::{
-    evaluate_worksheet, parse_statement, AxisStyle, FormatOptions, LineStyle, Output, PlotFormat, Region, RegionKind, RegionOutput,
+    evaluate_worksheet, AxisStyle, FormatOptions, LineStyle, Output, PlotFormat, Region, RegionKind, RegionOutput,
     TraceFormat, UnitSystem, Worksheet,
 };
+
+#[path = "inplace.rs"]
+mod inplace;
 
 const GRID: f32 = 8.0;
 const PAGE_W: f32 = 760.0;
@@ -86,6 +89,8 @@ pub static EXAMPLES: &[(&str, &str)] = &[
 struct MatrixDlg {
     rows: usize,
     cols: usize,
+    /// Set by the «Удалить» button.
+    delete: bool,
 }
 
 struct ListDlg {
@@ -208,6 +213,10 @@ pub struct App {
     /// Context help of the hovered toolbar/palette button (shown in the status bar).
     hint: String,
     edit_snapshot: bool,
+    /// Active box of in-place editing (matrix cell / definition target).
+    cell: Option<inplace::CellEdit>,
+    /// Hit boxes (screen coordinates) of the math regions laid out in the last frame.
+    hits: HashMap<u64, Vec<(Node, Rect)>>,
 
     status: String,
     title: String,
@@ -264,6 +273,8 @@ impl App {
             path_dlg: None,
             hint: String::new(),
             edit_snapshot: false,
+            cell: None,
+            hits: HashMap::new(),
             status: String::new(),
             title: String::new(),
             pending: Vec::new(),
@@ -558,7 +569,7 @@ impl App {
             Action::InsertPlot => {
                 self.new_region(RegionKind::new_plot(), true);
             }
-            Action::InsertMatrix => self.dlg_matrix = Some(MatrixDlg { rows: 3, cols: 3 }),
+            Action::InsertMatrix => self.dlg_matrix = Some(MatrixDlg { rows: if self.active_matrix_cell() { 1 } else { 3 }, cols: if self.active_matrix_cell() { 1 } else { 3 }, delete: false }),
             Action::InsertFunction => self.dlg_function = Some(ListDlg { group: 0, item: 0 }),
             Action::InsertUnit => self.dlg_unit = Some(ListDlg { group: 0, item: 0 }),
             Action::InsertText => {
@@ -723,6 +734,7 @@ impl App {
     fn finish_edit(&mut self, move_below: bool) {
         let Some(id) = self.editing.take() else { return };
         self.plot_buf = None;
+        self.cell = None;
         // entering a region and leaving it unchanged must not leave an undo step behind
         if std::mem::take(&mut self.edit_snapshot) && self.undo.last().is_some_and(|u| u.to_json() == self.ws.to_json()) {
             self.undo.pop();
@@ -752,6 +764,9 @@ impl App {
     /// Inserts text at the caret of the region being edited, or starts a new
     /// math region at the crosshair. The first `■` placeholder gets selected.
     fn insert(&mut self, ctx: &Context, s: &str) {
+        if self.insert_in_cell(ctx, s) {
+            return;
+        }
         let id = match self.editing {
             Some(id) if matches!(self.region(id).map(|r| &r.kind), Some(RegionKind::Math { .. } | RegionKind::Text { .. })) => id,
             _ => self.new_region(RegionKind::Math { source: String::new() }, true),
@@ -1793,11 +1808,12 @@ impl App {
             let mut ts = Ts::new(f, fs);
             let err = out.and_then(|o| o.error());
             let parsed = match out.and_then(|o| o.stmt.clone()) {
-                Some(s) => s,
-                None => parse_statement(source),
+                Some(Ok(s)) => Ok(s),
+                // unparsable for the evaluator (e.g. `■` placeholders): still typeset what is possible
+                _ => inplace::parse_stmt(source),
             };
             match parsed {
-                Ok(stmt) => {
+                Ok(mut stmt) => {
                     if err.is_some() {
                         ts.color = RED;
                     }
@@ -1805,7 +1821,9 @@ impl App {
                         Some(Output::Value { view, unit }) => Some((view, unit.as_ref())),
                         _ => None,
                     };
-                    (ts.statement(&stmt, result, fs), err)
+                    let mut lay = ts.statement(&stmt, result, fs);
+                    inplace::resolve_boxes(&mut stmt, &mut lay.boxes);
+                    (lay, err)
                 }
                 Err(e) => (ts.text_c(source, fs, RED), Some(e.msg)),
             }
@@ -1876,12 +1894,32 @@ impl App {
                 let mut error: Option<String> = None;
                 match &region.kind {
                     RegionKind::Math { source } => {
-                        if editing {
+                        let in_cell = if editing && self.cell.as_ref().is_some_and(|c| c.region == id) {
+                            let r = self.cell_canvas(ui, id, pos, fs);
+                            if r.is_none() {
+                                self.focus_pending = true;
+                            }
+                            r
+                        } else {
+                            None
+                        };
+                        if let Some((r, err, finished)) = in_cell {
+                            region_rect = r;
+                            error = err;
+                            if finished {
+                                self.pending_rect_fix(id, region_rect, to_ws, &mut new_rects);
+                                continue;
+                            }
+                        } else if editing {
                             let mut src = source.clone();
                             let font = FontId::proportional(fs);
                             let tw = ctx.fonts(|f| f.layout_no_wrap(src.clone(), font.clone(), Color32::BLACK).size().x);
                             let w = (tw + fs * 2.0).max(fs * 6.0);
-                            let te_rect = Rect::from_min_size(pos, Vec2::new(w, fs * 1.6));
+                            // the box replaces the formula: its text baseline is the baseline of the region
+                            let asc = self.math_layout(&ctx, id, source).0.asc;
+                            let te_top = pos.y + 2.0 + asc - fs * 0.95 - 1.0;
+                            let te_rect = Rect::from_min_size(Pos2::new(pos.x, te_top.max(pos.y - fs)), Vec2::new(w, fs * 1.6));
+                            painter.rect_filled(te_rect, 0.0, Color32::WHITE);
                             let resp = ui.put(
                                 te_rect,
                                 TextEdit::singleline(&mut src)
@@ -1928,7 +1966,9 @@ impl App {
                             error = err;
                             anchor_updates.push((id, [0.0, (lay.asc + 2.0) / z]));
                             region_rect = Rect::from_min_size(pos, Vec2::new(lay.w + 4.0, lay.h() + 4.0));
-                            lay.paint(&painter, pos + Vec2::new(2.0, 2.0 + lay.asc));
+                            let origin = pos + Vec2::new(2.0, 2.0 + lay.asc);
+                            lay.paint(&painter, origin);
+                            self.hits.insert(id, lay.boxes.iter().map(|(n, r)| (*n, r.translate(origin.to_vec2()))).collect());
                         }
                     }
                     RegionKind::Text { text, style, width, lock_width } => {
@@ -2220,6 +2260,8 @@ impl App {
             } else {
                 self.selection = vec![id];
                 self.begin_edit(id, true);
+                // formulas with matrix cells are edited in place, cell by cell
+                self.begin_inplace(ctx, id, resp.interact_pointer_pos());
             }
         }
     }
@@ -2230,6 +2272,8 @@ impl App {
     fn dialogs(&mut self, ctx: &Context) {
         let mut insert: Option<String> = None;
 
+        let in_matrix = self.active_matrix_cell();
+        let mut matrix_op: Option<(bool, usize, usize)> = None;
         if let Some(d) = &mut self.dlg_matrix {
             let mut open = true;
             let mut done = false;
@@ -2243,7 +2287,12 @@ impl App {
                     ui.end_row();
                 });
                 ui.horizontal(|ui| {
-                    if ui.button("ОК").clicked() {
+                    if ui.button("Вставить").clicked() {
+                        done = true;
+                    }
+                    // with an active matrix cell: delete rows / columns starting at it
+                    if ui.add_enabled(in_matrix, egui::Button::new("Удалить")).clicked() {
+                        d.delete = true;
                         done = true;
                     }
                     if ui.button("Отмена").clicked() {
@@ -2254,8 +2303,12 @@ impl App {
             });
             if done || !open {
                 if done && d.rows > 0 {
-                    let row = vec!["■"; d.cols].join(", ");
-                    insert = Some(format!("[{}]", vec![row; d.rows].join("; ")));
+                    if in_matrix {
+                        matrix_op = Some((!d.delete, d.rows, d.cols));
+                    } else {
+                        let row = vec!["■"; d.cols].join(", ");
+                        insert = Some(format!("[{}]", vec![row; d.rows].join("; ")));
+                    }
                 }
                 self.dlg_matrix = None;
             }
@@ -2679,8 +2732,20 @@ impl App {
             });
         }
 
+        if let Some((ins, r, c)) = matrix_op {
+            // Mathcad: rows and columns are counted separately; the cell stays active
+            self.matrix_edit(ctx, ins, r, c);
+        }
         if let Some(s) = insert {
-            self.insert(ctx, &s);
+            let matrix = s.starts_with('[') && s.contains('■');
+            if matrix && self.editing_math().is_none() {
+                self.new_matrix_region(ctx, s);
+            } else {
+                self.insert(ctx, &s);
+                if matrix {
+                    self.linear_to_cells(ctx);
+                }
+            }
         }
     }
 }
