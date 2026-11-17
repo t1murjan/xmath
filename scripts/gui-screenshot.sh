@@ -11,7 +11,10 @@
 set -u
 OUT=$1; FILE=${2:-}
 shift 2 || shift $#
-DISP=:$((90 + RANDOM % 9))
+# first free display number (no X socket / lock file)
+N=90
+while [ -e "/tmp/.X11-unix/X$N" ] || [ -e "/tmp/.X$N-lock" ]; do N=$((N + 1)); done
+DISP=:$N
 Xvfb "$DISP" -screen 0 1280x880x24 >/dev/null 2>&1 &
 XPID=$!
 sleep 1
