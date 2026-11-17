@@ -63,7 +63,76 @@ pub enum RegionKind {
         width: f32,
         #[serde(default = "default_plot_h")]
         height: f32,
+        /// Axis limits; `None` means autoscale.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x_min: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x_max: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        y_min: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        y_max: Option<f64>,
+        /// Grid, axis style, log scales and trace formatting.
+        #[serde(default, skip_serializing_if = "PlotFormat::is_default")]
+        fmt: PlotFormat,
     },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AxisStyle {
+    /// Axes cross at zero (Mathcad default).
+    #[default]
+    Crossed,
+    /// Axes along the frame.
+    Boxed,
+    None,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LineStyle {
+    #[default]
+    Solid,
+    Dot,
+    Dash,
+    DashDot,
+    /// Markers only, no connecting line.
+    Points,
+}
+
+/// Overrides of the default look of one trace.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TraceFormat {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<[u8; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<LineStyle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlotFormat {
+    pub grid: bool,
+    pub axes: AxisStyle,
+    pub log_x: bool,
+    pub log_y: bool,
+    pub legend: bool,
+    pub traces: Vec<TraceFormat>,
+}
+
+impl Default for PlotFormat {
+    fn default() -> Self {
+        PlotFormat { grid: true, axes: AxisStyle::Crossed, log_x: false, log_y: false, legend: false, traces: Vec::new() }
+    }
+}
+
+impl PlotFormat {
+    pub fn is_default(&self) -> bool {
+        *self == PlotFormat::default()
+    }
 }
 
 /// Character formatting of a text region.
@@ -95,7 +164,17 @@ fn default_plot_h() -> f32 {
 
 impl RegionKind {
     pub fn new_plot() -> RegionKind {
-        RegionKind::Plot { x: String::new(), y: vec![String::new()], width: default_plot_w(), height: default_plot_h() }
+        RegionKind::Plot {
+            x: String::new(),
+            y: vec![String::new()],
+            width: default_plot_w(),
+            height: default_plot_h(),
+            x_min: None,
+            x_max: None,
+            y_min: None,
+            y_max: None,
+            fmt: PlotFormat::default(),
+        }
     }
 
     pub fn new_text(text: impl Into<String>) -> RegionKind {

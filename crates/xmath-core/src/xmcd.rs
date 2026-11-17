@@ -877,7 +877,7 @@ fn convert_plot(cx: &mut Cx, plot: Node, w: Option<f32>, h: Option<f32>) -> R<Re
         y.push(to_src(cx, n)?);
     }
     let mut k = RegionKind::new_plot();
-    if let RegionKind::Plot { x: kx, y: ky, width, height } = &mut k {
+    if let RegionKind::Plot { x: kx, y: ky, width, height, .. } = &mut k {
         *kx = x;
         *ky = y;
         if let Some(w) = w {

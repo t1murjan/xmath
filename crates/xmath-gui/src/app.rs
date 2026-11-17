@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use xmath_core::{
-    evaluate_worksheet, parse_statement, FormatOptions, Output, Region, RegionKind, RegionOutput, Worksheet,
+    evaluate_worksheet, parse_statement, AxisStyle, FormatOptions, LineStyle, Output, PlotFormat, Region, RegionKind, RegionOutput,
+    TraceFormat, UnitSystem, Worksheet,
 };
 
 const GRID: f32 = 8.0;
@@ -67,6 +68,8 @@ pub enum Action {
     Calculate,
     ToggleAuto,
     ResultFormat,
+    WorksheetOptions,
+    PlotFormat,
     SeparateRegions,
     AlignAcross,
     AlignDown,
@@ -93,6 +96,37 @@ struct ListDlg {
 struct FormatDlg {
     opts: FormatOptions,
     tab: usize,
+}
+
+/// Mathcad's «Форматирование графика».
+struct PlotDlg {
+    id: u64,
+    fmt: PlotFormat,
+    trace: usize,
+    tab: usize,
+}
+
+/// Tools → Worksheet Options.
+struct OptionsDlg {
+    tab: usize,
+    origin: i32,
+    tol: String,
+    ctol: String,
+    units: UnitSystem,
+}
+
+/// An axis-limit box being edited: (plot id, 0..4 = x-min, x-max, y-min, y-max).
+struct LimBuf {
+    id: u64,
+    k: usize,
+    text: String,
+    changed: bool,
+}
+
+/// Result of a background evaluation.
+struct EvalDone {
+    gen: u64,
+    outputs: HashMap<u64, RegionOutput>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -154,6 +188,15 @@ pub struct App {
     dlg_function: Option<ListDlg>,
     dlg_unit: Option<ListDlg>,
     dlg_format: Option<FormatDlg>,
+    dlg_plot: Option<PlotDlg>,
+    dlg_options: Option<OptionsDlg>,
+    lim_buf: Option<LimBuf>,
+    eval_tx: mpsc::Sender<EvalDone>,
+    eval_rx: mpsc::Receiver<EvalDone>,
+    eval_gen: u64,
+    evaluating: bool,
+    force_calc: bool,
+    dirty_since: Option<Instant>,
     show_help: bool,
     show_about: bool,
     confirm: Option<Action>,
@@ -175,6 +218,7 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, path: Option<PathBuf>, has_bold_font: bool) -> App {
         let mut palettes = HashSet::new();
+        let (eval_tx, eval_rx) = mpsc::channel();
         palettes.insert(Palette::Calculator);
         let mut app = App {
             ws: Worksheet::default(),
@@ -201,6 +245,15 @@ impl App {
             dlg_function: None,
             dlg_unit: None,
             dlg_format: None,
+            dlg_plot: None,
+            dlg_options: None,
+            lim_buf: None,
+            eval_tx,
+            eval_rx,
+            eval_gen: 0,
+            evaluating: false,
+            force_calc: false,
+            dirty_since: None,
             show_help: false,
             show_about: false,
             confirm: None,
@@ -275,6 +328,7 @@ impl App {
 
     fn changed(&mut self) {
         self.dirty = true;
+        self.dirty_since = Some(Instant::now());
         self.modified = true;
     }
 
@@ -512,15 +566,26 @@ impl App {
                 self.new_region(RegionKind::Math { source: String::new() }, true);
             }
             Action::Calculate => {
-                self.outputs = evaluate_worksheet(&self.ws);
-                self.dirty = false;
-                self.status = "Вычислено".into();
+                self.dirty = true;
+                self.force_calc = true;
+                self.dirty_since = None;
             }
             Action::ToggleAuto => {
                 self.auto_calc = !self.auto_calc;
                 self.dirty = true;
             }
             Action::ResultFormat => self.dlg_format = Some(FormatDlg { opts: self.ws.format, tab: 0 }),
+            Action::WorksheetOptions => {
+                let (origin, tol, ctol) = self.builtin_values();
+                self.dlg_options = Some(OptionsDlg { tab: 0, origin, tol, ctol, units: self.ws.format.unit_system });
+            }
+            Action::PlotFormat => {
+                let target = self.editing.into_iter().chain(self.selection.iter().copied()).find(|id| matches!(self.region(*id).map(|r| &r.kind), Some(RegionKind::Plot { .. })));
+                match target.and_then(|id| self.region(id).map(|r| (id, r.kind.clone()))) {
+                    Some((id, RegionKind::Plot { fmt, .. })) => self.dlg_plot = Some(PlotDlg { id, fmt, trace: 0, tab: 0 }),
+                    _ => self.status = "Выберите график".into(),
+                }
+            }
             Action::SeparateRegions => self.separate_regions(),
             Action::AlignAcross | Action::AlignDown => self.align(a == Action::AlignAcross),
             Action::Help => self.show_help = true,
@@ -794,6 +859,8 @@ impl App {
             || self.dlg_function.is_some()
             || self.dlg_unit.is_some()
             || self.dlg_format.is_some()
+            || self.dlg_plot.is_some()
+            || self.dlg_options.is_some()
             || self.path_dlg.is_some()
             || self.file_job.is_some()
             || self.confirm.is_some()
@@ -805,6 +872,7 @@ impl App {
         let plain = |k| KeyboardShortcut::new(Modifiers::NONE, k);
         let mut acts = Vec::new();
         let mut fmt: Vec<u8> = Vec::new();
+        let kbd_focus = ctx.wants_keyboard_input();
         let in_text_region = self.editing.is_some_and(|id| matches!(self.region(id).map(|r| &r.kind), Some(RegionKind::Text { .. })));
         let editing_text = self.editing.is_some_and(|id| !matches!(self.region(id).map(|r| &r.kind), Some(RegionKind::Plot { .. })));
         ctx.input_mut(|i| {
@@ -844,7 +912,7 @@ impl App {
             if i.consume_shortcut(&plain(Key::F1)) {
                 acts.push(Action::Help);
             }
-            if !editing_text {
+            if !editing_text && !kbd_focus {
                 if i.consume_shortcut(&ctrl(Key::Z)) {
                     acts.push(Action::Undo);
                 }
@@ -1392,6 +1460,9 @@ impl App {
                     act = Some(Action::ResultFormat);
                 }
                 menu_item(ui, "Текст...", "", false);
+                if menu_item(ui, "График...", "", true) {
+                    act = Some(Action::PlotFormat);
+                }
                 ui.separator();
                 ui.menu_button("Выровнять области", |ui| {
                     if menu_item(ui, "По горизонтали", "", true) {
@@ -1417,7 +1488,9 @@ impl App {
                         ui.close_menu();
                     }
                 });
-                menu_item(ui, "Параметры рабочего листа...", "", false);
+                if menu_item(ui, "Параметры рабочего листа...", "", true) {
+                    act = Some(Action::WorksheetOptions);
+                }
             });
             ui.menu_button("Символика", |ui| {
                 for s in ["Вычислить", "Упростить", "Раскрыть", "Разложить", "Привести подобные", "Решить", "Подставить"] {
@@ -1671,6 +1744,8 @@ impl App {
         ui.horizontal(|ui| {
             let msg = if !self.hint.is_empty() {
                 &self.hint
+            } else if self.evaluating || (self.dirty && self.auto_calc) {
+                "Вычисление…"
             } else if self.status.is_empty() {
                 "Нажмите F1 для справки."
             } else {
@@ -1748,7 +1823,10 @@ impl App {
 
         ScrollArea::both().id_salt("sheet").auto_shrink([false, false]).show(ui, |ui| {
             let avail = ui.available_size();
-            let size = Vec2::new(((PAGE_W + 200.0) * z).max(avail.x), (height * z).max(avail.y));
+            // wide regions beyond the page margin stay reachable by scrolling
+            let content_w = self.rects.values().map(|r| r.right()).fold(PAGE_W, f32::max);
+            let size = Vec2::new(((content_w + 200.0) * z).max(avail.x), (height * z).max(avail.y));
+            let visible = ui.clip_rect();
             let (rect, bg) = ui.allocate_exact_size(size, Sense::click_and_drag());
             let origin = rect.min;
             let to_screen = |p: Pos2| origin + p.to_vec2() * z;
@@ -1780,6 +1858,16 @@ impl App {
                 let pos = to_screen(Pos2::new(region.x, region.y));
                 let editing = self.editing == Some(id);
                 let selected = self.selection.contains(&id);
+                // regions far outside the viewport are not laid out again (large worksheets)
+                if !editing && !selected {
+                    if let Some(r) = self.rects.get(&id).copied() {
+                        let sr = Rect::from_min_max(to_screen(r.min), to_screen(r.max));
+                        if !sr.expand(64.0).intersects(visible) {
+                            new_rects.insert(id, r);
+                            continue;
+                        }
+                    }
+                }
                 let mut region_rect;
                 let mut error: Option<String> = None;
                 match &region.kind {
@@ -1880,14 +1968,15 @@ impl App {
                             }
                         }
                     }
-                    RegionKind::Plot { x, y, width, height } => {
+                    RegionKind::Plot { x, y, width, height, x_min, x_max, y_min, y_max, fmt } => {
                         let legend_w = LEGEND_W * z;
                         let plot_rect = Rect::from_min_size(pos + Vec2::new(legend_w, 0.0), Vec2::new(width * z, height * z));
                         let data = match self.outputs.get(&id).map(|o| &o.output) {
                             Some(Output::Plot(d)) => d.clone(),
                             _ => Default::default(),
                         };
-                        plot::paint(&painter, plot_rect, &data, fs);
+                        let view = plot::View { x_min: *x_min, x_max: *x_max, y_min: *y_min, y_max: *y_max, fmt };
+                        let axes = plot::paint(&painter, plot_rect, &data, &view, fs);
                         let label_row = plot_rect.bottom() + fs * 0.4;
                         let mut bottom = label_row + fs * 1.6;
                         // region interaction (drag/click) under the placeholders
@@ -1898,8 +1987,8 @@ impl App {
                             for (i, label) in y.iter().enumerate() {
                                 let l = if label.is_empty() { "■" } else { label };
                                 let r = painter.text(Pos2::new(pos.x + legend_w - 8.0, ly), Align2::RIGHT_TOP, l, FontId::proportional(fs), Color32::BLACK);
-                                let lc = plot::TRACE_COLORS[i % plot::TRACE_COLORS.len()];
-                                painter.line_segment([Pos2::new(r.left(), r.bottom() + 3.0), Pos2::new(r.right().max(r.left() + 24.0), r.bottom() + 3.0)], Stroke::new(2.0_f32, lc));
+                                let (lc, ls, lw) = plot::trace_style(i, fmt);
+                                plot::sample(&painter, Pos2::new(r.left(), r.bottom() + 3.0), Pos2::new(r.right().max(r.left() + 24.0), r.bottom() + 3.0), lc, ls, lw);
                                 ly += fs * 2.4;
                             }
                             // an empty abscissa shows the variable QuickPlot detected, in grey
@@ -1919,6 +2008,12 @@ impl App {
                         let resp = ui.interact(region_rect, Id::new(("region", id)), Sense::click_and_drag());
                         self.region_interaction(&ctx, id, &resp, z);
                         clicked_region |= resp.clicked();
+                        if resp.double_clicked() {
+                            self.dlg_plot = Some(PlotDlg { id, fmt: fmt.clone(), trace: 0, tab: 0 });
+                        }
+                        if selected || editing {
+                            self.axis_limit_boxes(ui, id, plot_rect, fs, &axes, [*x_min, *x_max, *y_min, *y_max]);
+                        }
                         if editing {
                             if let Some((bid, mut ybuf, mut xbuf)) = self.plot_buf.clone().filter(|b| b.0 == id) {
                                 let yr = Rect::from_min_size(Pos2::new(pos.x, plot_rect.center().y - fs), Vec2::new(legend_w - 6.0, fs * 1.6));
@@ -2001,7 +2096,13 @@ impl App {
 
                 if let Some(e) = &error {
                     if editing || selected {
-                        painter.text(region_rect.left_bottom() + Vec2::new(0.0, 2.0), Align2::LEFT_TOP, e, FontId::proportional(fs * 0.85), RED);
+                        // Mathcad shows the message in a pale yellow tooltip next to the region
+                        let g = painter.layout_no_wrap(e.clone(), FontId::proportional(fs * 0.9), RED);
+                        let at = region_rect.left_bottom() + Vec2::new(0.0, if editing { 4.0 } else { 6.0 });
+                        let box_r = Rect::from_min_size(at, g.size() + Vec2::new(8.0, 4.0));
+                        painter.rect_filled(box_r, 0.0, Color32::from_rgb(255, 255, 225));
+                        painter.rect_stroke(box_r, 0.0, Stroke::new(1.0_f32, Color32::BLACK), egui::StrokeKind::Inside);
+                        painter.galley(box_r.min + Vec2::new(4.0, 2.0), g, RED);
                     }
                 }
                 if selected && !editing {
@@ -2273,6 +2374,13 @@ impl App {
                         ui.label("Формат:");
                         ui.label("Основной");
                         ui.end_row();
+                        ui.label("Система единиц:");
+                        egui::ComboBox::from_id_salt("fmt-units").selected_text(d.opts.unit_system.label()).show_ui(ui, |ui| {
+                            for u in UnitSystem::ALL {
+                                ui.selectable_value(&mut d.opts.unit_system, u, u.label());
+                            }
+                        });
+                        ui.end_row();
                         ui.label("Число десятичных знаков:");
                         ui.add(egui::DragValue::new(&mut d.opts.precision).range(0..=15));
                         ui.end_row();
@@ -2307,6 +2415,151 @@ impl App {
                     self.changed();
                 } else {
                     self.dlg_format = None;
+                }
+            }
+        }
+
+        if let Some(d) = &mut self.dlg_options {
+            let mut result: Option<bool> = None;
+            egui::Window::new("Параметры рабочего листа").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut d.tab, 0, "Встроенные переменные");
+                    ui.selectable_value(&mut d.tab, 1, "Система единиц");
+                });
+                ui.separator();
+                if d.tab == 0 {
+                    egui::Grid::new("opt-vars").num_columns(2).spacing(Vec2::new(12.0, 6.0)).show(ui, |ui| {
+                        ui.label("Начало отсчёта массивов (ORIGIN):");
+                        ui.add(egui::DragValue::new(&mut d.origin).range(0..=100));
+                        ui.end_row();
+                        ui.label("Допуск сходимости (TOL):");
+                        ui.add(TextEdit::singleline(&mut d.tol).desired_width(90.0));
+                        ui.end_row();
+                        ui.label("Допуск сходимости комплексных (CTOL):");
+                        ui.add(TextEdit::singleline(&mut d.ctol).desired_width(90.0));
+                        ui.end_row();
+                    });
+                    ui.label(RichText::new("Значения записываются в лист как глобальные определения (≡).").weak().size(11.0));
+                } else {
+                    for u in UnitSystem::ALL {
+                        ui.radio_value(&mut d.units, u, u.label());
+                    }
+                    ui.label(RichText::new("Влияет на единицы результатов без явной единицы отображения.").weak().size(11.0));
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("ОК").clicked() {
+                        result = Some(true);
+                    }
+                    if ui.button("Отмена").clicked() {
+                        result = Some(false);
+                    }
+                });
+            });
+            if let Some(ok) = result {
+                let d = self.dlg_options.take().unwrap();
+                if ok {
+                    self.apply_options(&d);
+                }
+            }
+        }
+
+        if let Some(d) = &mut self.dlg_plot {
+            let mut result: Option<bool> = None;
+            let names: Vec<String> = match self.ws.regions.iter().find(|r| r.id == d.id).map(|r| &r.kind) {
+                Some(RegionKind::Plot { y, .. }) => y.iter().enumerate().map(|(i, e)| if e.is_empty() { format!("Трасса {}", i + 1) } else { format!("{}: {e}", i + 1) }).collect(),
+                _ => Vec::new(),
+            };
+            egui::Window::new("Форматирование графика").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut d.tab, 0, "Оси X-Y");
+                    ui.selectable_value(&mut d.tab, 1, "Трассы");
+                });
+                ui.separator();
+                if d.tab == 0 {
+                    ui.checkbox(&mut d.fmt.grid, "Линии сетки");
+                    ui.checkbox(&mut d.fmt.legend, "Легенда");
+                    ui.checkbox(&mut d.fmt.log_x, "Логарифмическая шкала X");
+                    ui.checkbox(&mut d.fmt.log_y, "Логарифмическая шкала Y");
+                    ui.separator();
+                    ui.label("Стиль осей:");
+                    for (st, n) in [(AxisStyle::Crossed, "Пересекающиеся"), (AxisStyle::Boxed, "В рамке"), (AxisStyle::None, "Без осей")] {
+                        ui.radio_value(&mut d.fmt.axes, st, n);
+                    }
+                } else if names.is_empty() {
+                    ui.label("Нет трасс");
+                } else {
+                    d.trace = d.trace.min(names.len() - 1);
+                    let i = d.trace;
+                    egui::ComboBox::from_id_salt("pf-trace").width(220.0).selected_text(names[i].clone()).show_ui(ui, |ui| {
+                        for (k, n) in names.iter().enumerate() {
+                            ui.selectable_value(&mut d.trace, k, n.clone());
+                        }
+                    });
+                    while d.fmt.traces.len() <= i {
+                        d.fmt.traces.push(TraceFormat::default());
+                    }
+                    let (c0, l0, w0) = plot::trace_style(i, &d.fmt);
+                    let mut color = [c0.r(), c0.g(), c0.b()];
+                    let mut line = l0;
+                    let mut width = w0;
+                    egui::Grid::new("pf-grid").num_columns(2).spacing(Vec2::new(10.0, 6.0)).show(ui, |ui| {
+                        ui.label("Цвет:");
+                        let cname = plot::PALETTE.iter().find(|(_, c)| *c == color).map_or("Другой", |(n, _)| *n);
+                        egui::ComboBox::from_id_salt("pf-color").selected_text(cname).show_ui(ui, |ui| {
+                            for (n, c) in plot::PALETTE {
+                                ui.selectable_value(&mut color, c, n);
+                            }
+                        });
+                        ui.end_row();
+                        ui.label("Линия:");
+                        let lname = |l: LineStyle| match l {
+                            LineStyle::Solid => "Сплошная",
+                            LineStyle::Dot => "Точки",
+                            LineStyle::Dash => "Штрихи",
+                            LineStyle::DashDot => "Штрих-пунктир",
+                            LineStyle::Points => "Только точки",
+                        };
+                        egui::ComboBox::from_id_salt("pf-line").selected_text(lname(line)).show_ui(ui, |ui| {
+                            for l in [LineStyle::Solid, LineStyle::Dot, LineStyle::Dash, LineStyle::DashDot, LineStyle::Points] {
+                                ui.selectable_value(&mut line, l, lname(l));
+                            }
+                        });
+                        ui.end_row();
+                        ui.label("Толщина:");
+                        ui.add(egui::DragValue::new(&mut width).range(1.0..=6.0).speed(0.1).fixed_decimals(1));
+                        ui.end_row();
+                    });
+                    let (r, p) = ui.allocate_painter(Vec2::new(220.0, 20.0), Sense::hover());
+                    plot::sample(&p, r.rect.left_center() + Vec2::X * 10.0, r.rect.right_center() - Vec2::X * 10.0, Color32::from_rgb(color[0], color[1], color[2]), line, width);
+                    if (color, line, width) != ([c0.r(), c0.g(), c0.b()], l0, w0) {
+                        d.fmt.traces[i] = TraceFormat { color: Some(color), line: Some(line), width: Some(width) };
+                    }
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("ОК").clicked() {
+                        result = Some(true);
+                    }
+                    if ui.button("Отмена").clicked() {
+                        result = Some(false);
+                    }
+                    if ui.button("По умолчанию").clicked() {
+                        d.fmt = PlotFormat::default();
+                    }
+                });
+            });
+            if let Some(ok) = result {
+                let d = self.dlg_plot.take().unwrap();
+                if ok {
+                    let differs = matches!(self.region(d.id).map(|r| &r.kind), Some(RegionKind::Plot { fmt, .. }) if *fmt != d.fmt);
+                    if differs {
+                        self.checkpoint();
+                        if let Some(Region { kind: RegionKind::Plot { fmt, .. }, .. }) = self.region_mut(d.id) {
+                            *fmt = d.fmt;
+                        }
+                        self.changed();
+                    }
                 }
             }
         }
@@ -2407,6 +2660,174 @@ impl App {
     }
 }
 
+// =====================================================================
+// Worksheet options, plot limits, background evaluation
+
+/// Splits `NAME ≡ value` / `NAME := value` source into the value text.
+fn builtin_def<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+    let rest = source.trim().strip_prefix(name)?.trim_start();
+    let rest = rest.strip_prefix('≡').or_else(|| rest.strip_prefix(":="))?;
+    Some(rest.trim())
+}
+
+impl App {
+    /// Current ORIGIN / TOL / CTOL as defined by regions of the worksheet.
+    fn builtin_values(&self) -> (i32, String, String) {
+        let find = |name: &str| {
+            self.ws.regions.iter().find_map(|r| match &r.kind {
+                RegionKind::Math { source } => builtin_def(source, name).map(str::to_string),
+                _ => None,
+            })
+        };
+        let origin = find("ORIGIN").and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
+        (origin, find("TOL").unwrap_or_else(|| "0.001".into()), find("CTOL").unwrap_or_else(|| "0.001".into()))
+    }
+
+    /// Writes `name ≡ value` into the worksheet: updates the existing definition,
+    /// or inserts a global definition at the top (not needed for default values).
+    fn set_builtin(&mut self, name: &str, value: &str, default: &str) {
+        let src = format!("{name} ≡ {value}");
+        if let Some(r) = self.ws.regions.iter_mut().find(|r| matches!(&r.kind, RegionKind::Math { source } if builtin_def(source, name).is_some())) {
+            if let RegionKind::Math { source } = &mut r.kind {
+                *source = src;
+            }
+            return;
+        }
+        if value == default {
+            return;
+        }
+        let min_y = self.ws.regions.iter().map(|r| r.y).fold(f32::MAX, f32::min);
+        let mut y = if min_y == f32::MAX { 8.0 } else { min_y - 28.0 };
+        if y < 4.0 {
+            let d = 4.0 - y;
+            for r in &mut self.ws.regions {
+                r.y += d;
+            }
+            y = 4.0;
+        }
+        let id = self.ws.next_id();
+        self.ws.regions.push(Region { id, x: 24.0, y, kind: RegionKind::Math { source: src } });
+    }
+
+    fn apply_options(&mut self, d: &OptionsDlg) {
+        let (o, t, c) = self.builtin_values();
+        let tol = d.tol.trim().replace(',', ".");
+        let ctol = d.ctol.trim().replace(',', ".");
+        let tol_ok = tol.parse::<f64>().is_ok_and(|v| v > 0.0);
+        let ctol_ok = ctol.parse::<f64>().is_ok_and(|v| v > 0.0);
+        let changed = d.origin != o || (tol_ok && tol != t) || (ctol_ok && ctol != c) || d.units != self.ws.format.unit_system;
+        if !changed {
+            return;
+        }
+        self.checkpoint();
+        self.set_builtin("ORIGIN", &d.origin.to_string(), "0");
+        if tol_ok {
+            self.set_builtin("TOL", &tol, "0.001");
+        }
+        if ctol_ok {
+            self.set_builtin("CTOL", &ctol, "0.001");
+        }
+        self.ws.format.unit_system = d.units;
+        self.changed();
+    }
+
+    /// The four editable axis-limit boxes around a selected plot.
+    fn axis_limit_boxes(&mut self, ui: &mut Ui, id: u64, pr: Rect, fs: f32, axes: &plot::Axes, user: [Option<f64>; 4]) {
+        let auto = axes.limits();
+        let (w, h) = (fs * 4.6, fs * 1.5);
+        let slots = [
+            Rect::from_min_size(Pos2::new(pr.left(), pr.bottom() + 2.0), Vec2::new(w, h)),
+            Rect::from_min_size(Pos2::new(pr.right() - w, pr.bottom() + 2.0), Vec2::new(w, h)),
+            Rect::from_min_size(Pos2::new(pr.left() - w - 2.0, pr.bottom() - h), Vec2::new(w, h)),
+            Rect::from_min_size(Pos2::new(pr.left() - w - 2.0, pr.top()), Vec2::new(w, h)),
+        ];
+        for (k, slot) in slots.iter().enumerate() {
+            let tid = Id::new(("plot-lim", id, k));
+            let mine = self.lim_buf.as_ref().is_some_and(|b| b.id == id && b.k == k);
+            let mut text = match &self.lim_buf {
+                Some(b) if mine => b.text.clone(),
+                _ => user[k].map(plot::fmt_limit).unwrap_or_default(),
+            };
+            let hint = RichText::new(plot::fmt_limit(auto[k])).color(Color32::from_gray(120));
+            let r = ui.put(
+                *slot,
+                TextEdit::singleline(&mut text)
+                    .id(tid)
+                    .font(FontId::proportional(fs * 0.85))
+                    .horizontal_align(Align::Center)
+                    .margin(Vec2::new(1.0, 1.0))
+                    .hint_text(hint)
+                    .lock_focus(true),
+            );
+            if r.has_focus() {
+                if !mine {
+                    self.lim_buf = Some(LimBuf { id, k, text: text.clone(), changed: false });
+                }
+                if r.changed() {
+                    let t = text.trim().replace(',', ".");
+                    let parsed: Option<Option<f64>> = if t.is_empty() { Some(None) } else { t.parse::<f64>().ok().filter(|v| v.is_finite()).map(Some) };
+                    let mut first = false;
+                    if let Some(b) = &mut self.lim_buf {
+                        b.text = text.clone();
+                        if parsed.is_some() {
+                            first = !std::mem::replace(&mut b.changed, true);
+                        }
+                    }
+                    if let Some(v) = parsed {
+                        if first {
+                            self.checkpoint();
+                        }
+                        if let Some(Region { kind: RegionKind::Plot { x_min, x_max, y_min, y_max, .. }, .. }) = self.region_mut(id) {
+                            *[x_min, x_max, y_min, y_max][k] = v;
+                        }
+                        self.changed();
+                    }
+                }
+                if ui.input(|i| i.key_pressed(Key::Enter) || i.key_pressed(Key::Escape)) {
+                    r.surrender_focus();
+                    self.lim_buf = None;
+                }
+            } else if mine {
+                self.lim_buf = None;
+            }
+        }
+    }
+
+    /// Starts a background evaluation once typing has paused (debounce).
+    fn drive_evaluation(&mut self, ctx: &Context) {
+        while let Ok(done) = self.eval_rx.try_recv() {
+            if done.gen == self.eval_gen {
+                self.outputs = done.outputs;
+                self.evaluating = false;
+                ctx.request_repaint();
+            }
+        }
+        let wanted = self.dirty && (self.auto_calc || self.force_calc);
+        if wanted {
+            let since = *self.dirty_since.get_or_insert_with(|| Instant::now() - Duration::from_secs(1));
+            let wait = Duration::from_millis(150);
+            if since.elapsed() >= wait {
+                self.eval_gen += 1;
+                let gen = self.eval_gen;
+                let ws = self.ws.clone();
+                let tx = self.eval_tx.clone();
+                let c = ctx.clone();
+                self.dirty = false;
+                self.force_calc = false;
+                self.dirty_since = None;
+                self.evaluating = true;
+                std::thread::spawn(move || {
+                    let outputs = evaluate_worksheet(&ws);
+                    let _ = tx.send(EvalDone { gen, outputs });
+                    c.request_repaint();
+                });
+            } else {
+                ctx.request_repaint_after(wait - since.elapsed());
+            }
+        }
+    }
+}
+
 const HELP: &str = "\
 Ввод (как в Mathcad 15)
   щёлкните на пустом месте — появится красный крестик, затем печатайте
@@ -2491,11 +2912,7 @@ impl eframe::App for App {
             self.run(ctx, a);
         }
 
-        if self.dirty && self.auto_calc {
-            self.outputs = evaluate_worksheet(&self.ws);
-            self.dirty = false;
-            ctx.request_repaint();
-        }
+        self.drive_evaluation(ctx);
 
         let title = format!("xmath - [{}{}]", self.doc_name(), if self.modified { " *" } else { "" });
         if title != self.title {
