@@ -7,6 +7,7 @@ pub mod ast;
 pub mod builtins;
 mod builtins_ext;
 pub mod eval;
+mod fitting;
 pub mod format;
 pub mod linalg;
 pub mod numeric;
@@ -25,7 +26,7 @@ mod program_tests;
 pub use ast::{BinOp, Expr, PStmt, Stmt, Target, UnOp};
 pub use format::{FormatOptions, NumberText, Piece, ResultView, UnitPow, UnitSystem, UnitText};
 pub use parser::{parse_expr, parse_statement, ParseError};
-pub use worksheet::{Output, PlotData, Region, RegionKind, RegionOutput, Series, Snapshot, Worksheet};
+pub use worksheet::{AxisStyle, LineStyle, PlotFormat, TraceFormat, Output, PlotData, Region, RegionKind, RegionOutput, Series, Snapshot, Worksheet};
 
 /// Evaluates on a thread with a large stack, so deeply recursive user
 /// functions do not overflow the (small) main-thread stack.

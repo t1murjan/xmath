@@ -18,7 +18,10 @@ pub const NAMES: &[&str] = &[
     "interp", "slope", "intercept", "line", "corr", "regress", "cvar", "skew", "kurt", "hist", "gmean", "hmean",
     "mode", "gcd", "lcm", "Φ", "heaviside", "δ", "kronecker", "sinc", "csgn", "qnorm", "dunif", "punif", "dexp",
     "pexp", "J0", "J1", "Jn", "Y0", "Y1", "Yn", "I0", "I1", "In", "K0", "K1", "Kn", "substr", "search", "str2num",
-    "vec2str", "str2vec", "lookup", "match", "vlookup", "hlookup", "rkfixed", "Rkadapt",
+    "vec2str", "str2vec", "lookup", "match", "vlookup", "hlookup", "rkfixed", "Rkadapt", "expfit", "lgsfit",
+    "logfit", "lnfit", "pwrfit", "sinfit", "linfit", "genfit", "medfit", "loess", "ksmooth", "medsmooth",
+    "supsmooth", "predict", "rnd", "runif", "rnorm", "rexp", "rpois", "rbinom", "rgamma", "rchisq", "rbeta", "rt",
+    "rlnorm", "rweibull", "rcauchy", "rlogis", "rgeom", "dbinom", "pbinom", "dpois", "ppois",
 ];
 
 pub(crate) fn arity(name: &str, args: &[Value], n: usize) -> EResult<()> {
@@ -125,7 +128,15 @@ pub(crate) fn same_dim(v: &[Num]) -> EResult<Dim> {
 }
 
 fn extremum(args: &[Value], want_max: bool) -> EResult<Value> {
-    let v = flatten(args)?;
+    let mut v = flatten(args)?;
+    // a plain 0 is compatible with any units
+    if let Some(d) = v.iter().map(|n| n.dim).find(|d| !d.is_none()) {
+        for n in v.iter_mut() {
+            if n.dim.is_none() && n.v == C64::new(0.0, 0.0) {
+                n.dim = d;
+            }
+        }
+    }
     let d = same_dim(&v)?;
     let mut best = v[0].v.re;
     for n in &v {

@@ -58,7 +58,8 @@ fn matrix_is_column_major() {
     assert_eq!(shown(&ws, 3), "2");
     assert_eq!(source(&ws, 4), "transpose(M) =");
     assert_eq!(shown(&ws, 9), "2");
-    assert!(warns.iter().any(|w| w.contains("векторизации")), "{warns:?}");
+    assert!(warns.is_empty(), "{warns:?}");
+    assert_eq!(source(&ws, 10), "vectorize(sin(x)) =");
 }
 
 #[test]

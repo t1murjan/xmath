@@ -88,7 +88,7 @@ pub enum RegionKind {
         width: f32,
         #[serde(default = "default_plot_h")]
         height: f32,
-        /// Axis limits (`None`: automatic).
+        /// Axis limits; `None` means autoscale.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         x_min: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -101,6 +101,9 @@ pub enum RegionKind {
         /// `y`); empty when `x` applies to all traces.
         #[serde(default, rename = "x_exprs", skip_serializing_if = "Vec::is_empty")]
         xs: Vec<String>,
+        /// Grid, axis style, log scales and trace formatting.
+        #[serde(default, skip_serializing_if = "PlotFormat::is_default")]
+        fmt: PlotFormat,
     },
     /// A picture (imported Mathcad pictures and plots that could not be
     /// decoded). Not editable.
@@ -115,6 +118,63 @@ pub enum RegionKind {
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AxisStyle {
+    /// Axes cross at zero (Mathcad default).
+    #[default]
+    Crossed,
+    /// Axes along the frame.
+    Boxed,
+    None,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LineStyle {
+    #[default]
+    Solid,
+    Dot,
+    Dash,
+    DashDot,
+    /// Markers only, no connecting line.
+    Points,
+}
+
+/// Overrides of the default look of one trace.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TraceFormat {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<[u8; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<LineStyle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlotFormat {
+    pub grid: bool,
+    pub axes: AxisStyle,
+    pub log_x: bool,
+    pub log_y: bool,
+    pub legend: bool,
+    pub traces: Vec<TraceFormat>,
+}
+
+impl Default for PlotFormat {
+    fn default() -> Self {
+        PlotFormat { grid: true, axes: AxisStyle::Crossed, log_x: false, log_y: false, legend: false, traces: Vec::new() }
+    }
+}
+
+impl PlotFormat {
+    pub fn is_default(&self) -> bool {
+        *self == PlotFormat::default()
+    }
 }
 
 /// Character formatting of a text region.
@@ -155,6 +215,7 @@ impl RegionKind {
             x_max: None,
             y_min: None,
             y_max: None,
+            fmt: PlotFormat::default(),
             xs: Vec::new(),
         }
     }
@@ -333,11 +394,8 @@ impl Worksheet {
 
         // Pass 1: global definitions (≡) are visible everywhere.
         for &i in &order {
-            if let Some(Ok(Stmt::Define { target, expr, global: true })) = &parsed[i] {
-                let output = match ev.define(target, expr) {
-                    Ok(()) => Output::None,
-                    Err(e) => Output::Error(e),
-                };
+            if let Some(Ok(Stmt::Define { target, expr, global: true, show })) = &parsed[i] {
+                let output = self.define_output(&mut ev, target, expr, show);
                 let value = if snapshots { snapshot_var(&ev, target) } else { None };
                 out.insert(self.regions[i].id, RegionOutput { stmt: parsed[i].clone(), output, value });
             }
@@ -377,12 +435,12 @@ impl Worksheet {
     fn eval_stmt(&self, ev: &mut Evaluator, stmt: &Stmt, snap: Option<&mut Option<Snapshot>>) -> Output {
         let mut snap = snap;
         let result: EResult<Output> = (|| match stmt {
-            Stmt::Define { target, expr, .. } => {
-                ev.define(target, expr)?;
+            Stmt::Define { target, expr, show, .. } => {
+                let o = self.define_output(ev, target, expr, show);
                 if let Some(s) = snap.as_deref_mut() {
                     *s = snapshot_var(ev, target);
                 }
-                Ok(Output::None)
+                return Ok(o);
             }
             Stmt::Eval { expr, unit } => {
                 let sc = ev.top_scope();
@@ -390,23 +448,38 @@ impl Worksheet {
                 if let Some(s) = snap.as_deref_mut() {
                     *s = Snapshot::of(&v);
                 }
-                let u = match unit {
-                    None => None,
-                    Some(u) => Some(ev.eval(u, &sc)?.as_num().map_err(|_| "единица отображения должна быть скаляром".to_string())?),
-                };
-                // `T = °C`: offset display unit (zero point in kelvin), unless shadowed
-                let off = match (unit, u) {
-                    (Some(crate::Expr::Var(n)), Some(un)) => crate::units::offset_unit(n)
-                        .filter(|d| un.v.re == d.factor)
-                        .map_or(0.0, |d| d.offset_si()),
-                    _ => 0.0,
-                };
-                let view = ResultView::from_value_offset(&v, u, off, &self.format)?;
-                Ok(Output::Value { view, unit: unit.clone() })
+                self.value_output(ev, &v, unit)
             }
             Stmt::Show(_) => Ok(Output::None),
         })();
         result.unwrap_or_else(Output::Error)
+    }
+
+    /// Runs a definition; with a displayed value (`d := expr =`) the output is that value.
+    fn define_output(&self, ev: &mut Evaluator, target: &Target, expr: &Expr, show: &Option<Option<Expr>>) -> Output {
+        let r = ev.define_value(target, expr).and_then(|v| match show {
+            None => Ok(Output::None),
+            Some(unit) => self.value_output(ev, &v, unit),
+        });
+        r.unwrap_or_else(Output::Error)
+    }
+
+    /// The displayed result of a value in the optional display unit.
+    fn value_output(&self, ev: &Evaluator, v: &Value, unit: &Option<Expr>) -> EResult<Output> {
+        let sc = ev.top_scope();
+        let u = match unit {
+            None => None,
+            Some(u) => Some(ev.eval(u, &sc)?.as_num().map_err(|_| "единица отображения должна быть скаляром".to_string())?),
+        };
+        // `T = °C`: offset display unit (zero point in kelvin), unless shadowed
+        let off = match (unit, u) {
+            (Some(crate::Expr::Var(n)), Some(un)) => crate::units::offset_unit(n)
+                .filter(|d| un.v.re == d.factor)
+                .map_or(0.0, |d| d.offset_si()),
+            _ => 0.0,
+        };
+        let view = ResultView::from_value_offset(v, u, off, &self.format)?;
+        Ok(Output::Value { view, unit: unit.clone() })
     }
 }
 

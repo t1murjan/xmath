@@ -8,6 +8,10 @@
 //! v[i] := i^2              indexed definition
 //! f(3) =                   evaluation
 //! F = kN                   evaluation shown in the given unit
+//! d := a/b =               definition that also shows its value (also `d := a/b = μm`)
+//! [a; b] := M*v            vector definition
+//! M^<j>                    matrix column (Mathcad Ctrl+6)
+//! vectorize(v*w)           element-wise evaluation (arrow over the expression)
 //! ```
 
 use crate::ast::{BinOp, Expr, PStmt, Stmt, Target, UnOp};
@@ -438,6 +442,14 @@ impl Parser {
                     self.next();
                     e = Expr::Unary(UnOp::Factorial, Box::new(e));
                 }
+                // matrix column `M^<j>`
+                Tok::Caret if matches!(self.peek2(), Tok::Lt) => {
+                    self.next();
+                    self.next();
+                    let j = self.add_expr()?;
+                    self.expect(Tok::Gt)?;
+                    e = Expr::MatCol(Box::new(e), Box::new(j));
+                }
                 Tok::LBrack => {
                     self.next();
                     let idx = self.list(Tok::RBrack)?;
@@ -475,7 +487,13 @@ impl Parser {
             Tok::Str(s) => Ok(Expr::Str(s)),
             Tok::Ident(name) => {
                 if self.eat(&Tok::LParen) {
-                    let args = self.list(Tok::RParen)?;
+                    let mut args = self.list(Tok::RParen)?;
+                    if name == "vectorize" {
+                        if args.len() != 1 {
+                            return Err(ParseError { msg: "vectorize принимает ровно один аргумент".into(), pos });
+                        }
+                        return Ok(Expr::Vectorize(Box::new(args.remove(0))));
+                    }
                     Ok(Expr::Call(name, args))
                 } else {
                     Ok(Expr::Var(name))
@@ -707,7 +725,17 @@ impl Parser {
                 let global = self.next() == Tok::GlobalDefine;
                 let target = to_target(lhs).map_err(|msg| ParseError { msg, pos: lhs_pos })?;
                 let expr = self.range_or_expr()?;
-                Stmt::Define { target, expr, global }
+                // `d := expr =` / `d := expr = unit`: the value is displayed after the definition
+                let show = if self.eat(&Tok::Eq) {
+                    if *self.peek() == Tok::Eof {
+                        Some(None)
+                    } else {
+                        Some(Some(self.expr()?))
+                    }
+                } else {
+                    None
+                };
+                Stmt::Define { target, expr, global, show }
             }
             Tok::Eq => {
                 self.next();
@@ -743,6 +771,19 @@ fn to_target(e: Expr) -> Result<Target, String> {
             Expr::Var(n) => Ok(Target::Indexed(n, idx)),
             other => Err(format!("нельзя присвоить значение '{other}'")),
         },
+        Expr::Matrix(rows) => {
+            if rows.len() != 1 && rows[0].len() != 1 {
+                return Err("слева от := допустим только вектор имён, например [a; b; c]".into());
+            }
+            let mut names = Vec::new();
+            for e in rows.into_iter().flatten() {
+                match e {
+                    Expr::Var(n) => names.push(n),
+                    other => return Err(format!("в векторе имён найдено '{other}': нужны только имена")),
+                }
+            }
+            Ok(Target::Vector(names))
+        }
         other => Err(format!("нельзя определить '{other}': слева должно быть имя или функция")),
     }
 }
@@ -786,6 +827,43 @@ mod tests {
         assert_eq!(roundtrip("i := 0..10"), "i := 0..10");
         assert_eq!(roundtrip("x := 0, 0.1..1"), "x := 0, 0.1..1");
         assert_eq!(roundtrip("v[i] := i^2"), "v[i] := i^2");
+    }
+
+    #[test]
+    fn define_with_shown_value() {
+        assert_eq!(roundtrip("d := a/b ="), "d := a/b =");
+        assert_eq!(roundtrip("d := a/b = μm"), "d := a/b = μm");
+        assert_eq!(roundtrip("g ≡ 5 m ="), "g ≡ 5*m =");
+        match parse_statement("d := 1 =").unwrap() {
+            Stmt::Define { show: Some(None), .. } => {}
+            other => panic!("{other:?}"),
+        }
+        match parse_statement("d := 1 = mm").unwrap() {
+            Stmt::Define { show: Some(Some(Expr::Var(u))), .. } => assert_eq!(u, "mm"),
+            other => panic!("{other:?}"),
+        }
+        // a plain comparison on the right is still `==`
+        assert_eq!(roundtrip("b := x == 1"), "b := x == 1");
+    }
+
+    #[test]
+    fn vector_definition() {
+        assert_eq!(roundtrip("[a; b; c] := M*v"), "[a; b; c] := M*v");
+        assert_eq!(roundtrip("[a, b] := v"), "[a; b] := v");
+        assert_eq!(roundtrip("[x] := v"), "[x] := v");
+        assert!(parse_statement("[a, 1] := v").is_err());
+        assert!(parse_statement("[a, b; c, d] := v").is_err());
+    }
+
+    #[test]
+    fn matrix_column_and_vectorize() {
+        assert_eq!(parse_expr("M^<j>").unwrap().to_string(), "M^<j>");
+        assert_eq!(parse_expr("M^<j + 1> * 2").unwrap().to_string(), "M^<j + 1>*2");
+        assert_eq!(parse_expr("transpose(M)^<0>").unwrap().to_string(), "transpose(M)^<0>");
+        assert_eq!(parse_expr("(a + b)^<0>").unwrap().to_string(), "(a + b)^<0>");
+        assert_eq!(parse_expr("x^2").unwrap().to_string(), "x^2");
+        assert_eq!(parse_expr("vectorize(v*w/2)").unwrap().to_string(), "vectorize(v*w/2)");
+        assert!(parse_expr("vectorize(a, b)").is_err());
     }
 
     #[test]

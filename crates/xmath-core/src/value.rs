@@ -21,7 +21,9 @@ impl Num {
     }
 
     pub fn new(v: C64, dim: Dim) -> Num {
-        Num { v, dim }
+        // `+ 0.0` turns a negative-zero imaginary part into +0, so that
+        // `-8` is `-8 + 0i` and complex functions take the principal branch
+        Num { v: C64::new(v.re, v.im + 0.0), dim }
     }
 
     pub fn with_dim(x: f64, dim: Dim) -> Num {
@@ -255,6 +257,18 @@ fn units_mismatch() -> String {
     "Единицы измерения не совпадают".into()
 }
 
+/// A plain (dimensionless) zero is compatible with any units, as in Mathcad:
+/// gives both numbers the same dimension if one of them is such a zero.
+pub fn unify_zero_dims(a: &mut Num, b: &mut Num) {
+    if a.dim != b.dim {
+        if a.dim.is_none() && a.v == C64::new(0.0, 0.0) {
+            a.dim = b.dim;
+        } else if b.dim.is_none() && b.v == C64::new(0.0, 0.0) {
+            b.dim = a.dim;
+        }
+    }
+}
+
 pub fn num_add(a: Num, b: Num) -> EResult<Num> {
     if a.dim != b.dim {
         // Mathcad allows adding plain zero to anything.
@@ -285,6 +299,8 @@ pub fn num_div(a: Num, b: Num) -> EResult<Num> {
 }
 
 pub fn cpow(base: C64, e: C64) -> C64 {
+    let base = C64::new(base.re, base.im + 0.0);
+    let e = C64::new(e.re, e.im + 0.0);
     if e.im == 0.0 {
         let p = e.re;
         if base.im == 0.0 && (base.re >= 0.0 || p.fract() == 0.0) {
@@ -421,6 +437,11 @@ fn conj(n: Num) -> Num {
 pub fn div(a: &Value, b: &Value) -> EResult<Value> {
     match (a, b) {
         (_, Value::Num(_)) => elementwise(a, b, num_div, "разделить"),
+        // Mathcad: dividing by a non-square array (e.g. a vector) works element by element
+        (Value::Num(_), Value::Matrix(m)) if !m.is_square() => elementwise(a, b, num_div, "разделить"),
+        (Value::Matrix(x), Value::Matrix(m)) if !m.is_square() && x.rows == m.rows && x.cols == m.cols => {
+            elementwise(a, b, num_div, "разделить")
+        }
         (Value::Num(_), Value::Matrix(m)) | (Value::Matrix(_), Value::Matrix(m)) if m.is_square() => {
             mul(a, &Value::Matrix(inverse(m)?))
         }
@@ -432,10 +453,11 @@ pub fn pow(a: &Value, b: &Value) -> EResult<Value> {
     match (a, b) {
         (Value::Num(x), Value::Num(y)) => Ok(Value::Num(num_pow(*x, *y)?)),
         (Value::Matrix(m), Value::Num(_)) => {
-            let n = b.as_int().map_err(|_| "степень матрицы должна быть целым числом".to_string())?;
             if !m.is_square() {
-                return Err("возводить в степень можно только квадратные матрицы".into());
+                // Mathcad: a power of a non-square array is element-wise
+                return elementwise(&Value::Matrix(m.clone()), b, num_pow, "возвести в степень");
             }
+            let n = b.as_int().map_err(|_| "степень матрицы должна быть целым числом".to_string())?;
             let base = if n < 0 { inverse(m)? } else { m.clone() };
             let mut result = identity(m.rows);
             for _ in 0..n.unsigned_abs() {
@@ -443,6 +465,7 @@ pub fn pow(a: &Value, b: &Value) -> EResult<Value> {
             }
             Ok(Value::Matrix(result))
         }
+        (Value::Num(_), Value::Matrix(m)) if !m.is_square() => elementwise(a, b, num_pow, "возвести в степень"),
         (x, y) => Err(format!("нельзя возвести в степень: {} и {}", x.type_name(), y.type_name())),
     }
 }
