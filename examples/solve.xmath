@@ -1,0 +1,463 @@
+{
+ "version": 1,
+ "format": {
+  "precision": 3,
+  "exp_threshold": 3,
+  "zero_threshold": 15
+ },
+ "regions": [
+  {
+   "x": 24,
+   "y": 16,
+   "type": "text",
+   "text": "Блоки решения",
+   "width": 560.0,
+   "style": {
+    "size": 18.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 1
+  },
+  {
+   "x": 24,
+   "y": 52,
+   "type": "text",
+   "text": "Начальные приближения, затем область Given, ограничения (булевы выражения ==, <, >, <=, >=) и Find / Minerr / Maximize / Minimize.",
+   "width": 560.0,
+   "style": {
+    "size": 10.0,
+    "bold": false,
+    "italic": false,
+    "underline": false
+   },
+   "id": 2
+  },
+  {
+   "x": 24,
+   "y": 92,
+   "type": "text",
+   "text": "1. Окружность и прямая (Find)",
+   "width": 560.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 3
+  },
+  {
+   "x": 24,
+   "y": 128,
+   "type": "math",
+   "source": "x := 1",
+   "id": 4
+  },
+  {
+   "x": 24,
+   "y": 158,
+   "type": "math",
+   "source": "y := 1",
+   "id": 5
+  },
+  {
+   "x": 24,
+   "y": 188,
+   "type": "math",
+   "source": "Given",
+   "id": 6
+  },
+  {
+   "x": 24,
+   "y": 218,
+   "type": "math",
+   "source": "x^2 + y^2 == 6",
+   "id": 7
+  },
+  {
+   "x": 24,
+   "y": 248,
+   "type": "math",
+   "source": "x + y == 3",
+   "id": 8
+  },
+  {
+   "x": 24,
+   "y": 278,
+   "type": "math",
+   "source": "Find(x, y) =",
+   "id": 9
+  },
+  {
+   "x": 24,
+   "y": 308,
+   "type": "text",
+   "text": "Другое начальное приближение даёт второе решение:",
+   "width": 560.0,
+   "style": {
+    "size": 10.0,
+    "bold": false,
+    "italic": false,
+    "underline": false
+   },
+   "id": 10
+  },
+  {
+   "x": 24,
+   "y": 348,
+   "type": "math",
+   "source": "x := 0",
+   "id": 11
+  },
+  {
+   "x": 24,
+   "y": 378,
+   "type": "math",
+   "source": "y := 3",
+   "id": 12
+  },
+  {
+   "x": 24,
+   "y": 408,
+   "type": "math",
+   "source": "Given",
+   "id": 13
+  },
+  {
+   "x": 24,
+   "y": 438,
+   "type": "math",
+   "source": "x^2 + y^2 == 6",
+   "id": 14
+  },
+  {
+   "x": 24,
+   "y": 468,
+   "type": "math",
+   "source": "x + y == 3",
+   "id": 15
+  },
+  {
+   "x": 24,
+   "y": 498,
+   "type": "math",
+   "source": "[p; q] := Find(x, y)",
+   "id": 16
+  },
+  {
+   "x": 24,
+   "y": 528,
+   "type": "math",
+   "source": "p =",
+   "id": 17
+  },
+  {
+   "x": 24,
+   "y": 558,
+   "type": "math",
+   "source": "q =",
+   "id": 18
+  },
+  {
+   "x": 24,
+   "y": 588,
+   "type": "text",
+   "text": "2. Несовместная система (Minerr)",
+   "width": 560.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 19
+  },
+  {
+   "x": 24,
+   "y": 624,
+   "type": "math",
+   "source": "u := 0",
+   "id": 20
+  },
+  {
+   "x": 24,
+   "y": 654,
+   "type": "math",
+   "source": "v := 0",
+   "id": 21
+  },
+  {
+   "x": 24,
+   "y": 684,
+   "type": "math",
+   "source": "Given",
+   "id": 22
+  },
+  {
+   "x": 24,
+   "y": 714,
+   "type": "math",
+   "source": "u + v == 2",
+   "id": 23
+  },
+  {
+   "x": 24,
+   "y": 744,
+   "type": "math",
+   "source": "u - v == 0",
+   "id": 24
+  },
+  {
+   "x": 24,
+   "y": 774,
+   "type": "math",
+   "source": "u + 2*v == 4",
+   "id": 25
+  },
+  {
+   "x": 24,
+   "y": 804,
+   "type": "math",
+   "source": "Minerr(u, v) =",
+   "id": 26
+  },
+  {
+   "x": 24,
+   "y": 834,
+   "type": "text",
+   "text": "3. Функция блока решения: r(a) := Find(x), корень x^2 = a",
+   "width": 560.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 27
+  },
+  {
+   "x": 24,
+   "y": 870,
+   "type": "math",
+   "source": "x := 1",
+   "id": 28
+  },
+  {
+   "x": 24,
+   "y": 900,
+   "type": "math",
+   "source": "a := 1",
+   "id": 29
+  },
+  {
+   "x": 24,
+   "y": 930,
+   "type": "math",
+   "source": "Given",
+   "id": 30
+  },
+  {
+   "x": 24,
+   "y": 960,
+   "type": "math",
+   "source": "x^2 == a",
+   "id": 31
+  },
+  {
+   "x": 24,
+   "y": 990,
+   "type": "math",
+   "source": "r(a) := Find(x)",
+   "id": 32
+  },
+  {
+   "x": 24,
+   "y": 1020,
+   "type": "math",
+   "source": "r(9) =",
+   "id": 33
+  },
+  {
+   "x": 24,
+   "y": 1050,
+   "type": "math",
+   "source": "t := 0, 0.5..10",
+   "id": 34
+  },
+  {
+   "x": 24,
+   "y": 1080,
+   "type": "plot",
+   "x_expr": "t",
+   "y_exprs": [
+    "r(t)"
+   ],
+   "width": 360.0,
+   "height": 220.0,
+   "id": 35
+  },
+  {
+   "x": 24,
+   "y": 1324.0,
+   "type": "text",
+   "text": "4. Единицы измерения: длина балки при заданном прогибе",
+   "width": 560.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 36
+  },
+  {
+   "x": 24,
+   "y": 1360.0,
+   "type": "math",
+   "source": "w := 10 kN/m",
+   "id": 37
+  },
+  {
+   "x": 24,
+   "y": 1390.0,
+   "type": "math",
+   "source": "E := 200 GPa",
+   "id": 38
+  },
+  {
+   "x": 24,
+   "y": 1420.0,
+   "type": "math",
+   "source": "I := 8000 cm^4",
+   "id": 39
+  },
+  {
+   "x": 24,
+   "y": 1450.0,
+   "type": "math",
+   "source": "L := 5 m",
+   "id": 40
+  },
+  {
+   "x": 24,
+   "y": 1480.0,
+   "type": "math",
+   "source": "Given",
+   "id": 41
+  },
+  {
+   "x": 24,
+   "y": 1510.0,
+   "type": "math",
+   "source": "5*w*L^4/(384*E*I) == L/250",
+   "id": 42
+  },
+  {
+   "x": 24,
+   "y": 1540.0,
+   "type": "math",
+   "source": "Lx := Find(L)",
+   "id": 43
+  },
+  {
+   "x": 24,
+   "y": 1570.0,
+   "type": "math",
+   "source": "Lx =",
+   "id": 44
+  },
+  {
+   "x": 24,
+   "y": 1600.0,
+   "type": "text",
+   "text": "5. Минимизация с ограничением (Minimize, Maximize)",
+   "width": 560.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 45
+  },
+  {
+   "x": 24,
+   "y": 1636.0,
+   "type": "math",
+   "source": "f(a, b) := (a - 1)^2 + (b + 2)^2",
+   "id": 46
+  },
+  {
+   "x": 24,
+   "y": 1666.0,
+   "type": "math",
+   "source": "m := 0",
+   "id": 47
+  },
+  {
+   "x": 24,
+   "y": 1696.0,
+   "type": "math",
+   "source": "n := 0",
+   "id": 48
+  },
+  {
+   "x": 24,
+   "y": 1726.0,
+   "type": "math",
+   "source": "Given",
+   "id": 49
+  },
+  {
+   "x": 24,
+   "y": 1756.0,
+   "type": "math",
+   "source": "m + n == 0",
+   "id": 50
+  },
+  {
+   "x": 24,
+   "y": 1786.0,
+   "type": "math",
+   "source": "Minimize(f, m, n) =",
+   "id": 51
+  },
+  {
+   "x": 24,
+   "y": 1816.0,
+   "type": "math",
+   "source": "g(s) := -(s - 3)^2 + 5",
+   "id": 52
+  },
+  {
+   "x": 24,
+   "y": 1846.0,
+   "type": "math",
+   "source": "s := 0",
+   "id": 53
+  },
+  {
+   "x": 24,
+   "y": 1876.0,
+   "type": "math",
+   "source": "Given",
+   "id": 54
+  },
+  {
+   "x": 24,
+   "y": 1906.0,
+   "type": "math",
+   "source": "s < 2",
+   "id": 55
+  },
+  {
+   "x": 24,
+   "y": 1936.0,
+   "type": "math",
+   "source": "Maximize(g, s) =",
+   "id": 56
+  }
+ ]
+}

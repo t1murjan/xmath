@@ -175,3 +175,14 @@ fn ctol_respected() {
     let v = values("CTOL := 0.1\nx := 1\nGiven\nx^2 == 2\nFind(x) =");
     close(v[0], 2f64.sqrt());
 }
+
+#[test]
+fn example_worksheet_has_no_errors() {
+    let ws = Worksheet::from_json(include_str!("../../../examples/solve.xmath")).unwrap();
+    let res = evaluate_worksheet(&ws);
+    for r in &ws.regions {
+        if let Output::Error(e) = &res[&r.id].output {
+            panic!("region {} {:?}: {e}", r.id, r.kind);
+        }
+    }
+}

@@ -145,7 +145,7 @@ x + y == 3
 Find(x, y) =
 ```
 
-`Minerr(x, y)` gives a least-squares answer for inconsistent systems; `Minimize(f, x)` / `Maximize(f, x)` optimize a user function `f(x)`; `r(a) := Find(x)` defines a function of a solve block. Do not put definitions between `Given` and `Find`.
+`Minerr(x, y)` gives a least-squares answer for inconsistent systems; `Minimize(f, x)` / `Maximize(f, x)` optimize a user function `f(x)`; `r(a) := Find(x)` defines a function of a solve block. Put guesses above `Given`, one region (line) per constraint, `Given` alone on its line; vector unknowns (`Q := [1; 1]`, `Find(Q)`) work too.
 
 ### 6. Plot (via MCP)
 

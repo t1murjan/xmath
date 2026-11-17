@@ -105,7 +105,7 @@ Find(x, y) =
 * `Minimize(f, x, y)` / `Maximize(f, x, y)`: `f` is a user function name; optimizes from the current `x`, `y`, honouring constraints of a preceding `Given` (works without `Given` too).
 * `sol := Find(x, y)` stores the vector; `[x; y] := Find(x, y)` assigns each unknown.
 * A function of a solve block: `r(a) := Find(x)` (constraints may use `a`); `r(9) =` re-solves.
-* Definitions are not allowed between `Given` and `Find` (error). `Given` without a closing call is flagged. Unknowns need guesses defined above (linear systems work from 0).
+* Keep definitions out of the block (they run as ordinary definitions; a guess may even follow `Given`). TOL/CTOL definitions are respected. `Given` without a closing call is flagged. Unknowns need guesses defined above (linear systems work from 0).
 
 ## 5. Vectors, matrices, ranges, tables
 
