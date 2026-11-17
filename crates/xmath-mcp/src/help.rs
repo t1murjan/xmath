@@ -34,6 +34,7 @@ pub const FUNCTION_DOCS: &[(&str, &str)] = &[
     ("Re", "Re(z): real part"),
     ("Im", "Im(z): imaginary part"),
     ("conj", "conj(z): complex conjugate"),
+    ("xor", "xor(a, b): logical exclusive or: 1 if exactly one argument is non-zero, else 0"),
     ("floor", "floor(x): round down to an integer"),
     ("ceil", "ceil(x): round up to an integer"),
     ("round", "round(x[, n]): round to the nearest integer (or n decimals)"),

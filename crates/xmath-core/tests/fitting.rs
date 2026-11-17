@@ -204,3 +204,16 @@ fn loess_follows_smooth_function() {
     ]);
     assert!(v.abs() < 5e-3, "{v}");
 }
+
+#[test]
+fn loess_matches_mathcad_kd_tree_interpolation() {
+    // Calibrated against results stored by Mathcad 15: loess = local quadratic fits at k-d tree
+    // vertices plus cubic Hermite blending, not a direct fit at every query point.
+    let v = num(&[
+        "vx := stack(969.787, 947.367, 926.659, 832.997, 753.898)",
+        "vy := stack(2.467e-6, 3.233e-6, 3.083e-6, 1.933e-6, 1.377e-6)",
+        "vs := loess(vx, vy, 1)",
+        "interp(vs, vx, vy, 950)",
+    ]);
+    assert!((v / 2.964962513827744e-06 - 1.0).abs() < 1e-9, "{v}");
+}

@@ -184,3 +184,24 @@ fn import_mathcad_features() {
     assert!(shown(&ws, 10).contains('2') && shown(&ws, 10).contains('4'));
     assert_eq!(shown(&ws, 13), "6");
 }
+
+#[test]
+fn indexed_range_definition_is_sequential() {
+    // later elements see the earlier ones: a[j + 1] := 2*a[j]
+    let v = col(&["a[0] := 1", "j := 0..3", "a[j + 1] := 2*a[j]", "a"]);
+    assert_eq!(v, vec![1.0, 2.0, 4.0, 8.0, 16.0]);
+}
+
+#[test]
+fn real_division_is_exact() {
+    let v = run(&["1/0.2 - 5"]).unwrap().as_num().unwrap().v.re;
+    assert_eq!(v, 0.0);
+}
+
+#[test]
+fn undefined_i_is_the_imaginary_unit() {
+    let z = run(&["i^2"]).unwrap().as_num().unwrap().v;
+    assert_eq!((z.re, z.im), (-1.0, 0.0));
+    // a user definition wins
+    assert_eq!(run(&["i := 3", "i"]).unwrap().as_num().unwrap().v.re, 3.0);
+}

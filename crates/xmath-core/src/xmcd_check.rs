@@ -252,4 +252,49 @@ mod tests {
         let order: Vec<u64> = ws2.evaluation_order().iter().map(|&i| ws2.regions[i].id).collect();
         assert_eq!(order, vec![1, 2]);
     }
+
+    fn eval_result(expr: &str, result: &str) -> String {
+        format!("<ml:eval>{expr}<result xmlns=\"http://schemas.mathsoft.com/math30\">{result}</result></ml:eval>")
+    }
+
+    fn verdicts(body: &str) -> (HashMap<u64, Verdict>, CheckReport) {
+        let r = import_xmcd(&sheet(body)).unwrap();
+        let rep = check_import(&r);
+        (rep.regions.iter().map(|c| (c.id, c.verdict.clone())).collect(), rep)
+    }
+
+    #[test]
+    fn indexed_definition_with_shown_value() {
+        // `v[1] := 2*a =` displays the assigned element, not the whole vector
+        let body = [
+            region(1, 10.0, "<ml:define><ml:id>a</ml:id><ml:real>5</ml:real></ml:define>"),
+            region(2, 40.0, &format!(
+                "<ml:define><ml:apply><ml:indexer/><ml:id>v</ml:id><ml:real>2</ml:real></ml:apply>{}</ml:define>",
+                eval_result("<ml:apply><ml:mult/><ml:real>2</ml:real><ml:id>a</ml:id></ml:apply>", "<ml:real>10</ml:real>")
+            )),
+        ]
+        .join("");
+        let (v, rep) = verdicts(&body);
+        assert_eq!(v[&2], Verdict::Ok, "{rep:?}");
+    }
+
+    #[test]
+    fn conjugate_vector_sum_xor_polyroots() {
+        let m = |vals: &[&str]| format!("<ml:matrix rows=\"{}\" cols=\"1\">{}</ml:matrix>", vals.len(), vals.iter().map(|v| format!("<ml:real>{v}</ml:real>")).collect::<String>());
+        let body = [
+            region(1, 10.0, &eval_result(&format!("<ml:apply><ml:vectorSum/>{}</ml:apply>", m(&["1", "2", "3"])), "<ml:real>6</ml:real>")),
+            region(2, 40.0, &eval_result("<ml:apply><ml:xor/><ml:real>1</ml:real><ml:real>0</ml:real></ml:apply>", "<ml:real>1</ml:real>")),
+            region(3, 70.0, &eval_result(
+                "<ml:apply><ml:conjugate/><ml:apply><ml:sqrt/><ml:real>-4</ml:real></ml:apply></ml:apply>",
+                "<ml:complex><ml:real>0</ml:real><ml:imag>-2</ml:imag></ml:complex>",
+            )),
+            // x^2 + 2x - 3 with coefficients in ascending order: roots -3 and 1
+            region(4, 100.0, &eval_result(&format!("<ml:apply><ml:polyroots method=\"laguerre\"/>{}</ml:apply>", m(&["-3", "2", "1"])), &m(&["-3", "1"]))),
+        ]
+        .join("");
+        let (v, rep) = verdicts(&body);
+        for id in 1..=4 {
+            assert_eq!(v[&id], Verdict::Ok, "{id}: {rep:?}");
+        }
+    }
 }

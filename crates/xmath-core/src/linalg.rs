@@ -365,7 +365,10 @@ pub fn eigen_system(a: &CMat, want_vectors: bool) -> EResult<(Vec<C64>, Vec<Vec<
             z.im = 0.0;
         }
     }
-    vals.sort_by(|x, y| x.re.total_cmp(&y.re).then(x.im.total_cmp(&y.im)));
+    // like LAPACK (Mathcad) a general matrix gives the order of the Schur diagonal; Hermitian ones ascend
+    if hermitian {
+        vals.sort_by(|x, y| x.re.total_cmp(&y.re));
+    }
     let mut vecs: Vec<Vec<C64>> = Vec::new();
     if want_vectors {
         let mut cluster: Vec<Vec<C64>> = Vec::new();
@@ -654,18 +657,20 @@ mod tests {
         // rotation by 90 degrees: ±i
         let a = cm(&[&[0.0, -1.0], &[1.0, 0.0]]);
         let (vals, vecs) = eigen_system(&a, true).unwrap();
-        assert!((vals[0] - C64::new(0.0, -1.0)).norm() < 1e-12);
-        assert!((vals[1] - C64::new(0.0, 1.0)).norm() < 1e-12);
+        // order is the Schur order (as in LAPACK/Mathcad), not sorted
+        assert!(vals.iter().any(|z| (z - C64::new(0.0, -1.0)).norm() < 1e-12));
+        assert!(vals.iter().any(|z| (z - C64::new(0.0, 1.0)).norm() < 1e-12));
         for (lam, v) in vals.iter().zip(&vecs) {
             for i in 0..2 {
                 let av: C64 = (0..2).map(|j| a[i][j] * v[j]).sum();
                 assert!((av - lam * v[i]).norm() < 1e-9);
             }
         }
-        // non-symmetric with real eigenvalues 1, 2, 3
+        // non-symmetric with real eigenvalues 1, 2, 3: a triangular matrix gives its diagonal
+        // in order, like Mathcad
         let a = cm(&[&[2.0, 1.0, 0.0], &[0.0, 3.0, 4.0], &[0.0, 0.0, 1.0]]);
         let (vals, vecs) = eigen_system(&a, true).unwrap();
-        for (z, e) in vals.iter().zip([1.0, 2.0, 3.0]) {
+        for (z, e) in vals.iter().zip([2.0, 3.0, 1.0]) {
             assert!((z.re - e).abs() < 1e-10 && z.im == 0.0, "{vals:?}");
         }
         for (lam, v) in vals.iter().zip(&vecs) {

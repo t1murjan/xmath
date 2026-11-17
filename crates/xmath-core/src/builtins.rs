@@ -8,7 +8,7 @@ use num_complex::Complex64 as C64;
 /// Names of all built-in functions (used for highlighting and completion).
 pub const NAMES: &[&str] = &[
     "sin", "cos", "tan", "cot", "sec", "csc", "asin", "acos", "atan", "acot", "atan2", "sinh", "cosh", "tanh",
-    "asinh", "acosh", "atanh", "exp", "ln", "log", "sqrt", "nthroot", "abs", "arg", "Re", "Im", "conj", "floor",
+    "asinh", "acosh", "atanh", "exp", "ln", "log", "sqrt", "nthroot", "abs", "arg", "Re", "Im", "conj", "xor", "floor",
     "ceil", "round", "trunc", "mod", "sign", "signum", "max", "min", "mean", "median", "stdev", "Stdev", "var",
     "Var", "sum", "prod", "length", "rows", "cols", "last", "identity", "transpose", "det", "tr", "lsolve",
     "augment", "stack", "submatrix", "cross", "norme", "sort", "reverse", "linterp", "polyroots", "factorial",
@@ -289,6 +289,19 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
         "Re" => one(&|v| map1(v, |n| Ok(Num::with_dim(n.v.re, n.dim)))),
         "Im" => one(&|v| map1(v, |n| Ok(Num::with_dim(n.v.im, n.dim)))),
         "conj" => one(&|v| map1(v, |n| Ok(Num::new(n.v.conj(), n.dim)))),
+        "xor" => (|| {
+            arity(name, args, 2)?;
+            let f = |a: &Num, b: &Num| Num::real(((a.v != C64::new(0.0, 0.0)) != (b.v != C64::new(0.0, 0.0))) as u8 as f64);
+            match (&args[0], &args[1]) {
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Num(f(a, b))),
+                (Value::Matrix(m), Value::Num(b)) => Ok(Value::Matrix(Matrix::new(m.rows, m.cols, m.data.iter().map(|a| f(a, b)).collect()))),
+                (Value::Num(a), Value::Matrix(m)) => Ok(Value::Matrix(Matrix::new(m.rows, m.cols, m.data.iter().map(|b| f(a, b)).collect()))),
+                (Value::Matrix(a), Value::Matrix(b)) if a.rows == b.rows && a.cols == b.cols => {
+                    Ok(Value::Matrix(Matrix::new(a.rows, a.cols, a.data.iter().zip(&b.data).map(|(x, y)| f(x, y)).collect())))
+                }
+                _ => Err("xor: аргументы должны быть числами или матрицами одного размера".into()),
+            }
+        })(),
         "atan2" => (|| {
             // Mathcad order: atan2(x, y) is the angle of the point (x, y)
             arity(name, args, 2)?;

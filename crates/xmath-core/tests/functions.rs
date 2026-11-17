@@ -80,13 +80,16 @@ fn eigenvalues_symmetric_and_general() {
     close(v[0][0], 1.0, 1e-12);
     close(v[1][0], 3.0, 1e-12);
     let v = mat(&["M := [4, 1; 2, 3]", "eigenvals(M)"]);
-    close(v[0][0], 2.0, 1e-10);
-    close(v[1][0], 5.0, 1e-10);
+    // general matrices: Schur order (as in Mathcad), so compare as a set
+    let mut e = vec![v[0][0], v[1][0]];
+    e.sort_by(f64::total_cmp);
+    close(e[0], 2.0, 1e-10);
+    close(e[1], 5.0, 1e-10);
     // complex eigenvalues of a rotation
     let v = cmat(&["M := [0, -1; 1, 0]", "eigenvals(M)"]);
     close(v[0][0].0, 0.0, 1e-12);
-    close(v[0][0].1, -1.0, 1e-12);
-    close(v[1][0].1, 1.0, 1e-12);
+    close(v[0][0].1.abs(), 1.0, 1e-12);
+    close(v[0][0].1 + v[1][0].1, 0.0, 1e-12);
     // complex matrix
     let v = cmat(&["M := [1, 2i; -2i, 1]", "eigenvals(M)"]);
     close(v[0][0].0, -1.0, 1e-10);

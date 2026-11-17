@@ -710,6 +710,23 @@ fn conv_apply(cx: &mut Cx, n: Node) -> R<Expr> {
             Ok(Expr::Call("transpose".into(), vec![conv(cx, args[0])?]))
         }
         "range" => range_from(cx, args),
+        // overbar = complex conjugate; ΣV = sum of all elements; `polyroots` has a `method` attribute
+        "conjugate" => {
+            need(args, 1, "conjugate")?;
+            Ok(Expr::Call("conj".into(), vec![conv(cx, args[0])?]))
+        }
+        "vectorSum" => {
+            need(args, 1, "vectorSum")?;
+            Ok(Expr::Call("sum".into(), vec![conv(cx, args[0])?]))
+        }
+        "xor" => {
+            need(args, 2, "xor")?;
+            Ok(Expr::Call("xor".into(), vec![conv(cx, args[0])?, conv(cx, args[1])?]))
+        }
+        "polyroots" => {
+            need(args, 1, "polyroots")?;
+            Ok(Expr::Call("polyroots".into(), vec![conv(cx, args[0])?]))
+        }
         "integral" | "derivative" | "summation" | "product" | "rangeSum" | "rangeProduct" => {
             binding(cx, head, args)
         }

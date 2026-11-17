@@ -351,6 +351,49 @@ fn solve_checked(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
 /// problem is ill-conditioned (too few points with non-zero weight);
 /// outside the data range a local line is used.
 pub fn loess_at(x: &[f64], y: &[f64], span: f64, t: f64) -> f64 {
+    // Mathcad (like Cleveland's netlib loess with surface = "interpolate") does not fit at every
+    // query point: it builds a k-d tree over the data (cells with at most floor(n*span*0.2)
+    // points), fits the local quadratic (value and slope) at the cell vertices only and blends
+    // the fits with a cubic Hermite interpolant. Reproduces Mathcad's stored values to 1e-13.
+    let n = x.len();
+    let mut xs: Vec<f64> = x.to_vec();
+    xs.sort_by(f64::total_cmp);
+    if n >= 3 && t >= xs[0] && t <= xs[n - 1] {
+        let (a, b) = (xs[0], xs[n - 1]);
+        let mu = 0.005 * (b - a).max(1e-10 * a.abs().max(b.abs()) + 1e-30);
+        let fc = ((n as f64 * span * 0.2).floor() as usize).max(1);
+        let mut verts = vec![a - mu, b + mu];
+        let mut stack = vec![(0usize, n - 1)];
+        while let Some((l, u)) = stack.pop() {
+            if u - l + 1 <= fc {
+                continue;
+            }
+            let m = (l + u + 2) / 2; // 1-based median index
+            verts.push(xs[m - 1]);
+            stack.push((l, m - 1));
+            stack.push((m, u));
+        }
+        verts.sort_by(f64::total_cmp);
+        verts.dedup();
+        if verts.len() >= 2 {
+            let i = verts.partition_point(|&v| v < t).clamp(1, verts.len() - 1) - 1;
+            let (x0, x1) = (verts[i], verts[i + 1]);
+            let (f0, d0) = loess_local(x, y, span, x0);
+            let (f1, d1) = loess_local(x, y, span, x1);
+            let h = x1 - x0;
+            let s = (t - x0) / h;
+            let (s2, s3) = (s * s, s * s * s);
+            return (2.0 * s3 - 3.0 * s2 + 1.0) * f0
+                + (s3 - 2.0 * s2 + s) * h * d0
+                + (-2.0 * s3 + 3.0 * s2) * f1
+                + (s3 - s2) * h * d1;
+        }
+    }
+    loess_local(x, y, span, t).0
+}
+
+/// Direct local fit at `t`: (value, slope).
+fn loess_local(x: &[f64], y: &[f64], span: f64, t: f64) -> (f64, f64) {
     let n = x.len();
     // at least 4 neighbours so that 3 of them carry weight
     let q = ((span * n as f64).ceil() as usize).clamp(4.min(n), n);
@@ -385,7 +428,7 @@ pub fn loess_at(x: &[f64], y: &[f64], span: f64, t: f64) -> f64 {
     }
     let sw: f64 = w.iter().sum();
     if !(sw > 0.0) {
-        return y.iter().sum::<f64>() / n as f64;
+        return (y.iter().sum::<f64>() / n as f64, 0.0);
     }
     // scaled coordinate keeps the normal equations well conditioned
     let u: Vec<f64> = x.iter().map(|v| (v - t) / h).collect();
@@ -401,24 +444,23 @@ pub fn loess_at(x: &[f64], y: &[f64], span: f64, t: f64) -> f64 {
         b[1] += w[i] * y[i] * u[i];
         b[2] += w[i] * y[i] * u[i] * u[i];
     }
-    let inside = n > 0 && t >= x.iter().cloned().fold(f64::INFINITY, f64::min) && t <= x.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    if inside && n >= 3 {
+    if n >= 3 {
         let quad = vec![vec![s[0], s[1], s[2]], vec![s[1], s[2], s[3]], vec![s[2], s[3], s[4]]];
         if let Some(c) = solve_checked(quad, b.to_vec()) {
             // guard against wild results: stay within a generous data envelope
             let (lo, hi) = y.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &v| (l.min(v), h.max(v)));
             let pad = (hi - lo).max(1e-300);
             if c[0] >= lo - pad && c[0] <= hi + pad {
-                return c[0];
+                return (c[0], c[1] / h);
             }
         }
     }
     if n >= 2 {
         if let Some(c) = solve_checked(vec![vec![s[0], s[1]], vec![s[1], s[2]]], vec![b[0], b[1]]) {
-            return c[0];
+            return (c[0], c[1] / h);
         }
     }
-    b[0] / sw
+    (b[0] / sw, 0.0)
 }
 
 fn loess(args: &[Value]) -> EResult<Value> {

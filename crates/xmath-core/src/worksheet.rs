@@ -396,8 +396,8 @@ impl Worksheet {
         // Pass 1: global definitions (≡) are visible everywhere.
         for &i in &order {
             if let Some(Ok(Stmt::Define { target, expr, global: true, show })) = &parsed[i] {
-                let output = self.define_output(&mut ev, target, expr, show);
-                let value = if snapshots { snapshot_var(&ev, target) } else { None };
+                let (output, shown) = self.define_output(&mut ev, target, expr, show);
+                let value = if snapshots { snapshot_var(&ev, target).or(shown) } else { None };
                 out.insert(self.regions[i].id, RegionOutput { stmt: parsed[i].clone(), output, value });
             }
         }
@@ -510,9 +510,9 @@ impl Worksheet {
         let mut snap = snap;
         let result: EResult<Output> = (|| match stmt {
             Stmt::Define { target, expr, show, .. } => {
-                let o = self.define_output(ev, target, expr, show);
+                let (o, shown) = self.define_output(ev, target, expr, show);
                 if let Some(s) = snap.as_deref_mut() {
-                    *s = snapshot_var(ev, target);
+                    *s = snapshot_var(ev, target).or(shown);
                 }
                 return Ok(o);
             }
@@ -530,12 +530,26 @@ impl Worksheet {
     }
 
     /// Runs a definition; with a displayed value (`d := expr =`) the output is that value.
-    fn define_output(&self, ev: &mut Evaluator, target: &Target, expr: &Expr, show: &Option<Option<Expr>>) -> Output {
+    /// Also returns a snapshot of the displayed value (for indexed and vector targets, which
+    /// have no variable of their own to snapshot).
+    fn define_output(&self, ev: &mut Evaluator, target: &Target, expr: &Expr, show: &Option<Option<Expr>>) -> (Output, Option<Snapshot>) {
+        let mut shown = None;
         let r = ev.define_value(target, expr).and_then(|v| match show {
             None => Ok(Output::None),
-            Some(unit) => self.value_output(ev, &v, unit),
+            Some(unit) => {
+                // `v[i] := expr =` displays the assigned element(s), not the whole vector
+                let v = match target {
+                    Target::Indexed(name, idx) => {
+                        let sc = ev.top_scope();
+                        ev.eval_iterated(&Expr::Index(Box::new(Expr::Var(name.clone())), idx.clone()), &sc)?
+                    }
+                    _ => v,
+                };
+                shown = Snapshot::of(&v);
+                self.value_output(ev, &v, unit)
+            }
         });
-        r.unwrap_or_else(Output::Error)
+        (r.unwrap_or_else(Output::Error), shown)
     }
 
     /// The displayed result of a value in the optional display unit.

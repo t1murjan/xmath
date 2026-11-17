@@ -111,6 +111,9 @@ pub fn constant(name: &str) -> Option<Num> {
         "TOL" => Num::real(1e-3),
         "CTOL" => Num::real(1e-3),
         "ORIGIN" => Num::real(0.0),
+        // imaginary unit when `i`/`j` has no definition above (Mathcad worksheets use it in
+        // function bodies defined above a later `i := sqrt(-1)`)
+        "i" | "j" => Num::new(C64::new(0.0, 1.0), Dim::NONE),
         _ => return None,
     })
 }
@@ -972,7 +975,19 @@ impl Evaluator {
                 let mut all: Vec<&Expr> = idx.iter().collect();
                 all.push(expr);
                 let ranges = self.range_vars(&all, &sc);
+                // `a[j + 1] := f(a[j])` over a range is sequential in Mathcad: later elements
+                // see the earlier ones, so the vector under construction is visible in the scope
+                let mut used = Vec::new();
+                free_vars(expr, &mut Vec::new(), &mut used);
+                let self_ref = !ranges.is_empty() && used.iter().any(|u| u == name);
                 self.for_each_binding(&ranges, &sc, &mut |s| {
+                    let s2;
+                    let s = if self_ref {
+                        s2 = s.with(name, Value::Matrix(m.clone()));
+                        &s2
+                    } else {
+                        s
+                    };
                     let ix = idx
                         .iter()
                         .map(|i| self.eval(i, s)?.as_int().map(|k| k - origin))

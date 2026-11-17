@@ -320,6 +320,13 @@ pub fn polyroots(coeffs: &[C64]) -> EResult<Vec<C64>> {
         }
     }
     z.sort_by(|a, b| a.re.total_cmp(&b.re).then(a.im.total_cmp(&b.im)));
+    // conjugate pairs have equal real parts up to rounding: put the negative imaginary part first
+    for i in 1..z.len() {
+        let (p, q) = (z[i - 1], z[i]);
+        if (p.re - q.re).abs() <= 1e-7 * (1.0 + p.re.abs().max(q.re.abs())) && p.im > q.im {
+            z.swap(i - 1, i);
+        }
+    }
     Ok(z)
 }
 

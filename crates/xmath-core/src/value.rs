@@ -295,7 +295,9 @@ pub fn num_div(a: Num, b: Num) -> EResult<Num> {
     if b.v == C64::new(0.0, 0.0) {
         return Err("Деление на ноль".into());
     }
-    Ok(Num::new(a.v / b.v, a.dim.div(b.dim)))
+    // real / real must be exact (the complex quotient formula is not: 1/0.2 != 5)
+    let v = if a.v.im == 0.0 && b.v.im == 0.0 { C64::new(a.v.re / b.v.re, 0.0) } else { a.v / b.v };
+    Ok(Num::new(v, a.dim.div(b.dim)))
 }
 
 pub fn cpow(base: C64, e: C64) -> C64 {
