@@ -141,6 +141,7 @@ pub struct App {
     rects: HashMap<u64, Rect>,
     band_start: Option<Pos2>,
     plot_buf: Option<(u64, String, String)>,
+    images: crate::image::ImageCache,
 
     undo: Vec<Worksheet>,
     redo: Vec<Worksheet>,
@@ -191,6 +192,7 @@ impl App {
             rects: HashMap::new(),
             band_start: None,
             plot_buf: None,
+            images: Default::default(),
             undo: Vec::new(),
             redo: Vec::new(),
             clipboard: Vec::new(),
@@ -540,6 +542,7 @@ impl App {
                 RegionKind::Math { source } => source.clone(),
                 RegionKind::Text { text, .. } => text.clone(),
                 RegionKind::Plot { x, y, .. } => format!("plot({}; {x})", y.join(", ")),
+                RegionKind::Image { .. } => "[изображение]".to_string(),
             })
             .collect();
         ctx.copy_text(text.join("\n"));
@@ -624,7 +627,7 @@ impl App {
         self.checkpoint();
         let id = self.ws.next_id();
         let pos = self.cursor;
-        self.ws.regions.push(Region { id, x: pos.x, y: pos.y, kind });
+        self.ws.regions.push(Region::new(id, pos.x, pos.y, kind));
         self.selection = vec![id];
         if edit {
             self.begin_edit(id, false);
@@ -1766,6 +1769,7 @@ impl App {
             }
 
             let mut new_rects = HashMap::new();
+            let mut anchor_updates: Vec<(u64, [f32; 2])> = Vec::new();
             let mut clicked_region = false;
             // the region being edited is drawn last, so its live preview covers regions below
             let mut ids: Vec<u64> = self.ws.regions.iter().map(|r| r.id).collect();
@@ -1834,12 +1838,13 @@ impl App {
                         } else {
                             let (lay, err) = self.math_layout(&ctx, id, source);
                             error = err;
+                            anchor_updates.push((id, [0.0, (lay.asc + 2.0) / z]));
                             region_rect = Rect::from_min_size(pos, Vec2::new(lay.w + 4.0, lay.h() + 4.0));
                             lay.paint(&painter, pos + Vec2::new(2.0, 2.0 + lay.asc));
                         }
                     }
-                    RegionKind::Text { text, style, .. } => {
-                        let wrap = (PAGE_W * z - (pos.x - origin.x)).max(120.0 * z);
+                    RegionKind::Text { text, style, width, lock_width } => {
+                        let wrap = if *lock_width { (*width * z).max(20.0) } else { (PAGE_W * z - (pos.x - origin.x)).max(120.0 * z) };
                         if editing {
                             let mut t = text.clone();
                             let family = if style.bold && self.has_bold_font { FontFamily::Name("bold".into()) } else { FontFamily::Proportional };
@@ -1880,7 +1885,12 @@ impl App {
                             }
                         }
                     }
-                    RegionKind::Plot { x, y, width, height } => {
+                    RegionKind::Image { png_base64, width, height } => {
+                        region_rect = Rect::from_min_size(pos, Vec2::new(width * z, height * z));
+                        let tex = self.images.texture(&ctx, id, png_base64);
+                        crate::image::paint(&painter, region_rect, tex);
+                    }
+                    RegionKind::Plot { x, y, width, height, .. } => {
                         let legend_w = LEGEND_W * z;
                         let plot_rect = Rect::from_min_size(pos + Vec2::new(legend_w, 0.0), Vec2::new(width * z, height * z));
                         let data = match self.outputs.get(&id).map(|o| &o.output) {
@@ -2012,6 +2022,21 @@ impl App {
                 new_rects.insert(id, Rect::from_min_max(to_ws(region_rect.min), to_ws(region_rect.max)));
             }
             self.rects = new_rects;
+            self.images.retain(|id| self.ws.regions.iter().any(|r| r.id == id));
+            // the baseline of the math regions decides the evaluation order (like in Mathcad);
+            // this is layout bookkeeping, so the document is not marked as modified
+            let mut order_changed = false;
+            for (id, a) in anchor_updates {
+                if let Some(r) = self.ws.regions.iter_mut().find(|r| r.id == id) {
+                    if (r.anchor[1] - a[1]).abs() > 0.25 && r.anchor[0] == 0.0 {
+                        r.anchor = a;
+                        order_changed = true;
+                    }
+                }
+            }
+            if order_changed {
+                self.dirty = true;
+            }
 
             // crosshair
             if self.editing.is_none() {

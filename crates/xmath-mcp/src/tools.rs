@@ -276,6 +276,12 @@ fn row(r: &Region, out: Option<&RegionOutput>) -> Row {
             obj.insert("text".into(), t.clone().into());
             text = format!("[{}] # {t}", r.id);
         }
+        RegionKind::Image { width, height, .. } => {
+            obj.insert("type".into(), "image".into());
+            obj.insert("width".into(), (*width).into());
+            obj.insert("height".into(), (*height).into());
+            text = format!("[{}] [image {}x{}]", r.id, width.round(), height.round());
+        }
         RegionKind::Plot { x, y, .. } => {
             obj.insert("type".into(), "plot".into());
             obj.insert("x_expr".into(), x.clone().into());
@@ -425,7 +431,7 @@ fn region_height(r: &Region) -> f32 {
     match &r.kind {
         RegionKind::Math { .. } => MATH_H,
         RegionKind::Text { text, .. } => MATH_H + 14.0 * (text.lines().count().max(1) - 1) as f32,
-        RegionKind::Plot { height, .. } => height + 10.0,
+        RegionKind::Plot { height, .. } | RegionKind::Image { height, .. } => height + 10.0,
     }
 }
 
@@ -483,7 +489,7 @@ fn add_region(a: &Map<String, Value>) -> ToolResult {
     };
     let mut ws = load(&p)?;
     let after = get_id(a, "after_id")?;
-    let mut region = Region { id: ws.next_id(), x: get_f32(a, "x")?.unwrap_or(LEFT), y: 0.0, kind };
+    let mut region = Region::new(ws.next_id(), get_f32(a, "x")?.unwrap_or(LEFT), 0.0, kind);
     let h = region_height(&region);
     let explicit_y = get_f32(a, "y")?;
     let auto_y = match after {
@@ -528,6 +534,7 @@ fn update_region(a: &Map<String, Value>) -> ToolResult {
                 *text = t.trim().to_string();
             }
         }
+        RegionKind::Image { .. } => return Err("image regions cannot be edited; delete or move them".into()),
         RegionKind::Plot { x, y, .. } => {
             no_extra(a, "plot", &["source", "text"])?;
             if let Some(s) = get_str(a, "x_expr")? {

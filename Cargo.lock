@@ -3690,6 +3690,8 @@ dependencies = [
 name = "xmath-core"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "flate2",
  "libm",
  "num-complex",
  "roxmltree",
@@ -3701,8 +3703,10 @@ dependencies = [
 name = "xmath-gui"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "eframe",
  "egui",
+ "image",
  "rfd",
  "serde_json",
  "xmath-core",

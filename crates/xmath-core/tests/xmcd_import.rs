@@ -12,6 +12,7 @@ fn source(ws: &Worksheet, id: u64) -> String {
         RegionKind::Math { source } => source.clone(),
         RegionKind::Text { text, .. } => format!("TEXT:{text}"),
         RegionKind::Plot { x, y, .. } => format!("PLOT:{x}|{}", y.join("|")),
+        RegionKind::Image { .. } => "IMAGE".to_string(),
     }
 }
 

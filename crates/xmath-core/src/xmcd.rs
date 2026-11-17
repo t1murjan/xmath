@@ -6,9 +6,12 @@
 
 use crate::ast::{BinOp, Expr, PStmt, Stmt, Target, UnOp};
 use crate::parser::{parse_expr, parse_statement};
+use crate::units::{self, Dim};
 use crate::worksheet::{Region, RegionKind, TextStyle, Worksheet};
+use base64::Engine;
 use roxmltree::{Document, Node};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::Path;
 
 /// Result of an import: the worksheet and everything that was lost or approximated.
@@ -16,10 +19,40 @@ use std::path::Path;
 pub struct ImportResult {
     pub worksheet: Worksheet,
     pub warnings: Vec<String>,
+    /// Results Mathcad saved in the file, by region id (see [`Expected`]).
+    pub expected: HashMap<u64, Expected>,
+}
+
+/// A result stored by Mathcad inside an `ml:eval` (`<result>`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Expected {
+    /// The numeric (or string) value, in SI units.
+    Value(ExpectedValue),
+    /// Mathcad showed an error for the region.
+    Error(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExpectedValue {
+    pub rows: usize,
+    pub cols: usize,
+    /// Row-major elements `(re, im)` already multiplied by the unit factor (SI).
+    pub data: Vec<(f64, f64)>,
+    /// Dimension of the unit (all elements share it).
+    pub dim: Dim,
+    /// A string result.
+    pub text: Option<String>,
+    /// Set when the unit is not known to xmath, so the value cannot be compared.
+    pub unknown_unit: Option<String>,
 }
 
 /// Mathcad coordinates are points; convert to 96 dpi pixels.
 const SCALE: f32 = 96.0 / 72.0;
+
+/// Upper bound for decompressed binary items (plots, pictures).
+const MAX_ITEM: u64 = 64 * 1024 * 1024;
+
+const PROVENANCE_NS: &str = "http://schemas.mathsoft.com/provenance10";
 
 type R<T> = Result<T, String>;
 
@@ -31,9 +64,16 @@ pub fn import_xmcd(xml: &str) -> Result<ImportResult, String> {
     if lname(root) != "worksheet" {
         return Err(format!("корневой элемент <{}> не является <worksheet>", lname(root)));
     }
-    let mut cx = Cx { warnings: Vec::new(), label: String::new() };
+    let mut cx = Cx {
+        warnings: Vec::new(),
+        label: String::new(),
+        items: HashMap::new(),
+        styles: HashMap::new(),
+        used: HashSet::new(),
+        regions: Vec::new(),
+        expected: HashMap::new(),
+    };
     let mut ws = Worksheet::default();
-    let mut used: HashSet<u64> = HashSet::new();
     let mut origin: Option<i64> = None;
 
     if let Some(settings) = child(root, "settings") {
@@ -52,39 +92,34 @@ pub fn import_xmcd(xml: &str) -> Result<ImportResult, String> {
         {
             ws.format.exp_threshold = t;
         }
+        read_text_styles(&mut cx, settings);
+    }
+
+    if let Some(bc) = child(root, "binaryContent") {
+        for it in kids(bc) {
+            if lname(it) == "item" {
+                if let Some(id) = it.attribute("item-id") {
+                    let gz = it.attribute("content-encoding").map_or(false, |e| e.trim().eq_ignore_ascii_case("gzip"));
+                    let text: String = it.text().unwrap_or("").chars().filter(|c| !c.is_whitespace()).collect();
+                    cx.items.insert(id.trim().to_string(), (text, gz));
+                }
+            }
+        }
     }
 
     if let Some(regions) = child(root, "regions") {
         for reg in kids(regions) {
-            if lname(reg) != "region" {
-                continue;
-            }
-            let id = reg
-                .attribute("region-id")
-                .and_then(|s| s.trim().parse::<u64>().ok())
-                .filter(|i| !used.contains(i))
-                .unwrap_or_else(|| used.iter().max().map_or(1, |m| m + 1));
-            used.insert(id);
-            cx.label = format!("область {id}");
-            let x = num_attr(reg, "left").unwrap_or(0.0) * SCALE;
-            let y = num_attr(reg, "top").unwrap_or(0.0) * SCALE;
-            let w = num_attr(reg, "width").map(|w| (w * SCALE).max(40.0));
-            let h = num_attr(reg, "height").map(|h| (h * SCALE).max(40.0));
-            let Some(body) = kids(reg).into_iter().next() else {
-                cx.warn("пустая область пропущена");
-                continue;
-            };
-            let kind = convert_region(&mut cx, body, w, h);
-            ws.regions.push(Region { id, x, y, kind });
+            import_region(&mut cx, reg);
         }
     }
 
+    ws.regions = std::mem::take(&mut cx.regions);
     if let Some(o) = origin.filter(|&o| o != 0) {
         let top = ws.regions.iter().map(|r| r.y).fold(0.0f32, f32::min);
-        let id = used.iter().max().map_or(1, |m| m + 1);
-        ws.regions.push(Region { id, x: 20.0, y: top - 30.0, kind: RegionKind::Math { source: format!("ORIGIN ≡ {o}") } });
+        let id = cx.used.iter().max().map_or(1, |m| m + 1);
+        ws.regions.push(Region::new(id, 20.0, top - 30.0, RegionKind::Math { source: format!("ORIGIN ≡ {o}") }));
     }
-    Ok(ImportResult { worksheet: ws, warnings: cx.warnings })
+    Ok(ImportResult { worksheet: ws, warnings: cx.warnings, expected: cx.expected })
 }
 
 /// Reads and imports a `.xmcd` file.
@@ -97,11 +132,40 @@ pub fn import_xmcd_file(path: impl AsRef<Path>) -> Result<ImportResult, String> 
 struct Cx {
     warnings: Vec<String>,
     label: String,
+    /// `binaryContent` items: (base64 text, gzip-compressed).
+    items: HashMap<String, (String, bool)>,
+    /// Paragraph styles from the worksheet settings.
+    styles: HashMap<String, TextStyle>,
+    used: HashSet<u64>,
+    regions: Vec<Region>,
+    expected: HashMap<u64, Expected>,
 }
 
 impl Cx {
     fn warn(&mut self, msg: impl AsRef<str>) {
         self.warnings.push(format!("{}: {}", self.label, msg.as_ref()));
+    }
+
+    /// Decoded (and decompressed) bytes of a `binaryContent` item.
+    fn item_bytes(&self, id: &str) -> Option<Vec<u8>> {
+        let (text, gz) = self.items.get(id.trim())?;
+        let raw = base64::engine::general_purpose::STANDARD.decode(text.as_bytes()).ok()?;
+        if *gz {
+            let mut out = Vec::new();
+            flate2::read::GzDecoder::new(raw.as_slice()).take(MAX_ITEM).read_to_end(&mut out).ok()?;
+            Some(out)
+        } else {
+            Some(raw)
+        }
+    }
+
+    /// The picture Mathcad rendered for a region (`<rendering item-idref>`), as base64 PNG/JPEG.
+    fn rendering(&self, reg: Node) -> Option<String> {
+        let r = child(reg, "rendering")?;
+        let bytes = self.item_bytes(r.attribute("item-idref")?)?;
+        let is_png = bytes.starts_with(&[0x89, b'P', b'N', b'G']);
+        let is_jpeg = bytes.starts_with(&[0xff, 0xd8]);
+        (is_png || is_jpeg).then(|| base64::engine::general_purpose::STANDARD.encode(bytes))
     }
 }
 
@@ -111,8 +175,26 @@ fn lname<'a>(n: Node<'a, '_>) -> &'a str {
     n.tag_name().name()
 }
 
+/// Element children. Provenance wrappers (`ml:provenance`: reference
+/// bookkeeping followed by the real math element) are looked through.
 fn kids<'a, 'i>(n: Node<'a, 'i>) -> Vec<Node<'a, 'i>> {
-    n.children().filter(|c| c.is_element()).collect()
+    let mut out = Vec::new();
+    for c in n.children().filter(|c| c.is_element()) {
+        push_unwrapped(c, &mut out, 0);
+    }
+    out
+}
+
+fn push_unwrapped<'a, 'i>(c: Node<'a, 'i>, out: &mut Vec<Node<'a, 'i>>, depth: usize) {
+    if lname(c) == "provenance" && depth < 64 {
+        for k in c.children().filter(|k| k.is_element()) {
+            if k.tag_name().namespace() != Some(PROVENANCE_NS) {
+                push_unwrapped(k, out, depth + 1);
+            }
+        }
+    } else {
+        out.push(c);
+    }
 }
 
 fn child<'a, 'i>(n: Node<'a, 'i>, name: &str) -> Option<Node<'a, 'i>> {
@@ -145,36 +227,112 @@ fn is_true(v: Option<&str>) -> bool {
 
 // ------------------------------------------------------------------- regions
 
-fn text_kind(text: String, w: Option<f32>, style: TextStyle) -> RegionKind {
+/// Imports one `<region>`; an `<area>` contributes the regions nested in it.
+fn import_region(cx: &mut Cx, reg: Node) {
+    if lname(reg) != "region" {
+        return;
+    }
+    let Some(body) = kids(reg).into_iter().find(|k| lname(*k) != "rendering") else {
+        cx.label = format!("область {}", reg.attribute("region-id").unwrap_or("?"));
+        cx.warn("пустая область пропущена");
+        return;
+    };
+    match lname(body) {
+        "area" => {
+            for r in kids(body) {
+                import_region(cx, r);
+            }
+            return;
+        }
+        "pageBreak" => return,
+        _ => {}
+    }
+    let id = reg
+        .attribute("region-id")
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|i| !cx.used.contains(i))
+        .unwrap_or_else(|| cx.used.iter().max().map_or(1, |m| m + 1));
+    cx.used.insert(id);
+    cx.label = format!("область {id}");
+    let left = num_attr(reg, "left").unwrap_or(0.0);
+    let top = num_attr(reg, "top").unwrap_or(0.0);
+    let x = left * SCALE;
+    let y = top * SCALE;
+    let anchor = match (num_attr(reg, "align-x"), num_attr(reg, "align-y")) {
+        (Some(ax), Some(ay)) => [(ax - left) * SCALE, (ay - top) * SCALE],
+        _ => [0.0, 0.0],
+    };
+    let raw_w = num_attr(reg, "width").map(|w| w * SCALE);
+    let raw_h = num_attr(reg, "height").map(|h| h * SCALE);
+    let w = raw_w.map(|w| w.max(40.0));
+    let h = raw_h.map(|h| h.max(40.0));
+    if lname(body) == "math" {
+        if let Some(e) = extract_expected(body) {
+            cx.expected.insert(id, e);
+        }
+    }
+    let kind = convert_region(cx, reg, body, w, h, (raw_w, raw_h));
+    cx.regions.push(Region { id, x, y, anchor, kind });
+}
+
+fn text_kind(text: String, w: Option<f32>, style: TextStyle, lock_width: bool) -> RegionKind {
     let mut k = RegionKind::new_text(text);
-    if let RegionKind::Text { width, style: s, .. } = &mut k {
+    if let RegionKind::Text { width, style: s, lock_width: l, .. } = &mut k {
         if let Some(w) = w {
             *width = w;
         }
         *s = style;
+        *l = lock_width;
     }
     k
 }
 
 fn note(text: &str, w: Option<f32>) -> RegionKind {
-    text_kind(text.to_string(), w, TextStyle::default())
+    text_kind(text.to_string(), w, TextStyle::default(), false)
 }
 
-fn convert_region(cx: &mut Cx, body: Node, w: Option<f32>, h: Option<f32>) -> RegionKind {
+/// A picture region from the rendering Mathcad stored, if any.
+fn image_kind(cx: &Cx, reg: Node, raw: (Option<f32>, Option<f32>)) -> Option<RegionKind> {
+    let png = cx.rendering(reg)?;
+    Some(RegionKind::Image { png_base64: png, width: raw.0.unwrap_or(200.0).max(4.0), height: raw.1.unwrap_or(120.0).max(4.0) })
+}
+
+fn convert_region(cx: &mut Cx, reg: Node, body: Node, w: Option<f32>, h: Option<f32>, raw: (Option<f32>, Option<f32>)) -> RegionKind {
     match lname(body) {
         "math" => convert_math(cx, body, w),
         "text" => convert_text(cx, body, w),
-        "plot" => match convert_plot(cx, body, w, h) {
-            Ok(k) => k,
-            Err(e) => {
-                cx.warn(format!("график не импортирован ({e})"));
-                note("[График не импортирован]", w)
+        "plot" => {
+            let decoded = if body.attribute("item-idref").is_some() { plot_from_binary(cx, body, w, h) } else { convert_plot(cx, body, w, h) };
+            match decoded {
+                Ok(k) => k,
+                Err(e) => match image_kind(cx, reg, raw) {
+                    Some(img) => {
+                        cx.warn(format!("график ({e}) импортирован как рисунок"));
+                        img
+                    }
+                    None => {
+                        cx.warn(format!("график не импортирован ({e})"));
+                        note("[График не импортирован]", w)
+                    }
+                },
+            }
+        }
+        name @ ("picture" | "image" | "ole" | "component" | "reference") => match image_kind(cx, reg, raw) {
+            Some(img) => {
+                if name != "picture" && name != "image" {
+                    cx.warn(format!("объект <{name}> импортирован как рисунок"));
+                }
+                img
+            }
+            None if name == "picture" || name == "image" => {
+                cx.warn("рисунок не импортирован");
+                note("[Рисунок не импортирован]", w)
+            }
+            None => {
+                cx.warn(format!("область типа <{name}> не поддерживается"));
+                note(&format!("[Область «{name}» не импортирована]"), w)
             }
         },
-        "picture" | "image" => {
-            cx.warn("рисунок не импортирован");
-            note("[Рисунок не импортирован]", w)
-        }
         other => {
             cx.warn(format!("область типа <{other}> не поддерживается"));
             note(&format!("[Область «{other}» не импортирована]"), w)
@@ -653,6 +811,7 @@ fn binding(cx: &mut Cx, op: Node, args: &[Node]) -> R<Expr> {
 
 #[derive(Default)]
 struct Stats {
+    /// Non-blank characters.
     total: usize,
     bold: usize,
     italic: usize,
@@ -667,6 +826,21 @@ struct Fmt {
     underline: bool,
 }
 
+/// Paragraph styles (`textStyle name=… / inlineAttr`) of the worksheet settings.
+fn read_text_styles(cx: &mut Cx, settings: Node) {
+    for ts in settings.descendants().filter(|n| n.is_element() && lname(*n) == "textStyle") {
+        let Some(name) = ts.attribute("name") else { continue };
+        let Some(ia) = child(ts, "inlineAttr") else { continue };
+        let st = TextStyle {
+            size: num_attr(ia, "font-size").map_or(10.0, |s| s.clamp(4.0, 72.0)),
+            bold: ia.attribute("font-weight").map_or(false, |w| w == "bold" || w == "700"),
+            italic: ia.attribute("font-style") == Some("italic"),
+            underline: is_true(ia.attribute("underline")),
+        };
+        cx.styles.insert(name.to_string(), st);
+    }
+}
+
 fn convert_text(cx: &mut Cx, node: Node, w: Option<f32>) -> RegionKind {
     let mut st = Stats::default();
     let mut paras: Vec<String> = Vec::new();
@@ -676,27 +850,54 @@ fn convert_text(cx: &mut Cx, node: Node, w: Option<f32>) -> RegionKind {
         inline(cx, node, &mut s, Fmt::default(), &mut st);
         paras.push(s);
     } else {
-        for p in ps {
+        for (i, p) in ps.iter().enumerate() {
+            let base = p.attribute("style").and_then(|n| cx.styles.get(n)).cloned();
+            let mut fmt = Fmt::default();
+            if let Some(b) = &base {
+                fmt = Fmt { bold: b.bold, italic: b.italic, underline: b.underline };
+                if i == 0 && b.size != 10.0 {
+                    st.size = Some(b.size);
+                }
+            }
             let mut s = String::new();
-            inline(cx, p, &mut s, Fmt::default(), &mut st);
+            inline(cx, *p, &mut s, fmt, &mut st);
             paras.push(s);
         }
     }
     let text = paras.iter().map(|p| tidy(p)).collect::<Vec<_>>().join("\n");
     let all = st.total > 0;
+    // a region has one style: take what applies to most of the text
+    let major = |n: usize| all && n * 2 > st.total;
     let style = TextStyle {
         size: st.size.map_or(10.0, |s| s.clamp(4.0, 72.0)),
-        bold: all && st.bold == st.total,
-        italic: all && st.italic == st.total,
-        underline: all && st.underline == st.total,
+        bold: major(st.bold),
+        italic: major(st.italic),
+        underline: major(st.underline),
     };
-    text_kind(text, w, style)
+    let lock = is_true(node.attribute("lock-width"));
+    text_kind(text, w, style, lock)
 }
 
 /// Collapses XML pretty-printing whitespace but keeps explicit line breaks.
 fn tidy(s: &str) -> String {
     s.split('\n')
-        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .map(|l| {
+            // spaces from `<sp/>` and `<tab/>` are U+00A0 / U+2003 markers: keep them
+            let mut out = String::new();
+            let mut pending = false;
+            for ch in l.chars() {
+                if ch == ' ' || ch == '\t' || ch == '\r' {
+                    pending = true;
+                } else {
+                    if pending && !out.is_empty() {
+                        out.push(' ');
+                    }
+                    pending = false;
+                    out.push(if ch == '\u{a0}' { ' ' } else { ch });
+                }
+            }
+            out
+        })
         .collect::<Vec<_>>()
         .join("\n")
         .trim()
@@ -704,14 +905,21 @@ fn tidy(s: &str) -> String {
 }
 
 fn inline(cx: &mut Cx, n: Node, out: &mut String, fmt: Fmt, st: &mut Stats) {
+    // `inlineAttr` changes the formatting of everything after it in the paragraph
+    let mut fmt = fmt;
     for c in n.children() {
         if c.is_text() {
             let t = c.text().unwrap_or("");
-            if !t.trim().is_empty() {
-                st.total += 1;
-                st.bold += fmt.bold as usize;
-                st.italic += fmt.italic as usize;
-                st.underline += fmt.underline as usize;
+            let chars = t.chars().filter(|c| !c.is_whitespace()).count();
+            st.total += chars;
+            if fmt.bold {
+                st.bold += chars;
+            }
+            if fmt.italic {
+                st.italic += chars;
+            }
+            if fmt.underline {
+                st.underline += chars;
             }
             // Pretty-printing newlines inside a paragraph are not line breaks.
             out.push_str(&t.replace('\n', " "));
@@ -739,11 +947,28 @@ fn inline(cx: &mut Cx, n: Node, out: &mut String, fmt: Fmt, st: &mut Stats) {
         if is_true(c.attribute("underline")) {
             f.underline = true;
         }
+        if name == "inlineAttr" {
+            // explicit "normal" resets, e.g. `<inlineAttr font-weight="normal">`
+            if let Some(w) = c.attribute("font-weight") {
+                f.bold = w == "bold" || w == "700";
+            }
+            if let Some(s) = c.attribute("font-style") {
+                f.italic = s == "italic";
+            }
+            if let Some(u) = c.attribute("underline") {
+                f.underline = is_true(Some(u));
+            }
+        }
         if st.size.is_none() {
             st.size = num_attr(c, "font-size").or_else(|| num_attr(c, "size"));
         }
         match name {
             "br" => out.push('\n'),
+            "sp" => {
+                let n = c.attribute("count").and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(1).clamp(1, 64);
+                out.extend(std::iter::repeat('\u{a0}').take(n));
+            }
+            "tab" => out.push_str("\u{a0}\u{a0}\u{a0}\u{a0}"),
             "sub" => {
                 out.push('_');
                 inline(cx, c, out, f, st);
@@ -761,12 +986,292 @@ fn inline(cx: &mut Cx, n: Node, out: &mut String, fmt: Fmt, st: &mut Stats) {
                     out.push_str(&s);
                 }
             }
+            "region" => {
+                // an embedded region (inline formula): its math, as text
+                if let Some(m) = kids(c).into_iter().find(|k| lname(*k) == "math") {
+                    if let Some(top) = kids(m).into_iter().next() {
+                        let s = match conv_stmt(cx, top) {
+                            Ok(stmt) => stmt.to_string(),
+                            Err(_) => dump(top),
+                        };
+                        out.push_str(&s);
+                    }
+                }
+            }
+            "rendering" => {}
+            "inlineAttr" => {
+                // formatting that applies to the rest of the paragraph (and to the content)
+                inline(cx, c, out, f, st);
+                fmt = f;
+            }
             _ => inline(cx, c, out, f, st),
         }
     }
 }
 
+// ---------------------------------------------------------- stored results
+
+/// Mathcad's `<result>` of the evaluation in a math region.
+fn extract_expected(math: Node) -> Option<Expected> {
+    let top = kids(math).into_iter().next()?;
+    let eval = match lname(top) {
+        "eval" => top,
+        "define" | "globalDefine" => kids(top).into_iter().nth(1).filter(|k| lname(*k) == "eval")?,
+        _ => return None,
+    };
+    if let Some(err) = math.attribute("error") {
+        return Some(Expected::Error(err.to_string()));
+    }
+    let result = eval.children().find(|c| c.is_element() && lname(*c) == "result")?;
+    let body = kids(result).into_iter().next()?;
+    parse_result(body).map(Expected::Value)
+}
+
+fn parse_f(n: Node) -> Option<f64> {
+    n.text().and_then(|t| t.trim().parse::<f64>().ok())
+}
+
+/// One scalar: `real`, `imag`, `complex(real?, imag?)`, `str`.
+fn parse_scalar(n: Node) -> Option<(f64, f64)> {
+    match lname(n) {
+        "real" => parse_f(n).map(|v| (v, 0.0)),
+        "imag" => Some((0.0, parse_f(n).unwrap_or(1.0))),
+        "complex" => {
+            let mut z = (0.0, 0.0);
+            for k in kids(n) {
+                match lname(k) {
+                    "real" => z.0 = parse_f(k)?,
+                    "imag" => z.1 = parse_f(k).unwrap_or(1.0),
+                    _ => return None,
+                }
+            }
+            Some(z)
+        }
+        _ => None,
+    }
+}
+
+fn parse_result(n: Node) -> Option<ExpectedValue> {
+    let mut unit: Option<(f64, f64, Dim, Option<String>)> = None; // (factor, offset, dim, unknown)
+    let mut core = n;
+    if lname(n) == "unitedValue" {
+        let ks = kids(n);
+        core = *ks.first()?;
+        if let Some(um) = ks.iter().find(|k| lname(**k) == "unitMonomial") {
+            unit = Some(unit_of(*um));
+        }
+    }
+    let (factor, offset, dim, unknown) = unit.unwrap_or((1.0, 0.0, Dim::NONE, None));
+    let scale = |(re, im): (f64, f64)| ((re + offset) * factor, im * factor);
+    let (rows, cols, data, text) = match lname(core) {
+        "str" => (1, 1, Vec::new(), Some(core.text().unwrap_or("").to_string())),
+        "matrix" => {
+            let rows: usize = core.attribute("rows")?.trim().parse().ok()?;
+            let cols: usize = core.attribute("cols")?.trim().parse().ok()?;
+            let ks = kids(core);
+            if rows * cols != ks.len() || rows == 0 || cols == 0 {
+                return None;
+            }
+            let mut items = Vec::with_capacity(ks.len());
+            for k in ks {
+                if lname(k) == "str" {
+                    return Some(ExpectedValue { rows, cols, data: Vec::new(), dim, text: Some(String::new()), unknown_unit: unknown });
+                }
+                items.push(scale(parse_scalar(k)?));
+            }
+            // column-major in the file
+            let data = (0..rows).flat_map(|r| (0..cols).map(move |c| (r, c))).map(|(r, c)| items[c * rows + r]).collect();
+            (rows, cols, data, None)
+        }
+        _ => (1, 1, vec![scale(parse_scalar(core)?)], None),
+    };
+    Some(ExpectedValue { rows, cols, data, dim, text, unknown_unit: unknown })
+}
+
+/// SI factor, zero-point offset and dimension of a `unitMonomial`.
+fn unit_of(um: Node) -> (f64, f64, Dim, Option<String>) {
+    let refs: Vec<Node> = kids(um).into_iter().filter(|k| lname(*k) == "unitReference").collect();
+    let mut factor = 1.0;
+    let mut offset = 0.0;
+    let mut dim = Dim::NONE;
+    let mut unknown = None;
+    for r in &refs {
+        let name = r.attribute("unit").unwrap_or("");
+        let num: i32 = r.attribute("power-numerator").and_then(|s| s.trim().parse().ok()).unwrap_or(1);
+        let den: i32 = r.attribute("power-denominator").and_then(|s| s.trim().parse().ok()).unwrap_or(1);
+        let power = num as f64 / den.max(1) as f64;
+        match mathcad_unit(name) {
+            Some(u) => {
+                factor *= u.factor.powf(power);
+                match u.dim.powf(power) {
+                    Some(d) => dim = dim.mul(d),
+                    None => unknown = Some(name.to_string()),
+                }
+                if u.offset != 0.0 && refs.len() == 1 && num == 1 && den == 1 {
+                    offset = u.offset;
+                }
+            }
+            None => unknown = Some(name.to_string()),
+        }
+    }
+    (factor, offset, dim, unknown)
+}
+
+/// Mathcad's internal unit names (as in `unitReference unit="…"`) to xmath units.
+fn mathcad_unit(name: &str) -> Option<&'static units::UnitDef> {
+    let direct = |n: &str| units::lookup(n);
+    let base: &[(&str, &str)] = &[
+        ("meter", "m"),
+        ("gram", "gm"),
+        ("second", "s"),
+        ("ampere", "A"),
+        ("kelvin", "K"),
+        ("mole", "mol"),
+        ("candela", "cd"),
+        ("liter", "L"),
+        ("hertz", "Hz"),
+        ("newton", "N"),
+        ("pascal", "Pa"),
+        ("joule", "J"),
+        ("watt", "W"),
+        ("coulomb", "C"),
+        ("volt", "V"),
+        ("ohm", "Ω"),
+        ("siemens", "S"),
+        ("farad", "F"),
+        ("henry", "H"),
+        ("weber", "Wb"),
+        ("tesla", "T"),
+        ("bar", "bar"),
+        ("gauss", "gauss"),
+        ("becquerel", "Bq"),
+        ("gray", "Gy"),
+        ("sievert", "Sv"),
+        ("calorie", "cal"),
+        ("electronvolt", "eV"),
+        ("poise", "P"),
+        ("stokes", "St"),
+        ("radian", "rad"),
+        ("degree", "deg"),
+    ];
+    let fixed: &[(&str, &str)] = &[
+        ("micron", "μm"),
+        ("angstrom", "Å"),
+        ("inch", "in"),
+        ("foot", "ft"),
+        ("yard", "yd"),
+        ("mile", "mi"),
+        ("nautical_mile", "nmi"),
+        ("mil", "mil"),
+        ("pound", "lb"),
+        ("pound_mass", "lb"),
+        ("ounce", "oz"),
+        ("ton", "ton"),
+        ("tonne", "tonne"),
+        ("metric_ton", "tonne"),
+        ("slug", "slug"),
+        ("minute", "min"),
+        ("hour", "hr"),
+        ("day", "day"),
+        ("week", "wk"),
+        ("year", "yr"),
+        ("gallon", "gal"),
+        ("quart", "qt"),
+        ("pint", "pt"),
+        ("atmosphere", "atm"),
+        ("pounds_per_sq_inch", "psi"),
+        ("psi", "psi"),
+        ("torr", "torr"),
+        ("International_BTU", "BTU"),
+        ("BTU", "BTU"),
+        ("horsepower", "hp"),
+        ("pound_force", "lbf"),
+        ("dyne", "dyne"),
+        ("erg", "erg"),
+        ("degC", "°C"),
+        ("degF", "°F"),
+        ("degR", "R"),
+        ("rankine", "R"),
+        ("revolution", "rev"),
+        ("acre", "acre"),
+        ("hectare", "ha"),
+        ("knot", "knot"),
+        ("rpm", "rpm"),
+        ("percent", "%"),
+    ];
+    if let Some((_, x)) = fixed.iter().find(|(m, _)| *m == name) {
+        return direct(x);
+    }
+    if let Some((_, x)) = base.iter().find(|(m, _)| *m == name) {
+        return direct(x);
+    }
+    // SI prefixes: kilometer, milligram, microsecond, megapascal, …
+    const PREFIXES: &[(&str, &str)] = &[
+        ("pico", "p"),
+        ("nano", "n"),
+        ("micro", "μ"),
+        ("milli", "m"),
+        ("centi", "c"),
+        ("deci", "d"),
+        ("hecto", "h"),
+        ("kilo", "k"),
+        ("mega", "M"),
+        ("giga", "G"),
+        ("tera", "T"),
+    ];
+    for (long, short) in PREFIXES {
+        if let Some(rest) = name.strip_prefix(long) {
+            if let Some((_, b)) = base.iter().find(|(m, _)| *m == rest) {
+                if let Some(u) = direct(&format!("{short}{b}")) {
+                    return Some(u);
+                }
+            }
+        }
+    }
+    direct(name)
+}
+
 // ---------------------------------------------------------------------- plot
+
+/// A plot stored in Mathcad's binary format (`<plot item-idref="…"/>`).
+fn plot_from_binary(cx: &mut Cx, plot: Node, w: Option<f32>, h: Option<f32>) -> R<RegionKind> {
+    let id = plot.attribute("item-idref").ok_or("нет item-idref")?;
+    let bytes = cx.item_bytes(id).ok_or("не удалось прочитать данные графика")?;
+    let info = crate::xmcd_plot::decode_plot(&bytes)?;
+    let to_src = |e: &Expr| -> R<String> {
+        let s = e.to_string();
+        parse_expr(&s).map_err(|er| format!("«{s}»: {}", er.msg))?;
+        Ok(s)
+    };
+    let ys = info.y.iter().map(&to_src).collect::<R<Vec<_>>>()?;
+    let mut xs = info.x.iter().map(&to_src).collect::<R<Vec<_>>>()?;
+    // one abscissa per trace (the last one repeats), or a single common one
+    let per_trace = if xs.len() > 1 && xs.iter().any(|v| v != &xs[0]) {
+        while xs.len() < ys.len() {
+            xs.push(xs.last().cloned().unwrap_or_default());
+        }
+        xs.truncate(ys.len());
+        Some(xs.clone())
+    } else {
+        None
+    };
+    let x = xs.first().cloned().unwrap_or_default();
+    let mut k = RegionKind::new_plot();
+    if let RegionKind::Plot { x: kx, y: ky, width, height, x_min, x_max, y_min, y_max, xs: kxs } = &mut k {
+        *kx = x;
+        *ky = ys;
+        *kxs = per_trace.unwrap_or_default();
+        (*x_min, *x_max, *y_min, *y_max) = (info.x_min, info.x_max, info.y_min, info.y_max);
+        if let Some(w) = w {
+            *width = w;
+        }
+        if let Some(h) = h {
+            *height = h;
+        }
+    }
+    Ok(k)
+}
+
 
 fn plot_roots<'a, 'i>(n: Node<'a, 'i>) -> Vec<Node<'a, 'i>> {
     n.descendants()
@@ -821,7 +1326,7 @@ fn convert_plot(cx: &mut Cx, plot: Node, w: Option<f32>, h: Option<f32>) -> R<Re
         y.push(to_src(cx, n)?);
     }
     let mut k = RegionKind::new_plot();
-    if let RegionKind::Plot { x: kx, y: ky, width, height } = &mut k {
+    if let RegionKind::Plot { x: kx, y: ky, width, height, .. } = &mut k {
         *kx = x;
         *ky = y;
         if let Some(w) = w {

@@ -15,6 +15,8 @@ pub mod special;
 pub mod units;
 pub mod value;
 pub mod xmcd;
+pub mod xmcd_check;
+pub mod xmcd_plot;
 pub mod worksheet;
 
 #[cfg(test)]
@@ -23,16 +25,22 @@ mod program_tests;
 pub use ast::{BinOp, Expr, PStmt, Stmt, Target, UnOp};
 pub use format::{FormatOptions, NumberText, Piece, ResultView, UnitPow, UnitSystem, UnitText};
 pub use parser::{parse_expr, parse_statement, ParseError};
-pub use worksheet::{Output, PlotData, Region, RegionKind, RegionOutput, Series, Worksheet};
+pub use worksheet::{Output, PlotData, Region, RegionKind, RegionOutput, Series, Snapshot, Worksheet};
 
 /// Evaluates on a thread with a large stack, so deeply recursive user
 /// functions do not overflow the (small) main-thread stack.
 pub fn evaluate_worksheet(ws: &Worksheet) -> std::collections::HashMap<u64, RegionOutput> {
+    evaluate_worksheet_opts(ws, false)
+}
+
+/// Like [`evaluate_worksheet`]; with `snapshots` the computed values are kept
+/// in [`RegionOutput::value`] (used by the Mathcad result checker).
+pub fn evaluate_worksheet_opts(ws: &Worksheet, snapshots: bool) -> std::collections::HashMap<u64, RegionOutput> {
     let ws = ws.clone();
     std::thread::Builder::new()
         .name("xmath-eval".into())
         .stack_size(512 * 1024 * 1024)
-        .spawn(move || ws.evaluate())
+        .spawn(move || ws.evaluate_opts(snapshots))
         .expect("spawn evaluation thread")
         .join()
         .unwrap_or_default()

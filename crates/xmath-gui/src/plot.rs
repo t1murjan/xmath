@@ -45,6 +45,15 @@ fn axis_range(min: f64, max: f64) -> (f64, f64, f64) {
     ((lo / step).floor() * step, (hi / step).ceil() * step, step)
 }
 
+/// Applies fixed axis limits (from the worksheet) to an autoscaled axis.
+fn limited(auto: (f64, f64, f64), lo: Option<f64>, hi: Option<f64>) -> (f64, f64, f64) {
+    let (a, b) = (lo.unwrap_or(auto.0), hi.unwrap_or(auto.1));
+    if lo.is_none() && hi.is_none() || !(a.is_finite() && b.is_finite()) || b <= a {
+        return auto;
+    }
+    (a, b, nice_step(b - a, 8.0))
+}
+
 fn fmt_tick(v: f64, step: f64) -> String {
     let v = if v.abs() < step * 1e-9 { 0.0 } else { v };
     if v.abs() >= 1e5 || (v != 0.0 && v.abs() < 1e-3) {
@@ -65,8 +74,8 @@ pub fn paint(painter: &Painter, rect: Rect, data: &PlotData, font: f32) {
         ymin = ymin.min(p[1]);
         ymax = ymax.max(p[1]);
     }
-    let (x0, x1, xs) = axis_range(xmin, xmax);
-    let (y0, y1, ys) = axis_range(ymin, ymax);
+    let (x0, x1, xs) = limited(axis_range(xmin, xmax), data.x_min, data.x_max);
+    let (y0, y1, ys) = limited(axis_range(ymin, ymax), data.y_min, data.y_max);
     let sx = |x: f64| rect.left() + ((x - x0) / (x1 - x0)) as f32 * rect.width();
     let sy = |y: f64| rect.bottom() - ((y - y0) / (y1 - y0)) as f32 * rect.height();
 

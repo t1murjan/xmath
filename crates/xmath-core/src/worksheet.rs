@@ -1,7 +1,7 @@
 //! The worksheet document: freely placed regions evaluated top-to-bottom,
 //! left-to-right, like in Mathcad.
 
-use crate::ast::{Expr, Stmt};
+use crate::ast::{Expr, Stmt, Target};
 use crate::eval::{Evaluator, Scope};
 use crate::format::{FormatOptions, ResultView};
 use crate::parser::{parse_expr, parse_statement, ParseError};
@@ -35,8 +35,29 @@ pub struct Region {
     pub id: u64,
     pub x: f32,
     pub y: f32,
+    /// Offset of the evaluation anchor (the baseline of the definition or
+    /// evaluation operator) from the region's top-left corner. Mathcad orders
+    /// regions by this point, not by the corner. `[0, 0]` for regions that do
+    /// not know it (then the top-left corner is used).
+    #[serde(default, skip_serializing_if = "anchor_is_zero")]
+    pub anchor: [f32; 2],
     #[serde(flatten)]
     pub kind: RegionKind,
+}
+
+fn anchor_is_zero(a: &[f32; 2]) -> bool {
+    a[0] == 0.0 && a[1] == 0.0
+}
+
+impl Region {
+    pub fn new(id: u64, x: f32, y: f32, kind: RegionKind) -> Region {
+        Region { id, x, y, anchor: [0.0, 0.0], kind }
+    }
+
+    /// The point regions are ordered by (see [`Worksheet::evaluation_order`]).
+    pub fn anchor_pos(&self) -> (f32, f32) {
+        (self.x + self.anchor[0], self.y + self.anchor[1])
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -51,6 +72,10 @@ pub enum RegionKind {
         width: f32,
         #[serde(default)]
         style: TextStyle,
+        /// Wrap the text at `width` (imported Mathcad text regions); otherwise
+        /// it wraps at the page margin.
+        #[serde(default, skip_serializing_if = "is_false")]
+        lock_width: bool,
     },
     Plot {
         /// Abscissa expression (usually a range variable).
@@ -63,7 +88,33 @@ pub enum RegionKind {
         width: f32,
         #[serde(default = "default_plot_h")]
         height: f32,
+        /// Axis limits (`None`: automatic).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x_min: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x_max: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        y_min: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        y_max: Option<f64>,
+        /// Abscissa per trace when the traces have different ones (parallel to
+        /// `y`); empty when `x` applies to all traces.
+        #[serde(default, rename = "x_exprs", skip_serializing_if = "Vec::is_empty")]
+        xs: Vec<String>,
     },
+    /// A picture (imported Mathcad pictures and plots that could not be
+    /// decoded). Not editable.
+    Image {
+        /// Base64 of a PNG (or JPEG) file.
+        png_base64: String,
+        /// Size in worksheet pixels.
+        width: f32,
+        height: f32,
+    },
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Character formatting of a text region.
@@ -95,11 +146,21 @@ fn default_plot_h() -> f32 {
 
 impl RegionKind {
     pub fn new_plot() -> RegionKind {
-        RegionKind::Plot { x: String::new(), y: vec![String::new()], width: default_plot_w(), height: default_plot_h() }
+        RegionKind::Plot {
+            x: String::new(),
+            y: vec![String::new()],
+            width: default_plot_w(),
+            height: default_plot_h(),
+            x_min: None,
+            x_max: None,
+            y_min: None,
+            y_max: None,
+            xs: Vec::new(),
+        }
     }
 
     pub fn new_text(text: impl Into<String>) -> RegionKind {
-        RegionKind::Text { text: text.into(), width: default_text_width(), style: TextStyle::default() }
+        RegionKind::Text { text: text.into(), width: default_text_width(), style: TextStyle::default(), lock_width: false }
     }
 }
 
@@ -116,6 +177,38 @@ pub struct PlotData {
     pub errors: Vec<String>,
     /// Variable swept along the x-axis (QuickPlot detection), if any.
     pub x_var: Option<String>,
+    /// Fixed axis limits from the region (`None`: automatic).
+    pub x_min: Option<f64>,
+    pub x_max: Option<f64>,
+    pub y_min: Option<f64>,
+    pub y_max: Option<f64>,
+}
+
+/// A plain copy of a computed value (for comparing results with Mathcad's
+/// saved ones); only produced by [`Worksheet::evaluate_opts`] with snapshots on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Snapshot {
+    pub rows: usize,
+    pub cols: usize,
+    /// Elements in row-major order, in SI units.
+    pub data: Vec<Num>,
+    /// Set for string values.
+    pub text: Option<String>,
+}
+
+impl Snapshot {
+    fn of(v: &Value) -> Option<Snapshot> {
+        match v {
+            Value::Num(n) => Some(Snapshot { rows: 1, cols: 1, data: vec![*n], text: None }),
+            Value::Matrix(m) => Some(Snapshot { rows: m.rows, cols: m.cols, data: m.data.clone(), text: None }),
+            Value::Range(r) => {
+                let d: Vec<Num> = r.values().collect();
+                Some(Snapshot { rows: d.len(), cols: 1, data: d, text: None })
+            }
+            Value::Str(s) => Some(Snapshot { rows: 1, cols: 1, data: Vec::new(), text: Some(s.to_string()) }),
+            Value::Func(_) => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -131,6 +224,8 @@ pub enum Output {
 pub struct RegionOutput {
     pub stmt: Option<Result<Stmt, ParseError>>,
     pub output: Output,
+    /// Computed value (only with snapshots enabled).
+    pub value: Option<Snapshot>,
 }
 
 impl RegionOutput {
@@ -143,18 +238,39 @@ impl RegionOutput {
     }
 }
 
+/// Anchors closer than this (in worksheet pixels) vertically are on one row.
+pub const ROW_TOLERANCE: f32 = 0.5;
+
 /// Default plot domain when the abscissa is an undefined variable (QuickPlot).
 const QUICKPLOT_RANGE: (f64, f64, usize) = (-10.0, 10.0, 400);
 
 impl Worksheet {
-    /// Region ids in evaluation order (top-to-bottom, then left-to-right).
+    /// Region indices in evaluation order like Mathcad: by the anchor point
+    /// (baseline of the definition/evaluation operator), top-to-bottom, and
+    /// left-to-right within a row. Anchors whose vertical positions differ by
+    /// less than [`ROW_TOLERANCE`] are on the same row.
     pub fn evaluation_order(&self) -> Vec<usize> {
         let mut idx: Vec<usize> = (0..self.regions.len()).collect();
         idx.sort_by(|&a, &b| {
-            let (ra, rb) = (&self.regions[a], &self.regions[b]);
-            ra.y.total_cmp(&rb.y).then(ra.x.total_cmp(&rb.x))
+            let (pa, pb) = (self.regions[a].anchor_pos(), self.regions[b].anchor_pos());
+            pa.1.total_cmp(&pb.1).then(pa.0.total_cmp(&pb.0))
         });
-        idx
+        // regroup rows: consecutive anchors closer than the tolerance are sorted by x
+        let mut out = Vec::with_capacity(idx.len());
+        let mut i = 0;
+        while i < idx.len() {
+            let mut j = i + 1;
+            while j < idx.len()
+                && self.regions[idx[j]].anchor_pos().1 - self.regions[idx[j - 1]].anchor_pos().1 < ROW_TOLERANCE
+            {
+                j += 1;
+            }
+            let mut row = idx[i..j].to_vec();
+            row.sort_by(|&a, &b| self.regions[a].anchor_pos().0.total_cmp(&self.regions[b].anchor_pos().0));
+            out.extend(row);
+            i = j;
+        }
+        out
     }
 
     pub fn next_id(&self) -> u64 {
@@ -188,7 +304,7 @@ impl Worksheet {
                 RegionKind::Math { source: t.to_string() }
             };
             let id = ws.next_id();
-            ws.regions.push(Region { id, x: 20.0, y, kind });
+            ws.regions.push(Region::new(id, 20.0, y, kind));
             y += 30.0;
         }
         ws
@@ -196,6 +312,12 @@ impl Worksheet {
 
     /// Evaluates the whole worksheet.
     pub fn evaluate(&self) -> HashMap<u64, RegionOutput> {
+        self.evaluate_opts(false)
+    }
+
+    /// Evaluates the whole worksheet; with `snapshots` every computed value is
+    /// also kept in [`RegionOutput::value`].
+    pub fn evaluate_opts(&self, snapshots: bool) -> HashMap<u64, RegionOutput> {
         let mut out = HashMap::new();
         let order = self.evaluation_order();
         let parsed: Vec<Option<Result<Stmt, ParseError>>> = self
@@ -216,34 +338,58 @@ impl Worksheet {
                     Ok(()) => Output::None,
                     Err(e) => Output::Error(e),
                 };
-                out.insert(self.regions[i].id, RegionOutput { stmt: parsed[i].clone(), output });
+                let value = if snapshots { snapshot_var(&ev, target) } else { None };
+                out.insert(self.regions[i].id, RegionOutput { stmt: parsed[i].clone(), output, value });
             }
         }
 
         // Pass 2: everything else in document order.
         for &i in &order {
             let region = &self.regions[i];
+            let mut value = None;
             let output = match (&region.kind, &parsed[i]) {
                 (_, Some(Ok(Stmt::Define { global: true, .. }))) => continue,
                 (RegionKind::Math { .. }, Some(Err(_))) => Output::None,
-                (RegionKind::Math { .. }, Some(Ok(stmt))) => self.eval_stmt(&mut ev, stmt),
-                (RegionKind::Plot { x, y, .. }, _) => Output::Plot(plot(&ev, x, y)),
+                (RegionKind::Math { .. }, Some(Ok(stmt))) => self.eval_stmt(&mut ev, stmt, snapshots.then_some(&mut value)),
+                (RegionKind::Plot { x, y, xs, x_min, x_max, y_min, y_max, .. }, _) => {
+                    let mut d = if xs.len() == y.len() && xs.iter().any(|v| v != &xs[0]) {
+                        let mut d = PlotData::default();
+                        for (xi, yi) in xs.iter().zip(y) {
+                            let part = plot(&ev, xi, std::slice::from_ref(yi));
+                            d.series.extend(part.series);
+                            d.errors.extend(part.errors);
+                            d.x_var = d.x_var.or(part.x_var);
+                        }
+                        d
+                    } else {
+                        plot(&ev, if x.is_empty() { xs.first().map_or("", |s| s.as_str()) } else { x }, y)
+                    };
+                    (d.x_min, d.x_max, d.y_min, d.y_max) = (*x_min, *x_max, *y_min, *y_max);
+                    Output::Plot(d)
+                }
                 _ => Output::None,
             };
-            out.insert(region.id, RegionOutput { stmt: parsed[i].clone(), output });
+            out.insert(region.id, RegionOutput { stmt: parsed[i].clone(), output, value });
         }
         out
     }
 
-    fn eval_stmt(&self, ev: &mut Evaluator, stmt: &Stmt) -> Output {
+    fn eval_stmt(&self, ev: &mut Evaluator, stmt: &Stmt, snap: Option<&mut Option<Snapshot>>) -> Output {
+        let mut snap = snap;
         let result: EResult<Output> = (|| match stmt {
             Stmt::Define { target, expr, .. } => {
                 ev.define(target, expr)?;
+                if let Some(s) = snap.as_deref_mut() {
+                    *s = snapshot_var(ev, target);
+                }
                 Ok(Output::None)
             }
             Stmt::Eval { expr, unit } => {
                 let sc = ev.top_scope();
                 let v = ev.eval_iterated(expr, &sc)?;
+                if let Some(s) = snap.as_deref_mut() {
+                    *s = Snapshot::of(&v);
+                }
                 let u = match unit {
                     None => None,
                     Some(u) => Some(ev.eval(u, &sc)?.as_num().map_err(|_| "единица отображения должна быть скаляром".to_string())?),
@@ -261,6 +407,13 @@ impl Worksheet {
             Stmt::Show(_) => Ok(Output::None),
         })();
         result.unwrap_or_else(Output::Error)
+    }
+}
+
+fn snapshot_var(ev: &Evaluator, target: &Target) -> Option<Snapshot> {
+    match target {
+        Target::Var(name) => ev.lookup(name, &ev.top_scope()).and_then(|v| Snapshot::of(&v)),
+        _ => None,
     }
 }
 

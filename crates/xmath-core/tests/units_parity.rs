@@ -36,7 +36,7 @@ fn show_with(sys: UnitSystem, lines: &[&str]) -> Vec<String> {
     let mut ws = Worksheet::default();
     ws.format = FormatOptions { unit_system: sys, ..FormatOptions::default() };
     for (i, l) in lines.iter().enumerate() {
-        ws.regions.push(Region { id: i as u64, x: 0.0, y: i as f32 * 10.0, kind: RegionKind::Math { source: l.to_string() } });
+        ws.regions.push(Region::new(i as u64, 0.0, i as f32 * 10.0, RegionKind::Math { source: l.to_string() }));
     }
     let out = ws.evaluate();
     (0..lines.len())
