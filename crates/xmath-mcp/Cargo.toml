@@ -1,0 +1,19 @@
+[package]
+name = "xmath-mcp"
+description = "MCP (Model Context Protocol) stdio server exposing the xmath engine to LLMs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "xmath_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "xmath-mcp"
+path = "src/main.rs"
+
+[dependencies]
+xmath-core.workspace = true
+serde_json.workspace = true
