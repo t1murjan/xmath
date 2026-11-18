@@ -290,13 +290,17 @@ fn dist(r: &Rect, p: Pos2) -> f32 {
 
 /// What a click at `p` edits: the cell under it, the definition target, or
 /// else the nearest cell. `None` when the formula has no cells.
-pub fn pick(hits: &[(Node, Rect)], p: Pos2) -> Option<CellKind> {
+pub fn pick(hits: &[(Node, Rect)], p: Pos2, whole: bool) -> Option<CellKind> {
     let cell = |n: &Node| match n {
         Node::Cell { mat, row, col } => Some(CellKind::Cell { mat: *mat, row: *row, col: *col }),
         _ => None,
     };
-    if let Some(k) = hits.iter().find(|(n, r)| cell(n).is_some() && r.contains(p)).and_then(|(n, _)| cell(n)) {
+    if let Some(k) = hits.iter().find(|(n, r)| cell(n).is_some() && r.expand(1.0).contains(p)).and_then(|(n, _)| cell(n)) {
         return Some(k);
+    }
+    if !whole {
+        // the rest of the formula is edited structurally (see `structural`)
+        return None;
     }
     if hits.iter().any(|(n, r)| *n == Node::Target && r.expand(3.0).contains(p)) {
         return Some(CellKind::Target);
@@ -374,7 +378,7 @@ impl App {
         let Some(src) = math_source(self, id) else { return false };
         let Ok(mut st) = parse_stmt(&src) else { return false };
         let kind = match at {
-            Some(p) => self.hits.get(&id).and_then(|h| pick(h, p)),
+            Some(p) => self.hits.get(&id).and_then(|h| pick(h, p, false)),
             None => (matrix_count(&mut st) > 0).then_some(CellKind::Cell { mat: 0, row: 0, col: 0 }),
         };
         let Some(kind) = kind else { return false };
@@ -682,7 +686,7 @@ impl App {
         if region_resp.clicked() {
             if let Some(p) = region_resp.interact_pointer_pos() {
                 let hits = self.hits.get(&id).cloned().unwrap_or_default();
-                if let Some(k) = pick(&hits, p) {
+                if let Some(k) = pick(&hits, p, true) {
                     if Some(k) != self.cell.as_ref().map(|c| c.kind) {
                         self.select_cell(&ctx, id, k, &mut st);
                     }
@@ -763,8 +767,9 @@ mod tests {
             (Node::Cell { mat: 0, row: 0, col: 0 }, r(30.0, 40.0)),
             (Node::Cell { mat: 0, row: 0, col: 1 }, r(50.0, 60.0)),
         ];
-        assert_eq!(pick(&hits, Pos2::new(5.0, 5.0)), Some(CellKind::Target));
-        assert_eq!(pick(&hits, Pos2::new(55.0, 5.0)), Some(CellKind::Cell { mat: 0, row: 0, col: 1 }));
-        assert_eq!(pick(&hits, Pos2::new(100.0, 5.0)), Some(CellKind::Cell { mat: 0, row: 0, col: 1 }));
+        assert_eq!(pick(&hits, Pos2::new(5.0, 5.0), true), Some(CellKind::Target));
+        assert_eq!(pick(&hits, Pos2::new(5.0, 5.0), false), None);
+        assert_eq!(pick(&hits, Pos2::new(55.0, 5.0), false), Some(CellKind::Cell { mat: 0, row: 0, col: 1 }));
+        assert_eq!(pick(&hits, Pos2::new(100.0, 5.0), true), Some(CellKind::Cell { mat: 0, row: 0, col: 1 }));
     }
 }
