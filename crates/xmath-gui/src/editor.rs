@@ -96,7 +96,7 @@ pub fn is_ph(e: &Expr) -> bool {
 }
 
 fn is_opaque(e: &Expr) -> bool {
-    matches!(e, Expr::Matrix(_) | Expr::Program(_) | Expr::Str(_) | Expr::Num(_) | Expr::Imag(_))
+    matches!(e, Expr::Matrix(_) | Expr::Program(_) | Expr::Num(_) | Expr::Imag(_))
         || matches!(e, Expr::Call(n, _) if n == P_BREAK || n == P_CONTINUE)
 }
 
@@ -166,6 +166,11 @@ fn stops_of(e: &Expr, path: &mut Path, out: &mut Vec<Cursor>) {
                 out.push(c(path, off));
             }
         }
+    } else if let Expr::Str(s) = e {
+        // inside the quotes 0..=len, then len + 1 = after the closing quote
+        for off in 0..=s.chars().count() + 1 {
+            out.push(c(path, off));
+        }
     } else if is_opaque(e) {
         out.push(c(path, 0));
         out.push(c(path, 1));
@@ -181,6 +186,16 @@ fn stops_of(e: &Expr, path: &mut Path, out: &mut Vec<Cursor>) {
         if has_after(e) {
             out.push(c(path, 1));
         }
+    }
+}
+
+/// The largest cursor position on a node.
+fn max_pos(e: &Expr) -> usize {
+    match e {
+        Expr::Var(v) if v != PH => v.chars().count(),
+        Expr::Var(_) => 0,
+        Expr::Str(s) => s.chars().count() + 1,
+        _ => 1,
     }
 }
 
@@ -668,11 +683,7 @@ impl Ed {
     fn fix_cursor(&mut self) {
         let ok = match self.node(&self.cur.path) {
             Some(n) => {
-                let max = match n {
-                    Expr::Var(v) if v != PH => v.chars().count(),
-                    Expr::Var(_) => 0,
-                    _ => 1,
-                };
+                let max = max_pos(n);
                 self.cur.pos <= max
             }
             None => false,
@@ -681,11 +692,7 @@ impl Ed {
             let stops = self.stops();
             match self.node(&self.cur.path).map(|_| ()) {
                 Some(()) => {
-                    let max = match self.node(&self.cur.path) {
-                        Some(Expr::Var(v)) if v != PH => v.chars().count(),
-                        Some(Expr::Var(_)) => 0,
-                        _ => 1,
-                    };
+                    let max = self.node(&self.cur.path).map(max_pos).unwrap_or(1);
                     self.cur.pos = self.cur.pos.min(max);
                 }
                 None => {
@@ -712,6 +719,25 @@ impl Ed {
     /// Types one character (Mathcad keystrokes included).
     pub fn type_char(&mut self, c: char) {
         self.fallback = None;
+        // inside a string every character is text; `"` leaves it
+        if self.sel.is_none() {
+            if let Some(Expr::Str(s)) = self.node(&self.cur.path).cloned() {
+                let mut ch: Vec<char> = s.chars().collect();
+                if self.cur.pos <= ch.len() {
+                    if c == '"' {
+                        self.cur.pos = ch.len() + 1;
+                    } else if !c.is_control() && c != '■' {
+                        self.snap();
+                        let p = self.cur.pos;
+                        ch.insert(p, c);
+                        let path = self.cur.path.clone();
+                        self.replace(&path, Expr::Str(ch.into_iter().collect()));
+                        self.cur.pos = p + 1;
+                    }
+                    return;
+                }
+            }
+        }
         match c {
             '■' | '\r' | '\n' | '\t' => {}
             ' ' => self.grow(),
@@ -752,6 +778,7 @@ impl Ed {
             ';' => self.range(),
             '!' => self.postfix(|x| Expr::Unary(UnOp::Factorial, Box::new(x))),
             '\'' => self.wrap_paren(),
+            '"' => self.string_start(),
             _ => {
                 // strings, programs and everything else: continue in the line editor
                 let mut s = self.source();
@@ -1446,6 +1473,22 @@ impl Ed {
                 }
             }
             Expr::Var(_) => self.delete_placeholder(&path),
+            Expr::Str(s) => {
+                let mut ch: Vec<char> = s.chars().collect();
+                let p = self.cur.pos;
+                if p > ch.len() {
+                    self.cur.pos = ch.len(); // from behind the closing quote into the string
+                } else if p > 0 {
+                    ch.remove(p - 1);
+                    self.replace(&path, Expr::Str(ch.into_iter().collect()));
+                    self.cur.pos = p - 1;
+                } else if ch.is_empty() {
+                    self.replace(&path, ph());
+                    self.on_ph(&path);
+                } else {
+                    self.backspace_at_start(&path);
+                }
+            }
             other => {
                 if self.cur.pos >= 1 {
                     if is_opaque(other) {
@@ -1763,6 +1806,19 @@ impl Ed {
                 }
             }
             Expr::Var(_) => self.delete_placeholder(&path),
+            Expr::Str(s) => {
+                let mut ch: Vec<char> = s.chars().collect();
+                let p = self.cur.pos;
+                if p < ch.len() {
+                    ch.remove(p);
+                    self.replace(&path, Expr::Str(ch.into_iter().collect()));
+                } else if ch.is_empty() {
+                    self.replace(&path, ph());
+                    self.on_ph(&path);
+                } else {
+                    self.step(1);
+                }
+            }
             other => {
                 if self.cur.pos == 0 || is_opaque(other) {
                     self.replace(&path, ph());
@@ -1821,6 +1877,18 @@ impl Ed {
         } else {
             self.type_str(t);
         }
+    }
+
+    /// `"` on a placeholder (or a selection): a string literal, typed in place.
+    fn string_start(&mut self) {
+        let path = self.selected_path();
+        if self.sel.is_none() && !self.node(&path).is_some_and(is_ph) {
+            return;
+        }
+        self.snap();
+        self.sel = None;
+        self.replace(&path, Expr::Str(String::new()));
+        self.cur = Cursor { path, pos: 0 };
     }
 
     // -----------------------------------------------------------------
@@ -2107,8 +2175,10 @@ mod tests {
     #[test]
     fn range_and_text_fallback() {
         assert_eq!(src("i:1;10"), "i := 1..10");
+        // `"` only starts a string on an empty placeholder (a new region starts a text region, see app)
         let e = t("a\"");
-        assert_eq!(e.fallback.as_deref(), Some("a\""));
+        assert_eq!(e.fallback, None);
+        assert_eq!(e.source(), "a");
     }
 
     #[test]
@@ -2473,6 +2543,30 @@ mod tests {
         e.on_error();
         e.type_str("0");
         assert_eq!(e.source(), "q(x) := { 1/x on error 0; ■ }");
+    }
+
+    #[test]
+    fn strings_are_typed_in_place() {
+        // spaces and operators are text inside the quotes; `"` leaves the string
+        let mut e = t("s:\"a + b c\"");
+        assert_eq!(e.source(), "s := \"a + b c\"");
+        e.press(K::Backspace); // from behind the quote into the string
+        e.press(K::Backspace);
+        assert_eq!(e.source(), "s := \"a + b \"");
+        // a program with string branches
+        let mut e = t("h(x):]");
+        e.type_str("\"отрицательное\"}x<0");
+        e.press(K::Down);
+        e.type_str("\"иначе\"");
+        e.otherwise_stmt();
+        assert_eq!(e.source(), "h(x) := { if x < 0 { \"отрицательное\" } otherwise { \"иначе\" } }");
+        assert_eq!(eval_after(&e, "h(-1)"), "\"отрицательное\"");
+        // Backspace on an empty string removes it
+        let mut e = t("q:\"");
+        e.press(K::Backspace);
+        assert_eq!(e.source(), "q := ■");
+        // loaded strings are edited structurally too
+        assert!(Ed::from_source("g(x) := { \"a\" if x > 0; \"b\" }").is_some());
     }
 
     #[test]

@@ -118,6 +118,17 @@ fn stop_geom(ctx: &Context, ed: &Ed, c: &Cursor, rects: &HashMap<Path, Rect>, un
             Some((r.left() + w, r.top(), r.bottom()))
         }
         Expr::Var(_) => Some((r.left(), r.top(), r.bottom())),
+        Expr::Str(s) => {
+            // drawn as "text": inside the quotes the cursor follows the characters
+            let chars: Vec<char> = s.chars().collect();
+            if c.pos > chars.len() {
+                return Some((r.right(), r.top(), r.bottom()));
+            }
+            let fsz = (r.height() / unit_h).max(4.0);
+            let prefix: String = std::iter::once('"').chain(chars[..c.pos].iter().copied()).collect();
+            let w = ctx.fonts(|f| f.layout_no_wrap(prefix, FontId::proportional(fsz), Color32::BLACK).size().x);
+            Some((r.left() + w, r.top(), r.bottom()))
+        }
         _ => Some((if c.pos == 0 { r.left() } else { r.right() }, r.top(), r.bottom())),
     }
 }
