@@ -3459,12 +3459,12 @@ impl eframe::App for App {
                 self.status_bar(ui);
             });
         }
-        self.plot_panels(ctx);
         egui::CentralPanel::default().frame(egui::Frame::default().fill(Color32::WHITE)).show(ctx, |ui| {
             self.canvas(ui);
         });
         self.palette_windows(ctx);
         self.dialogs(ctx);
+        self.plot_dialogs(ctx);
         self.print_windows(ctx);
 
         for a in std::mem::take(&mut self.pending) {

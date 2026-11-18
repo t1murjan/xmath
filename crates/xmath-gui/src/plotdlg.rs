@@ -1,14 +1,16 @@
 //! Mathcad 15's «Форматирование выбранного графика X-Y» with the tabs «Оси X, Y»,
 //! «Трассировка», «Формат числа», «Подписи» and «По умолчанию», plus the small format
-//! dialog of 3D plots. Shown as a panel docked at the right of the worksheet (inside the
-//! main window) with the ОК / Отмена / Применить / Справка row always visible. Mounted
-//! inside `app`, so it can use the private parts of `App`.
+//! dialog of 3D plots. Like in Mathcad they open as a compact modal dialog centred over the
+//! worksheet, but drawn inside the main window, with the ОК / Отмена / Применить / Справка
+//! row always visible. Mounted inside `app`, so it can use the private parts of `App`.
 
 use super::*;
 use egui::Painter;
 use xmath_core::{AxisStyle, Colormap, LegendPos, LineStyle, NumKind, Symbol, TraceFormat, TraceType};
 
 const BG: Color32 = Color32::from_rgb(240, 240, 240);
+/// Text size of the dialog (Mathcad 15 uses 9 pt Segoe UI, i.e. 12 px).
+const DLG_FONT: f32 = 12.0;
 const LINE: Color32 = Color32::from_rgb(160, 160, 160);
 
 /// State of the plot format dialog: a working copy that is written back by «ОК» / «Применить».
@@ -50,6 +52,12 @@ fn dialog_visuals(ui: &mut Ui) {
     v.widgets.inactive.bg_fill = Color32::WHITE;
     v.selection.bg_fill = Color32::from_rgb(0, 120, 215);
     v.extreme_bg_color = Color32::WHITE;
+    let st = ui.style_mut();
+    for t in [egui::TextStyle::Body, egui::TextStyle::Button] {
+        st.text_styles.insert(t, FontId::proportional(DLG_FONT));
+    }
+    st.spacing.interact_size.y = 18.0;
+    st.spacing.item_spacing.y = 3.0;
 }
 
 fn tabs(ui: &mut Ui, cur: &mut usize, names: &[&str]) -> Rect {
@@ -57,10 +65,10 @@ fn tabs(ui: &mut Ui, cur: &mut usize, names: &[&str]) -> Rect {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         for (i, n) in names.iter().enumerate() {
-            let g = ui.painter().layout_no_wrap(n.to_string(), FontId::proportional(13.0), Color32::BLACK);
+            let g = ui.painter().layout_no_wrap(n.to_string(), FontId::proportional(DLG_FONT), Color32::BLACK);
             let sel = i == *cur;
             let w = g.size().x + 18.0;
-            let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 24.0), Sense::click());
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 22.0), Sense::click());
             let r = if sel { rect } else { Rect::from_min_max(rect.min + Vec2::new(0.0, 2.0), rect.max) };
             let p = ui.painter();
             p.rect_filled(r, 0.0, if sel { BG } else { Color32::from_rgb(232, 232, 232) });
@@ -90,7 +98,7 @@ fn group(ui: &mut Ui, title: &str, width: f32, add: impl FnOnce(&mut Ui)) {
         return;
     }
     let rect = r.response.rect;
-    let g = ui.painter().layout_no_wrap(title.to_string(), FontId::proportional(13.0), Color32::BLACK);
+    let g = ui.painter().layout_no_wrap(title.to_string(), FontId::proportional(DLG_FONT), Color32::BLACK);
     let tr = Rect::from_min_size(Pos2::new(rect.left() + 8.0, rect.top() - g.size().y / 2.0), g.size()).expand2(Vec2::new(3.0, 0.0));
     ui.painter().rect_filled(tr, 0.0, BG);
     ui.painter().galley(tr.min + Vec2::new(3.0, 0.0), g, Color32::BLACK);
@@ -170,11 +178,11 @@ macro_rules! cellx {
 }
 
 fn right_text(p: &Painter, r: Rect, t: &str) {
-    p.text(Pos2::new(r.right() - 4.0, r.center().y), Align2::RIGHT_CENTER, t, FontId::proportional(13.0), Color32::BLACK);
+    p.text(Pos2::new(r.right() - 4.0, r.center().y), Align2::RIGHT_CENTER, t, FontId::proportional(DLG_FONT), Color32::BLACK);
 }
 
 fn left_text(p: &Painter, r: Rect, t: &str, c: Color32) {
-    p.text(Pos2::new(r.left() + 4.0, r.center().y), Align2::LEFT_CENTER, t, FontId::proportional(13.0), c);
+    p.text(Pos2::new(r.left() + 4.0, r.center().y), Align2::LEFT_CENTER, t, FontId::proportional(DLG_FONT), c);
 }
 
 // -------------------------------------------------------------- tabs
@@ -483,21 +491,32 @@ fn labels_tab(ui: &mut Ui, d: &mut PlotDlg) {
 }
 
 fn defaults_tab(ui: &mut Ui, d: &mut PlotDlg, doc_defaults: &Option<PlotFormat>) {
+    // fixed column widths: wrapped labels must not widen the page
+    let left = 220.0;
+    let text_w = (ui.available_width() - left - 10.0).max(120.0);
     ui.horizontal_top(|ui| {
-        if ui.add(egui::Button::new("Использовать умолчания").min_size(Vec2::new(220.0, 22.0))).clicked() {
+        if ui.add(egui::Button::new("Использовать умолчания").min_size(Vec2::new(left, 22.0))).clicked() {
             d.fmt = doc_defaults.clone().unwrap_or_else(PlotFormat::new_plot_default);
             d.limits = [None; 4];
         }
         ui.add_space(6.0);
-        ui.add(egui::Label::new("Параметры графика принимают значения, установленные по умолчанию для этого документа.").wrap());
+        ui.allocate_ui(Vec2::new(text_w, 40.0), |ui| {
+            ui.set_max_width(text_w);
+            ui.add(egui::Label::new("Параметры графика принимают значения, установленные по умолчанию для этого документа.").wrap());
+        });
     });
     ui.add_space(16.0);
     ui.horizontal_top(|ui| {
-        ui.allocate_ui(Vec2::new(220.0, 40.0), |ui| {
+        ui.allocate_ui(Vec2::new(left, 40.0), |ui| {
+            ui.set_max_width(left);
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
             ui.checkbox(&mut d.use_as_default, "Использовать в качестве значений по умолчанию");
         });
         ui.add_space(6.0);
-        ui.add(egui::Label::new("Текущие параметры графика будут использованы как значения по умолчанию для этого документа.").wrap());
+        ui.allocate_ui(Vec2::new(text_w, 40.0), |ui| {
+            ui.set_max_width(text_w);
+            ui.add(egui::Label::new("Текущие параметры графика будут использованы как значения по умолчанию для этого документа.").wrap());
+        });
     });
 }
 
@@ -533,69 +552,94 @@ fn buttons(ui: &mut Ui, can_apply: bool) -> Btn {
     res
 }
 
-/// Windows-like caption: title on the left in a normal font, ✕ on the right. True when ✕ was clicked.
-fn caption(ui: &mut Ui, title: &str) -> bool {
+/// Windows-like caption: title on the left in a normal font, ✕ on the right. Returns whether
+/// ✕ was clicked and how far the caption was dragged (to move the dialog).
+fn caption(ui: &mut Ui, title: &str) -> (bool, Vec2) {
     let mut closed = false;
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(title).size(13.0).color(Color32::BLACK));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let (rect, resp) = ui.allocate_exact_size(Vec2::new(26.0, 20.0), Sense::click());
-            if resp.hovered() {
-                ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(232, 17, 35));
-            }
-            let c = if resp.hovered() { Color32::WHITE } else { Color32::BLACK };
-            let m = rect.center();
-            let st = Stroke::new(1.2_f32, c);
-            ui.painter().line_segment([m + Vec2::new(-5.0, -5.0), m + Vec2::new(5.0, 5.0)], st);
-            ui.painter().line_segment([m + Vec2::new(-5.0, 5.0), m + Vec2::new(5.0, -5.0)], st);
-            closed = resp.clicked();
-        });
-    });
+    let w = ui.available_width();
+    let (bar, drag) = ui.allocate_exact_size(Vec2::new(w, 24.0), Sense::drag());
+    ui.painter().text(bar.left_center() + Vec2::new(2.0, 0.0), Align2::LEFT_CENTER, title, FontId::proportional(DLG_FONT), Color32::BLACK);
+    let rect = Rect::from_center_size(bar.right_center() - Vec2::new(13.0, 0.0), Vec2::new(26.0, 20.0));
+    let resp = ui.interact(rect, ui.id().with("dlg-close"), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(232, 17, 35));
+    }
+    let c = if resp.hovered() { Color32::WHITE } else { Color32::BLACK };
+    let m = rect.center();
+    let st = Stroke::new(1.2_f32, c);
+    ui.painter().line_segment([m + Vec2::new(-5.0, -5.0), m + Vec2::new(5.0, 5.0)], st);
+    ui.painter().line_segment([m + Vec2::new(-5.0, 5.0), m + Vec2::new(5.0, -5.0)], st);
+    closed |= resp.clicked();
     ui.add_space(4.0);
-    closed
+    (closed, if drag.dragged() { drag.drag_delta() } else { Vec2::ZERO })
 }
 
 /// Width of the dialog page, as in Mathcad 15.
 const DLG_W: f32 = 548.0;
 
-/// The right-hand panel that holds a format dialog inside the main window (instead of a
-/// floating window, which tiling window managers show badly): caption with ✕, the dialog
-/// body in a scroll area, and the button row pinned to the bottom, always visible.
-fn dialog_panel(ctx: &Context, id: &'static str, title: &str, can_apply: bool, body: impl FnOnce(&mut Ui)) -> Btn {
-    let avail = ctx.available_rect().width();
-    let width = (DLG_W + 24.0).min((avail * 0.62).max(260.0));
+/// A Mathcad-style modal dialog drawn inside the main window (not a separate OS window, so
+/// tiling window managers leave it alone): it opens centred over the worksheet at the size
+/// of its contents, can be moved by dragging, never leaves the worksheet area, and keeps the
+/// ОК / Отмена / Применить / Справка row visible — when the window is too small only the
+/// body scrolls.
+fn dialog_window(ctx: &Context, id: &'static str, title: &str, can_apply: bool, width: f32, body: impl FnOnce(&mut Ui)) -> Btn {
+    // modal: the worksheet behind does not react while the dialog is open
+    egui::Area::new(Id::new((id, "block"))).order(egui::Order::Middle).fixed_pos(Pos2::ZERO).show(ctx, |ui| {
+        let r = ctx.screen_rect();
+        ui.allocate_response(r.size(), Sense::click_and_drag());
+    });
+    let area = ctx.available_rect();
+    let width = width.min(area.width() - 24.0).max(200.0);
+    // own placement (egui's window positioning jumps when the content size changes):
+    // centred when opened, moved by dragging the caption, always inside the worksheet area
+    let pos_id = Id::new((id, "pos"));
+    let size_id = Id::new((id, "size"));
+    let last: Vec2 = ctx.data(|m| m.get_temp(size_id)).unwrap_or(Vec2::new(width + 16.0, 500.0));
+    let mut pos: Pos2 = ctx.data(|m| m.get_temp(pos_id)).unwrap_or(Pos2::new(area.center().x - last.x / 2.0, area.center().y - last.y / 2.0));
+    pos.x = pos.x.min(area.right() - last.x).max(area.left());
+    pos.y = pos.y.min(area.bottom() - last.y).max(area.top());
+    let max_body_h = (area.height() - 24.0 - 30.0 - 36.0 - 16.0).max(60.0);
     let mut res = Btn::None;
-    egui::SidePanel::right(id)
-        .resizable(false)
-        .exact_width(width)
-        .frame(egui::Frame::NONE.fill(BG).stroke(Stroke::new(1.0_f32, Color32::from_gray(150))).inner_margin(egui::Margin { left: 10, right: 8, top: 6, bottom: 8 }))
-        .show(ctx, |ui| {
+    let mut moved = Vec2::ZERO;
+    let shown = egui::Area::new(Id::new(id)).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
+        egui::Frame::window(&ctx.style()).fill(BG).corner_radius(0).inner_margin(egui::Margin { left: 8, right: 8, top: 4, bottom: 8 }).show(ui, |ui| {
+            ui.set_width(width);
+            ui.set_max_width(width);
             dialog_visuals(ui);
-            if caption(ui, title) {
+            let (closed, drag) = caption(ui, title);
+            if closed {
                 res = Btn::Cancel;
             }
-            let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
-            ui.painter().line_segment([r.left_center(), r.right_center()], Stroke::new(1.0_f32, LINE));
-            ui.add_space(4.0);
-            let buttons_h = 34.0;
-            let body_h = (ui.available_height() - buttons_h).max(40.0);
+            moved = drag;
             super::classic_scrollbars(ui);
             egui::ScrollArea::both()
                 .id_salt((id, "body"))
-                .max_height(body_h)
-                .auto_shrink([false, true])
+                .max_height(max_body_h)
+                .max_width(width)
+                .auto_shrink([true, true])
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
                 .show(ui, |ui| {
-                body(ui);
-            });
-            ui.add_space(6.0);
+                    body(ui);
+                });
+            ui.add_space(8.0);
             let b = buttons(ui, can_apply);
             if b != Btn::None {
                 res = b;
             }
         });
+    });
+    let size = shown.response.rect.size();
+    ctx.data_mut(|m| {
+        m.insert_temp(size_id, size);
+        m.insert_temp(pos_id, pos + moved);
+    });
+    if res == Btn::Ok || res == Btn::Cancel {
+        // next time it opens centred again, as a dialog does
+        ctx.data_mut(|m| m.remove::<Pos2>(pos_id));
+    }
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && ctx.memory(|m| m.focused().is_none()) {
         res = Btn::Cancel;
+        ctx.data_mut(|m| m.remove::<Pos2>(pos_id));
     }
     res
 }
@@ -607,8 +651,9 @@ fn tab_page(ui: &mut Ui, cur: usize, names: &[&str], size: Vec2, page: impl FnOn
     let sel = tabs(ui, &mut tab, names);
     let top = ui.cursor().top();
     egui::Frame::NONE.stroke(Stroke::new(1.0_f32, LINE)).inner_margin(8).show(ui, |ui| {
+        // fixed size like a Windows property page; grows only if a page has more rows
         ui.set_min_size(size);
-        ui.set_max_size(size);
+        ui.set_max_width(size.x);
         page(ui, cur);
     });
     ui.painter().line_segment([Pos2::new(sel.left() + 1.0, top), Pos2::new(sel.right() - 1.0, top)], Stroke::new(1.5_f32, BG));
@@ -678,9 +723,9 @@ impl App {
         self.changed();
     }
 
-    /// The plot format panels («Форматирование выбранного графика …»), docked at the right
-    /// of the worksheet. Must run before the central panel.
-    pub fn plot_panels(&mut self, ctx: &Context) {
+    /// The plot format dialogs («Форматирование выбранного графика …»). Must run after the
+    /// central panel (they are centred over the worksheet area).
+    pub fn plot_dialogs(&mut self, ctx: &Context) {
         if let Some(mut d) = self.dlg_plot.take() {
             if !matches!(self.region(d.id).map(|r| &r.kind), Some(RegionKind::Plot { .. })) {
                 return; // the plot is gone
@@ -688,10 +733,10 @@ impl App {
             let title = if d.kind == PlotKind::Polar { "Форматирование выбранного полярного графика" } else { "Форматирование выбранного графика X-Y" };
             let defaults = self.ws.plot_defaults.clone();
             let can_apply = d.changed() || d.use_as_default;
-            let res = dialog_panel(ctx, "plot-format", title, can_apply, |ui| {
+            let res = dialog_window(ctx, "plot-format", title, can_apply, DLG_W, |ui| {
                 ui.set_width(DLG_W);
                 let cur = d.tab;
-                d.tab = tab_page(ui, cur, &["Оси X, Y", "Трассировка", "Формат числа", "Подписи", "По умолчанию"], Vec2::new(530.0, 378.0), |ui, t| match t {
+                d.tab = tab_page(ui, cur, &["Оси X, Y", "Трассировка", "Формат числа", "Подписи", "По умолчанию"], Vec2::new(530.0, 345.0), |ui, t| match t {
                     0 => axes_tab(ui, &mut d),
                     1 => traces_tab(ui, &mut d),
                     2 => number_tab(ui, &mut d),
@@ -722,7 +767,7 @@ impl App {
             let can_apply = applied != (d.fmt.clone(), d.view);
             let title = if contour { "Форматирование выбранного контурного графика" } else { "Форматирование выбранного 3D графика" };
             let mut tab = ctx.data_mut(|m| *m.get_temp_mut_or_default::<usize>(Id::new("plot3d-tab")));
-            let res = dialog_panel(ctx, "plot3d-format", title, can_apply, |ui| {
+            let res = dialog_window(ctx, "plot3d-format", title, can_apply, 400.0, |ui| {
                 ui.set_width(400.0);
                 tab = tab_page(ui, tab, &["Вид", "Контур"], Vec2::new(382.0, 210.0), |ui, t| {
                     if t == 0 {
