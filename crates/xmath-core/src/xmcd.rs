@@ -958,11 +958,12 @@ fn binding(cx: &mut Cx, op: Node, args: &[Node]) -> R<Expr> {
                 }
             }
             let order = op.attribute("order").and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(1.0);
-            let mut a = vec![body, v];
-            if order > 1.0 {
-                a.push(Expr::Num(order));
+            // d^n/dx^n is a nest of first derivatives (the third argument of `diff` is a point)
+            let mut e = body;
+            for _ in 0..(order.max(1.0) as usize).min(12) {
+                e = Expr::Call("diff".into(), vec![e, v.clone()]);
             }
-            Ok(Expr::Call("diff".into(), a))
+            Ok(e)
         }
         "summation" | "product" if bounds.is_empty() => {
             // `Σ_i f(i)` over a range variable `i`

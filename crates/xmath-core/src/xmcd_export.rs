@@ -581,13 +581,20 @@ impl Exporter {
                 let Expr::Var(v) = &args[1] else { return Err("переменная интегрирования должна быть именем".into()) };
                 self.binding("ml:integral auto-algorithm=\"true\" algorithm=\"adaptive\"", v, &args[0], &[&args[2], &args[3]], o, d)
             }
-            ("diff", 2) | ("diff", 3) if args.len() == 2 || matches!(args[2], Expr::Num(_)) => {
+            ("diff", 2) => {
                 let Expr::Var(v) = &args[1] else { return Err("переменная дифференцирования должна быть именем".into()) };
-                let head = match args.get(2) {
-                    Some(Expr::Num(n)) if *n != 1.0 => format!("ml:derivative order=\"{n}\""),
-                    _ => "ml:derivative".to_string(),
-                };
-                self.binding(&head, v, &args[0], &[], o, d)
+                // a nest of first derivatives is one derivative of higher order
+                let (mut body, mut order) = (&args[0], 1usize);
+                while let Expr::Call(n, a) = body {
+                    if n == "diff" && a.len() == 2 && a[1] == args[1] {
+                        body = &a[0];
+                        order += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let head = if order > 1 { format!("ml:derivative order=\"{order}\"") } else { "ml:derivative".to_string() };
+                self.binding(&head, v, body, &[], o, d)
             }
             ("sum" | "prod", 4) => {
                 let Expr::Var(v) = &args[0] else { return Err("индекс суммы должен быть именем".into()) };

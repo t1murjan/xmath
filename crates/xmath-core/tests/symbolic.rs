@@ -31,3 +31,30 @@ fn imported_sym_eval_becomes_symbolic_statement() {
     let rep = xmath_core::xmcd_check::check_import(&r);
     assert_eq!(rep.ok(), 1, "{rep:?}");
 }
+
+#[test]
+fn imported_nth_derivative_is_numeric_order_n() {
+    let region = |id: u32, top: f32, math: &str| {
+        format!(r#"<region region-id="{id}" left="10" top="{top}" width="100" height="20" align-x="20" align-y="{}"><math>{math}</math></region>"#, top + 9.0)
+    };
+    let body = [
+        region(1, 10.0, "<ml:define><ml:id>x</ml:id><ml:real>2</ml:real></ml:define>"),
+        region(
+            2,
+            40.0,
+            "<ml:eval><ml:derivative order=\"2\"><ml:lambda><ml:boundVars><ml:id>x</ml:id></ml:boundVars><ml:apply><ml:pow/><ml:id>x</ml:id><ml:real>3</ml:real></ml:apply></ml:lambda></ml:derivative></ml:eval>",
+        ),
+    ]
+    .join("");
+    let xml = format!(r#"<worksheet xmlns="http://schemas.mathsoft.com/worksheet30" xmlns:ml="http://schemas.mathsoft.com/math30"><regions>{body}</regions></worksheet>"#);
+    let r = xmath_core::xmcd::import_xmcd(&xml).unwrap();
+    let res = evaluate_worksheet(&r.worksheet);
+    let id = r.worksheet.regions[1].id;
+    match &res[&id].output {
+        Output::Value { view, .. } => {
+            let t = view.to_string();
+            assert!(t.starts_with("12"), "{t}");
+        }
+        o => panic!("{o:?} {:?}", res[&id].error()),
+    }
+}
