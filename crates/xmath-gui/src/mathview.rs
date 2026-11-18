@@ -930,6 +930,52 @@ impl<'a> Ts<'a> {
         self.hcat(parts)
     }
 
+    /// The symbolic statement in the structural editor: the keyword slots are the very
+    /// expressions of the editor (so that their cursor positions are recorded).
+    pub fn statement_sym_ed(
+        &self,
+        lhs: Option<(&Expr, bool)>,
+        body: &Expr,
+        kws: &[&Expr],
+        result: Option<(&ResultView, Option<&Expr>)>,
+        size: f32,
+    ) -> Lay {
+        let mut parts = Vec::new();
+        if let Some((l, global)) = lhs {
+            parts.push(self.expr(l, size));
+            parts.push(self.op(if global { "≡" } else { ":=" }, size));
+        }
+        parts.push(self.expr(body, size));
+        if kws.is_empty() {
+            parts.push(self.sym_arrow(None, size));
+        }
+        let small = size * 0.75;
+        for k in kws {
+            let lay = match k {
+                Expr::Call(n, args) if n == "⟦kw⟧" => {
+                    let mut v = Vec::new();
+                    for (i, a) in args.iter().enumerate() {
+                        if i > 0 {
+                            v.push(self.text(", ", small));
+                        }
+                        v.push(self.expr(a, small));
+                    }
+                    self.hcat(v)
+                }
+                other => self.expr(other, small),
+            };
+            parts.push(self.sym_arrow(Some(lay), size));
+        }
+        if let Some(r) = &self.sym {
+            parts.push(self.space(size * 0.15));
+            parts.push(self.expr(r, size));
+        } else if let Some((view, _)) = result {
+            parts.push(self.space(size * 0.15));
+            parts.push(self.result(view, size));
+        }
+        self.hcat(parts)
+    }
+
     /// Lays out a whole math region.
     pub fn statement(&self, stmt: &Stmt, result: Option<(&ResultView, Option<&Expr>)>, size: f32) -> Lay {
         match stmt {

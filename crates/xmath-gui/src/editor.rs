@@ -29,6 +29,30 @@ pub enum Form {
     Eval,
     /// `lhs := rhs` (slots 0 and 1).
     Define { global: bool },
+    /// `[lhs :=] expr → kw1 → kw2 ...`: symbolic evaluation. Slots: `[lhs,] expr` followed by one
+    /// slot per keyword (a name, or `Call(P_KW, [name, args..])` for keywords with arguments).
+    Sym { define: Option<bool> },
+}
+
+/// Encoded keyword with arguments (`solve, x`): the name and the arguments are its children.
+pub const P_KW: &str = "⟦kw⟧";
+
+fn kw_slot(op: &xmath_core::SymOp) -> Expr {
+    let name = Expr::Var(op.name.clone());
+    if op.args.is_empty() {
+        name
+    } else {
+        let mut v = vec![name];
+        v.extend(op.args.iter().cloned().map(enc));
+        pcall(P_KW, v)
+    }
+}
+
+fn kw_text(e: &Expr) -> String {
+    match e {
+        Expr::Call(n, args) if n == P_KW => args.iter().map(|a| dec(a).to_string()).collect::<Vec<_>>().join(", "),
+        other => dec(other).to_string(),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -498,8 +522,26 @@ impl Ed {
                 ed.slots.push(unit.unwrap_or_else(ph));
             }
             Stmt::Show(e) => ed.slots = vec![e],
-            // symbolic statements are edited as text
-            Stmt::Symbolic { .. } => return None,
+            Stmt::Symbolic { target, expr, ops } => {
+                let mut slots = Vec::new();
+                let mut define = None;
+                if let Some((t, global)) = target {
+                    slots.push(match t {
+                        Target::Var(n) => Expr::Var(n),
+                        Target::Func(n, params) => Expr::Call(n, params.into_iter().map(Expr::Var).collect()),
+                        Target::Indexed(n, idx) => Expr::Index(Box::new(Expr::Var(n)), idx),
+                        Target::Vector(_) => return None,
+                    });
+                    define = Some(global);
+                }
+                slots.push(expr);
+                ed.form = Form::Sym { define };
+                ed.slots = slots;
+                let n = ed.slots.len();
+                ed.slots = std::mem::take(&mut ed.slots).into_iter().map(enc).collect();
+                ed.slots.extend(ops.iter().map(kw_slot));
+                let _ = n;
+            }
         }
         ed.slots = std::mem::take(&mut ed.slots).into_iter().map(enc).collect();
         ed.slots.iter_mut().for_each(normalize);
@@ -521,6 +563,20 @@ impl Ed {
                 }
             }
             Form::Eval => format!("{} ={}", slot(0), unit()),
+            Form::Sym { define } => {
+                let base = self.base_slots();
+                let mut out = String::new();
+                if let Some(g) = define {
+                    out.push_str(&format!("{} {} ", slot(0), if g { "≡" } else { ":=" }));
+                }
+                out.push_str(&slot(base - 1));
+                out.push_str(" →");
+                for (i, k) in self.slots.iter().enumerate().skip(base) {
+                    out.push_str(if i == base { " " } else { " → " });
+                    out.push_str(&kw_text(k));
+                }
+                out
+            }
             Form::Define { global } => {
                 let tail = if self.show { format!(" ={}", unit()) } else { String::new() };
                 format!("{} {} {}{}", slot(0), if global { "≡" } else { ":=" }, slot(1), tail)
@@ -530,7 +586,7 @@ impl Ed {
 
     /// Number of slots before the unit slot.
     pub fn base_slots(&self) -> usize {
-        if matches!(self.form, Form::Define { .. }) {
+        if matches!(self.form, Form::Define { .. } | Form::Sym { define: Some(_) }) {
             2
         } else {
             1
@@ -1017,6 +1073,18 @@ impl Ed {
     }
 
     fn comma(&mut self) {
+        if self.in_keyword() && self.cur.path.len() == 1 {
+            // `solve` + `,` -> `solve, ■`
+            let i = self.cur.path[0];
+            if let Expr::Var(_) = self.slots[i] {
+                self.snap();
+                let name = std::mem::replace(&mut self.slots[i], ph());
+                self.slots[i] = pcall(P_KW, vec![name, ph()]);
+                self.cur = Cursor { path: vec![i, 1], pos: 0 };
+                self.sel = None;
+                return;
+            }
+        }
         let mut path = self.cur.path.clone();
         while path.len() > 1 {
             let idx = path.pop().unwrap();
@@ -1108,6 +1176,26 @@ impl Ed {
     /// Palette / paste insertion of source text. `false`: it needs the line editor.
     pub fn insert_str(&mut self, s: &str) -> bool {
         let t = s.trim();
+        // the Symbolic palette: `->` and `-> keyword, args`
+        if t == "->" || t == "→" {
+            self.symbolic();
+            return true;
+        }
+        if let Some(rest) = t.strip_prefix("->") {
+            let rest = rest.trim();
+            if rest == "■" {
+                self.add_keyword(None);
+                return true;
+            }
+            let src = format!("x -> {rest}").replace('■', PH_IDENT);
+            if let Ok(Stmt::Symbolic { ops, .. }) = xmath_core::parse_statement(&src) {
+                if let Some(op) = ops.into_iter().next() {
+                    self.add_keyword(Some(op));
+                    return true;
+                }
+            }
+            return false;
+        }
         // the Programming palette (its texts are the line-editor forms)
         match t {
             "; ■" | "{ ■ }" => {
@@ -1220,7 +1308,62 @@ impl Ed {
         }
     }
 
+    /// Ctrl+.: the symbolic arrow after the expression (or after the right side of a definition).
+    pub fn symbolic(&mut self) {
+        match self.form {
+            Form::Plain if !is_ph(&self.slots[0]) => {
+                self.snap();
+                self.form = Form::Sym { define: None };
+                self.cur = self.end_of(&[0]);
+                self.sel = None;
+            }
+            Form::Define { global } if !self.show && self.cur.path[0] == 1 && !is_ph(&self.slots[1]) => {
+                self.snap();
+                self.form = Form::Sym { define: Some(global) };
+                self.slots.truncate(2);
+                self.cur = self.end_of(&[1]);
+                self.sel = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// Ctrl+Shift+.: `expr → keyword`; a further keyword is stacked after the existing ones.
+    pub fn add_keyword(&mut self, op: Option<xmath_core::SymOp>) {
+        if !matches!(self.form, Form::Sym { .. }) {
+            if matches!(self.form, Form::Plain) && is_ph(&self.slots[0]) {
+                self.snap();
+                self.form = Form::Sym { define: None };
+            } else {
+                self.symbolic();
+                if !matches!(self.form, Form::Sym { .. }) {
+                    return;
+                }
+            }
+        }
+        self.snap();
+        let slot = op.as_ref().map(kw_slot).unwrap_or_else(ph);
+        self.slots.push(slot);
+        let i = self.slots.len() - 1;
+        self.cur = self.first_ph_in(&[i]).unwrap_or_else(|| self.end_of(&[i]));
+        self.sel = None;
+    }
+
+    /// Removes the keyword slot `i` (Backspace on an empty keyword).
+    fn remove_keyword(&mut self, i: usize) {
+        self.slots.remove(i);
+        self.cur = self.end_of(&[i - 1]);
+    }
+
+    fn in_keyword(&self) -> bool {
+        matches!(self.form, Form::Sym { .. }) && self.cur.path[0] >= self.base_slots()
+    }
+
     fn equals(&mut self) {
+        if self.in_keyword() {
+            self.type_binop(BinOp::Eq);
+            return;
+        }
         match self.form {
             Form::Plain => {
                 if is_ph(&self.slots[0]) {
@@ -1470,6 +1613,11 @@ impl Ed {
     fn backspace_at_start(&mut self, path: &[usize]) {
         if path.len() == 1 {
             if path[0] >= self.base_slots() {
+                if matches!(self.form, Form::Sym { .. }) && is_ph(&self.slots[path[0]]) {
+                    self.snap();
+                    self.remove_keyword(path[0]);
+                    return;
+                }
                 self.cur = self.end_of(&[path[0] - 1]);
                 return;
             }
@@ -1582,6 +1730,10 @@ impl Ed {
     /// Backspace / Delete on a placeholder: removes the empty structure around it.
     fn delete_placeholder(&mut self, path: &[usize]) {
         if path.len() == 1 {
+            if matches!(self.form, Form::Sym { .. }) && path[0] >= self.base_slots() {
+                self.remove_keyword(path[0]);
+                return;
+            }
             if path[0] >= self.base_slots() {
                 // an empty unit: removes the `=`
                 self.slots.truncate(self.base_slots());
@@ -2014,6 +2166,77 @@ mod tests {
 
     fn src(keys: &str) -> String {
         t(keys).source()
+    }
+
+    #[test]
+    fn symbolic_arrow_and_keywords() {
+        // Ctrl+.
+        let mut e = t("x^2");
+        e.press(K::Right);
+        e.type_str("-1");
+        e.symbolic();
+        assert_eq!(e.source(), "x^2 - 1 →");
+        // Ctrl+Shift+. then a keyword
+        e.add_keyword(None);
+        assert_eq!(e.source(), "x^2 - 1 → ■");
+        e.type_str("factor");
+        assert_eq!(e.source(), "x^2 - 1 → factor");
+        // a keyword with a variable
+        let mut e = t("x^2");
+        e.press(K::Right);
+        e.type_str("-4");
+        e.add_keyword(None);
+        e.type_str("solve,x");
+        assert_eq!(e.source(), "x^2 - 4 → solve, x");
+        // a keyword with an equation
+        let mut e = t("x+y");
+        e.add_keyword(None);
+        e.type_str("substitute,x=2");
+        assert_eq!(e.source(), "x + y → substitute, x == 2");
+        // chained keywords stack
+        let mut e = t("(x+1)^2");
+        e.add_keyword(None);
+        e.type_str("expand");
+        e.add_keyword(None);
+        e.type_str("factor");
+        assert_eq!(e.source(), "(x + 1)^2 → expand → factor");
+        // a definition
+        let mut e = t("g:x^2");
+        e.press(K::Right);
+        e.symbolic();
+        e.add_keyword(None);
+        e.type_str("simplify");
+        assert_eq!(e.source(), "g := x^2 → simplify");
+        // an empty expression: `■ → ■`
+        let mut e = Ed::new();
+        e.add_keyword(None);
+        assert_eq!(e.source(), "■ → ■");
+    }
+
+    #[test]
+    fn symbolic_backspace_and_roundtrip() {
+        let mut e = t("x^2");
+        e.press(K::Right);
+        e.type_str("-1");
+        e.add_keyword(None);
+        e.press(K::Backspace);
+        assert_eq!(e.source(), "x^2 - 1 →");
+        for s in ["x^2 - 1 → expand → factor", "g := x → float, 5", "x^2 - 4 → solve, x", "[x; y] → solve, [x; y]", "x + y → substitute, x == 2, y == 1", "(x + 1)^2 →"] {
+            let ed = Ed::from_source(s).unwrap_or_else(|| panic!("{s}"));
+            assert_eq!(ed.source(), s);
+        }
+        // palette templates
+        let mut e = t("x^2");
+        e.press(K::Right);
+        e.type_str("-4");
+        assert!(e.insert_str(" -> solve, ■"));
+        assert_eq!(e.source(), "x^2 - 4 → solve, ■");
+        e.type_str("x");
+        assert_eq!(e.source(), "x^2 - 4 → solve, x");
+        let mut e = t("x^2");
+        assert!(e.insert_str(" ->"));
+        assert!(e.insert_str(" -> simplify"));
+        assert_eq!(e.source(), "x^2 → simplify");
     }
 
     #[test]
