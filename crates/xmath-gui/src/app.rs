@@ -690,7 +690,7 @@ impl App {
                 let target = self.editing.into_iter().chain(self.selection.iter().copied()).find(|id| matches!(self.region(*id).map(|r| &r.kind), Some(RegionKind::Plot { .. } | RegionKind::Plot3d { .. })));
                 match target.and_then(|id| self.region(id).map(|r| (id, r.kind.clone()))) {
                     Some((id, RegionKind::Plot { .. })) => self.open_plot_dialog(id),
-                    Some((id, RegionKind::Plot3d { fmt, view, .. })) => self.dlg_plot3d = Some(Plot3dDlg { id, fmt, view }),
+                    Some((id, RegionKind::Plot3d { .. })) => self.open_plot3d_dialog(id),
                     _ => self.status = "Выберите график".into(),
                 }
             }
@@ -2023,6 +2023,8 @@ impl App {
                 .title_bar(false)
                 .resizable(false)
                 .default_pos(default_pos)
+                // stay over the worksheet: never cover the toolbars or the plot format panel
+                .constrain_to(ctx.available_rect())
                 .frame(egui::Frame::window(&ctx.style()).inner_margin(2.0).fill(PANEL))
                 .show(ctx, |ui| {
                     // XP-style blue caption bar
@@ -2404,6 +2406,8 @@ impl App {
                         self.region_interaction(&ctx, id, &resp, z);
                         clicked_region |= resp.clicked();
                         if resp.double_clicked() {
+                            // a double click only opens the format panel (the first click started editing)
+                            self.finish_edit(false);
                             self.open_plot_dialog(id);
                         }
                         if selected || editing {
@@ -2508,7 +2512,8 @@ impl App {
                         self.region_interaction(&ctx, id, &resp, z);
                         clicked_region |= resp.clicked();
                         if resp.double_clicked() {
-                            self.dlg_plot3d = Some(Plot3dDlg { id, fmt: f3.clone(), view: *v3 });
+                            self.finish_edit(false);
+                            self.open_plot3d_dialog(id);
                         }
                         if editing {
                             if let Some((bid, mut buf, _)) = self.plot_buf.clone().filter(|b| b.0 == id) {
@@ -2551,7 +2556,8 @@ impl App {
                             if rot.dragged() || zoom != 1.0 {
                                 let d = rot.drag_delta();
                                 if let Some(Region { kind: RegionKind::Plot3d { view, .. }, .. }) = self.region_mut(id) {
-                                    view.azimuth -= d.x * 0.5;
+                                    // "grab" rotation: the surface follows the mouse
+                                    view.azimuth += d.x * 0.5;
                                     view.elevation = (view.elevation + d.y * 0.5).clamp(-90.0, 90.0);
                                     view.zoom = (view.zoom * zoom).clamp(0.3, 4.0);
                                     *view = view.clamped();
@@ -3068,8 +3074,6 @@ impl App {
             }
         }
 
-        self.plot_dialogs(ctx);
-
         if let Some(d) = &mut self.path_dlg {
             let mut res: Option<bool> = None;
             let title = match d.kind {
@@ -3455,6 +3459,7 @@ impl eframe::App for App {
                 self.status_bar(ui);
             });
         }
+        self.plot_panels(ctx);
         egui::CentralPanel::default().frame(egui::Frame::default().fill(Color32::WHITE)).show(ctx, |ui| {
             self.canvas(ui);
         });

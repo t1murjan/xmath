@@ -1,7 +1,8 @@
-//! Mathcad 15's «Форматирование выбранного графика X-Y»: a modal dialog with the
-//! tabs «Оси X, Y», «Трассировка», «Формат числа», «Подписи» and «По умолчанию»,
-//! plus the small format dialog of 3D plots. Mounted inside `app`, so it can use
-//! the private parts of `App`.
+//! Mathcad 15's «Форматирование выбранного графика X-Y» with the tabs «Оси X, Y»,
+//! «Трассировка», «Формат числа», «Подписи» and «По умолчанию», plus the small format
+//! dialog of 3D plots. Shown as a panel docked at the right of the worksheet (inside the
+//! main window) with the ОК / Отмена / Применить / Справка row always visible. Mounted
+//! inside `app`, so it can use the private parts of `App`.
 
 use super::*;
 use egui::Painter;
@@ -512,8 +513,10 @@ enum Btn {
 
 fn buttons(ui: &mut Ui, can_apply: bool) -> Btn {
     let mut res = Btn::None;
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        let sz = Vec2::new(90.0, 24.0);
+    ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 28.0), Layout::right_to_left(Align::Center), |ui| {
+        // as in Mathcad (90 px), narrower when the panel is narrow
+        let gap = ui.spacing().item_spacing.x;
+        let sz = Vec2::new(((ui.available_width() - 3.0 * gap) / 4.0).clamp(50.0, 90.0), 24.0);
         if ui.add(egui::Button::new("Справка").min_size(sz)).clicked() {
             res = Btn::Help;
         }
@@ -552,18 +555,78 @@ fn caption(ui: &mut Ui, title: &str) -> bool {
     closed
 }
 
-/// Blocks clicks on everything behind a modal dialog.
-fn block_background(ctx: &Context, name: &str) {
-    egui::Area::new(Id::new(name)).order(egui::Order::Middle).fixed_pos(Pos2::ZERO).show(ctx, |ui| {
-        let r = ctx.screen_rect();
-        ui.allocate_response(r.size(), Sense::click_and_drag());
-        ui.painter().rect_filled(r, 0.0, Color32::from_black_alpha(18));
+/// Width of the dialog page, as in Mathcad 15.
+const DLG_W: f32 = 548.0;
+
+/// The right-hand panel that holds a format dialog inside the main window (instead of a
+/// floating window, which tiling window managers show badly): caption with ✕, the dialog
+/// body in a scroll area, and the button row pinned to the bottom, always visible.
+fn dialog_panel(ctx: &Context, id: &'static str, title: &str, can_apply: bool, body: impl FnOnce(&mut Ui)) -> Btn {
+    let avail = ctx.available_rect().width();
+    let width = (DLG_W + 24.0).min((avail * 0.62).max(260.0));
+    let mut res = Btn::None;
+    egui::SidePanel::right(id)
+        .resizable(false)
+        .exact_width(width)
+        .frame(egui::Frame::NONE.fill(BG).stroke(Stroke::new(1.0_f32, Color32::from_gray(150))).inner_margin(egui::Margin { left: 10, right: 8, top: 6, bottom: 8 }))
+        .show(ctx, |ui| {
+            dialog_visuals(ui);
+            if caption(ui, title) {
+                res = Btn::Cancel;
+            }
+            let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+            ui.painter().line_segment([r.left_center(), r.right_center()], Stroke::new(1.0_f32, LINE));
+            ui.add_space(4.0);
+            let buttons_h = 34.0;
+            let body_h = (ui.available_height() - buttons_h).max(40.0);
+            super::classic_scrollbars(ui);
+            egui::ScrollArea::both()
+                .id_salt((id, "body"))
+                .max_height(body_h)
+                .auto_shrink([false, true])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
+                .show(ui, |ui| {
+                body(ui);
+            });
+            ui.add_space(6.0);
+            let b = buttons(ui, can_apply);
+            if b != Btn::None {
+                res = b;
+            }
+        });
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && ctx.memory(|m| m.focused().is_none()) {
+        res = Btn::Cancel;
+    }
+    res
+}
+
+/// The tab strip and the bordered tab page of a dialog.
+/// Returns the (possibly newly clicked) current tab; `page` draws the page of tab `cur`.
+fn tab_page(ui: &mut Ui, cur: usize, names: &[&str], size: Vec2, page: impl FnOnce(&mut Ui, usize)) -> usize {
+    let mut tab = cur;
+    let sel = tabs(ui, &mut tab, names);
+    let top = ui.cursor().top();
+    egui::Frame::NONE.stroke(Stroke::new(1.0_f32, LINE)).inner_margin(8).show(ui, |ui| {
+        ui.set_min_size(size);
+        ui.set_max_size(size);
+        page(ui, cur);
     });
+    ui.painter().line_segment([Pos2::new(sel.left() + 1.0, top), Pos2::new(sel.right() - 1.0, top)], Stroke::new(1.5_f32, BG));
+    tab
 }
 
 impl App {
-    /// Opens the format dialog of plot `id` with its current settings.
+    /// Opens the format panel of plot `id` with its current settings. Pending changes of a
+    /// panel that is open for another plot are applied first.
     pub fn open_plot_dialog(&mut self, id: u64) {
+        if let Some(mut old) = self.dlg_plot.take() {
+            if old.id == id {
+                self.dlg_plot = Some(old);
+                return;
+            }
+            self.apply_plot_dialog(&mut old);
+        }
+        self.dlg_plot3d = None;
         let Some(Region { kind: RegionKind::Plot { fmt, kind, x_min, x_max, y_min, y_max, .. }, .. }) = self.region(id).cloned() else { return };
         let mut d = PlotDlg::new(id, fmt.clone(), kind);
         d.limits = [x_min, x_max, y_min, y_max];
@@ -577,7 +640,21 @@ impl App {
         let l = ax.limits();
         let l2 = ax.limits2();
         d.auto = [l[0], l[1], l[2], l[3], l2[0], l2[1]];
+        self.selection = vec![id];
         self.dlg_plot = Some(d);
+    }
+
+    /// Opens the format panel of 3D plot `id`.
+    pub fn open_plot3d_dialog(&mut self, id: u64) {
+        if let Some(mut old) = self.dlg_plot.take() {
+            self.apply_plot_dialog(&mut old);
+        }
+        if self.dlg_plot3d.as_ref().is_some_and(|d| d.id == id) {
+            return;
+        }
+        let Some(Region { kind: RegionKind::Plot3d { fmt, view, .. }, .. }) = self.region(id).cloned() else { return };
+        self.selection = vec![id];
+        self.dlg_plot3d = Some(Plot3dDlg { id, fmt, view });
     }
 
     fn apply_plot_dialog(&mut self, d: &mut PlotDlg) {
@@ -601,48 +678,29 @@ impl App {
         self.changed();
     }
 
-    pub fn plot_dialogs(&mut self, ctx: &Context) {
+    /// The plot format panels («Форматирование выбранного графика …»), docked at the right
+    /// of the worksheet. Must run before the central panel.
+    pub fn plot_panels(&mut self, ctx: &Context) {
         if let Some(mut d) = self.dlg_plot.take() {
-            block_background(ctx, "plot-dlg-block");
+            if !matches!(self.region(d.id).map(|r| &r.kind), Some(RegionKind::Plot { .. })) {
+                return; // the plot is gone
+            }
             let title = if d.kind == PlotKind::Polar { "Форматирование выбранного полярного графика" } else { "Форматирование выбранного графика X-Y" };
-            let mut res = Btn::None;
             let defaults = self.ws.plot_defaults.clone();
             let can_apply = d.changed() || d.use_as_default;
-            egui::Window::new("plot-format").title_bar(false).order(egui::Order::Foreground).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).frame(
-                egui::Frame::window(&ctx.style()).fill(BG).inner_margin(10),
-            ).show(ctx, |ui| {
-                let max = ctx.screen_rect().size() - Vec2::new(40.0, 60.0);
-                egui::ScrollArea::both().max_height(max.y).max_width(max.x).auto_shrink(true).show(ui, |ui| {
-                ui.set_width(548.0);
-                dialog_visuals(ui);
-                if caption(ui, title) {
-                    res = Btn::Cancel;
-                }
-                let sel = tabs(ui, &mut d.tab, &["Оси X, Y", "Трассировка", "Формат числа", "Подписи", "По умолчанию"]);
-                let top = ui.cursor().top();
-                egui::Frame::NONE.stroke(Stroke::new(1.0_f32, LINE)).inner_margin(8).show(ui, |ui| {
-                    ui.set_min_size(Vec2::new(530.0, 378.0));
-                    ui.set_max_size(Vec2::new(530.0, 378.0));
-                    match d.tab {
-                        0 => axes_tab(ui, &mut d),
-                        1 => traces_tab(ui, &mut d),
-                        2 => number_tab(ui, &mut d),
-                        3 => labels_tab(ui, &mut d),
-                        _ => defaults_tab(ui, &mut d, &defaults),
-                    }
-                });
-                ui.painter().line_segment([Pos2::new(sel.left() + 1.0, top), Pos2::new(sel.right() - 1.0, top)], Stroke::new(1.5_f32, BG));
-                ui.add_space(8.0);
-                let bres = buttons(ui, can_apply);
-                if bres != Btn::None {
-                    res = bres;
-                }
+            let res = dialog_panel(ctx, "plot-format", title, can_apply, |ui| {
+                ui.set_width(DLG_W);
+                let cur = d.tab;
+                d.tab = tab_page(ui, cur, &["Оси X, Y", "Трассировка", "Формат числа", "Подписи", "По умолчанию"], Vec2::new(530.0, 378.0), |ui, t| match t {
+                    0 => axes_tab(ui, &mut d),
+                    1 => traces_tab(ui, &mut d),
+                    2 => number_tab(ui, &mut d),
+                    3 => labels_tab(ui, &mut d),
+                    _ => defaults_tab(ui, &mut d, &defaults),
                 });
             });
             match res {
-                Btn::Ok => {
-                    self.apply_plot_dialog(&mut d);
-                }
+                Btn::Ok => self.apply_plot_dialog(&mut d),
                 Btn::Apply => {
                     self.apply_plot_dialog(&mut d);
                     self.dlg_plot = Some(d);
@@ -657,31 +715,17 @@ impl App {
         }
 
         if let Some(mut d) = self.dlg_plot3d.take() {
-            block_background(ctx, "plot3d-dlg-block");
-            let mut res = Btn::None;
-            let applied = match self.region(d.id).map(|r| &r.kind) {
-                Some(RegionKind::Plot3d { fmt, view, .. }) => (fmt.clone(), *view),
-                _ => (d.fmt.clone(), d.view),
+            let (applied, contour) = match self.region(d.id).map(|r| &r.kind) {
+                Some(RegionKind::Plot3d { fmt, view, kind, .. }) => ((fmt.clone(), *view), *kind == Plot3dKind::Contour),
+                _ => return, // the plot is gone
             };
             let can_apply = applied != (d.fmt.clone(), d.view);
-            let contour = matches!(self.region(d.id).map(|r| &r.kind), Some(RegionKind::Plot3d { kind: Plot3dKind::Contour, .. }));
             let title = if contour { "Форматирование выбранного контурного графика" } else { "Форматирование выбранного 3D графика" };
             let mut tab = ctx.data_mut(|m| *m.get_temp_mut_or_default::<usize>(Id::new("plot3d-tab")));
-            egui::Window::new("plot3d-format").title_bar(false).order(egui::Order::Foreground).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).frame(
-                egui::Frame::window(&ctx.style()).fill(BG).inner_margin(10),
-            ).show(ctx, |ui| {
-                let max = ctx.screen_rect().size() - Vec2::new(40.0, 60.0);
-                egui::ScrollArea::both().max_height(max.y).max_width(max.x).auto_shrink(true).show(ui, |ui| {
+            let res = dialog_panel(ctx, "plot3d-format", title, can_apply, |ui| {
                 ui.set_width(400.0);
-                dialog_visuals(ui);
-                if caption(ui, title) {
-                    res = Btn::Cancel;
-                }
-                let sel = tabs(ui, &mut tab, &["Вид", "Контур"]);
-                let top = ui.cursor().top();
-                egui::Frame::NONE.stroke(Stroke::new(1.0_f32, LINE)).inner_margin(8).show(ui, |ui| {
-                    ui.set_min_size(Vec2::new(382.0, 210.0));
-                    if tab == 0 {
+                tab = tab_page(ui, tab, &["Вид", "Контур"], Vec2::new(382.0, 210.0), |ui, t| {
+                    if t == 0 {
                         ui.horizontal(|ui| {
                             ui.label("Цветовая схема:");
                             egui::ComboBox::from_id_salt("p3-cmap").selected_text(d.fmt.colormap.name()).show_ui(ui, |ui| {
@@ -716,13 +760,6 @@ impl App {
                         ui.checkbox(&mut d.fmt.fill, "Цветная заливка");
                         ui.checkbox(&mut d.fmt.wireframe, "Линии уровней");
                     }
-                });
-                ui.painter().line_segment([Pos2::new(sel.left() + 1.0, top), Pos2::new(sel.right() - 1.0, top)], Stroke::new(1.5_f32, BG));
-                ui.add_space(8.0);
-                let bres = buttons(ui, can_apply);
-                if bres != Btn::None {
-                    res = bres;
-                }
                 });
             });
             ctx.data_mut(|m| *m.get_temp_mut_or_default::<usize>(Id::new("plot3d-tab")) = tab);
