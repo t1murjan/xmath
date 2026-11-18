@@ -250,6 +250,14 @@ fn math_text(source: &str, out: &RegionOutput) -> (String, Option<String>) {
             };
             (format!("{lhs} {res}"), Some(res))
         }
+        Output::Symbolic { result, note } => {
+            let res = match note {
+                Some(n) => format!("{result}  ({n})"),
+                None => result.to_string(),
+            };
+            let sep = if shown.ends_with('→') { "" } else { " →" };
+            (format!("{shown}{sep} {res}"), Some(result.to_string()))
+        }
         _ => (shown, None),
     }
 }

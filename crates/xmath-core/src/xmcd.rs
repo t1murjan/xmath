@@ -4,7 +4,7 @@
 //! kept as a text region (with a best-effort textual rendering) and reported
 //! in [`ImportResult::warnings`]. It never panics on malformed input.
 
-use crate::ast::{BinOp, Expr, PStmt, Stmt, Target, UnOp};
+use crate::ast::{BinOp, Expr, PStmt, Stmt, SymOp, Target, UnOp};
 use crate::parser::{parse_expr, parse_statement};
 use crate::units::{self, Dim};
 use crate::worksheet::{Region, RegionKind, TextStyle, Worksheet};
@@ -393,6 +393,11 @@ fn conv_stmt(cx: &mut Cx, n: Node) -> R<Stmt> {
             let target = conv_target(cx, ks[0])?;
             // `d := expr = unit`: the right side is an `<eval>` holding the expression,
             // the display unit and the cached result
+            if lname(ks[1]) == "symEval" {
+                // `d := expr →`: the definition shows its symbolic result
+                let (expr, ops) = conv_sym(cx, ks[1])?;
+                return Ok(Stmt::Symbolic { target: Some((target, lname(n) == "globalDefine")), expr, ops });
+            }
             let (expr, show) = if lname(ks[1]) == "eval" {
                 let (expr, unit) = conv_eval(cx, ks[1])?;
                 (expr, Some(unit))
@@ -406,12 +411,55 @@ fn conv_stmt(cx: &mut Cx, n: Node) -> R<Stmt> {
             Ok(Stmt::Eval { expr, unit })
         }
         "symEval" => {
-            cx.warn("символьное вычисление (→) заменено численным (=)");
-            let first = ks.first().ok_or("пустое символьное вычисление")?;
-            Ok(Stmt::Eval { expr: conv(cx, *first)?, unit: None })
+            let (expr, ops) = conv_sym(cx, n)?;
+            Ok(Stmt::Symbolic { target: None, expr, ops })
         }
         _ => Ok(Stmt::Show(conv(cx, n)?)),
     }
+}
+
+/// The content of a `<symEval>`: the expression and its keyword operations (the saved
+/// `<symResult>` is recomputed).
+fn conv_sym(cx: &mut Cx, n: Node) -> R<(Expr, Vec<SymOp>)> {
+    let mut expr = None;
+    let mut ops = Vec::new();
+    for k in kids(n) {
+        let name = lname(k);
+        if name == "symResult" || name == "placeholder" {
+            continue;
+        }
+        if name.to_lowercase().contains("keyword") || name == "modifier" {
+            // keyword (simplify, solve, ...) with optional arguments
+            let kw = k
+                .attribute("name")
+                .map(|s| s.trim().to_string())
+                .or_else(|| k.text().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty());
+            let Some(kw) = kw else {
+                // a list of keywords: every child element is one
+                for kk in kids(k) {
+                    let nm = kk.attribute("name").map(str::to_string).or_else(|| kk.text().map(|t| t.trim().to_string())).unwrap_or_default();
+                    if !nm.is_empty() {
+                        ops.push(SymOp { name: nm, args: Vec::new() });
+                    }
+                }
+                continue;
+            };
+            let mut args = Vec::new();
+            for kk in kids(k) {
+                match conv(cx, kk) {
+                    Ok(e) => args.push(e),
+                    Err(e) => cx.warn(format!("аргумент ключевого слова отброшен ({e})")),
+                }
+            }
+            ops.push(SymOp { name: kw, args });
+            continue;
+        }
+        if expr.is_none() {
+            expr = Some(conv(cx, k)?);
+        }
+    }
+    Ok((expr.ok_or("пустое символьное вычисление")?, ops))
 }
 
 /// The content of an `<eval>`: the expression and its optional display unit
@@ -1094,14 +1142,15 @@ fn inline(cx: &mut Cx, n: Node, out: &mut String, fmt: Fmt, st: &mut Stats) {
 fn extract_expected(math: Node) -> Option<Expected> {
     let top = kids(math).into_iter().next()?;
     let eval = match lname(top) {
-        "eval" => top,
-        "define" | "globalDefine" => kids(top).into_iter().nth(1).filter(|k| lname(*k) == "eval")?,
+        "eval" | "symEval" => top,
+        "define" | "globalDefine" => kids(top).into_iter().nth(1).filter(|k| matches!(lname(*k), "eval" | "symEval"))?,
         _ => return None,
     };
     if let Some(err) = math.attribute("error") {
         return Some(Expected::Error(err.to_string()));
     }
-    let result = eval.children().find(|c| c.is_element() && lname(*c) == "result")?;
+    let result_name = if lname(eval) == "symEval" { "symResult" } else { "result" };
+    let result = eval.children().find(|c| c.is_element() && lname(*c) == result_name)?;
     let body = kids(result).into_iter().next()?;
     parse_result(body).map(Expected::Value)
 }

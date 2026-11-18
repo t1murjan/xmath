@@ -1,6 +1,6 @@
 ---
 name: xmath
-description: Use for engineering and math calculations that need physical units, Mathcad-style worksheets, structural/mechanical/electrical formulas, matrices, integrals, derivatives, root finding and plots, and for creating or editing .xmath files. Drives the xmath calculation engine (a free Mathcad 15 clone) through its MCP server (tools evaluate, create_worksheet, add_region, open_worksheet) or the xmath-cli command line.
+description: Use for engineering and math calculations that need physical units, symbolic algebra (simplify, expand, factor, solve, symbolic derivatives and integrals, limits, series), Mathcad-style worksheets, structural/mechanical/electrical formulas, matrices, integrals, derivatives, root finding and plots, and for creating or editing .xmath files. Drives the xmath calculation engine (a free Mathcad 15 clone) through its MCP server (tools evaluate, create_worksheet, add_region, open_worksheet) or the xmath-cli command line.
 ---
 
 # xmath: unit-aware Mathcad-style calculations
@@ -56,6 +56,8 @@ A[0, 1] =  det(A) =  A^-1 =   index from ORIGIN = 0
 sum(k, 1, 10, k^2) =          385
 integrate(exp(-x^2), x, -∞, ∞) =
 diff(sin(x), x, 0) =          derivative at a point
+x^2 - 4 = 0 -> solve, x       symbolic: [-2; 2] (also -> simplify / expand / factor / series, x, 6 ...)
+diff(sin(x)*x, x) ->          symbolic derivative; integrate(x*exp(x), x) -> symbolic antiderivative
 root(x^2 - 2, x, 0, 2) =      1.414
 lsolve(A, b) =                linear system
 if(x > 0, 1, -1)

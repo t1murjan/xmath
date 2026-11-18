@@ -88,6 +88,34 @@ Error messages from the engine are in Russian (e.g. `Единицы измере
 * `root(expr, x)` (uses the current guess for `x` if defined) or bracketed `root(expr, x, a, b)`: `root(x^2-2, x, 0, 2) =` -> `1.414`
 * Pass expressions, not bare function names, to `integrate` / `diff` / `root` (`integrate(f, x, 0, 3)` with a user function `f` fails: write `integrate(f(x), x, 0, 3)`).
 
+### Symbolic evaluation (`->`, Mathcad's arrow `→`)
+
+`expr ->` evaluates symbolically (exact rationals, radicals, π, e; definitions above are substituted, unknown names and unit names stay symbols). Keywords follow the arrow and can be chained; `=` inside a keyword argument or an equation is fine (`==` also works):
+
+```
+(x+1)^2 -> expand                      x^2 + 2*x + 1
+x^4 - 1 -> factor                      (x - 1)*(x + 1)*(x^2 + 1)
+(x^2-1)/(x-1) -> simplify              x + 1
+x^2 - 5*x + 6 = 0 -> solve, x          [2; 3]
+[x + y = 3; x - y = 1] -> solve, [x; y]   [2; 1]
+x^2 + y -> substitute, x = a + b       y + (a + b)^2
+pi -> float, 10                        3.141592654
+a*x^2 + b*x + c -> coeffs, x           [c; b; a]
+sin(x) -> series, x, 6                 x^5/120 - x^3/6 + x
+1/(x^2-1) -> parfrac, x
+sqrt(x^2) -> assume, x > 0             x
+f(x) := x^3
+diff(f(x), x) ->                       3*x^2
+integrate(x*exp(x), x) ->              x*exp(x) - exp(x)
+integrate(exp(-x), x, 0, inf) ->       1
+lim(sin(x)/x, x, 0) ->                 1
+sum(k, 1, n, k^2) ->                   n^3/3 + n^2/2 + n/6
+[a, b; c, d]^-1 ->
+g := (x+1)^2 -> expand                 defines g and shows the result
+```
+
+Keywords: `simplify expand factor collect, x coeffs, x solve, x | [x; y] substitute, x = e float, n series, x, n | x = a, n parfrac, x assume, x > 0 complex rectangular`. Solutions come as a scalar (one) or a column vector (several); a system gives a vector (one solution) or a matrix with one solution per row. Equations without closed form are solved numerically (real roots in [-100, 100], flagged in the result note). `lim(f, x, a[, 1|-1])`, `integrate(f, x)` (indefinite, 2 args), `diff(f, x, n)` (symbolic: n-th derivative; numeric: derivative at the point n). Anything without a symbolic form (programs, `Find`, numeric-only built-ins) is evaluated numerically instead.
+
 ### Solve blocks (Given / Find / Minerr / Minimize / Maximize)
 
 One region (line) each, in this order: guess values for the unknowns, a line `Given`, constraint lines (Boolean `==`, `<`, `>`, `<=`, `>=`, several allowed; units fine), then the closing call:

@@ -1896,6 +1896,9 @@ impl App {
                         Some(Output::Value { view, unit }) => Some((view, unit.as_ref())),
                         _ => None,
                     };
+                    if let Some(Output::Symbolic { result, .. }) = out.map(|o| &o.output) {
+                        ts.sym = Some(result.clone());
+                    }
                     let mut lay = ts.statement(&stmt, result, fs);
                     inplace::resolve_boxes(&mut stmt, &mut lay.boxes);
                     (lay, err)

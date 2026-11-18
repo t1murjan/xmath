@@ -12,6 +12,7 @@ pub mod format;
 pub mod linalg;
 pub mod numeric;
 pub mod parser;
+pub mod symbolic;
 pub mod solve;
 pub mod special;
 pub mod units;
@@ -24,7 +25,7 @@ pub mod worksheet;
 #[cfg(test)]
 mod program_tests;
 
-pub use ast::{BinOp, Expr, PStmt, Stmt, Target, UnOp};
+pub use ast::{BinOp, Expr, PStmt, Stmt, SymOp, Target, UnOp};
 pub use format::{FormatOptions, NumberText, Piece, ResultView, UnitPow, UnitSystem, UnitText};
 pub use parser::{parse_expr, parse_statement, ParseError};
 pub use worksheet::{AxisStyle, LineStyle, PlotFormat, TraceFormat, Output, PlotData, Region, RegionKind, RegionOutput, Series, Snapshot, Worksheet};

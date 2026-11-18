@@ -83,13 +83,15 @@ pub struct Ts<'a> {
     /// Matrix cell being edited in place: its address and the width of the
     /// editor box. The cell is laid out as an empty box of (at least) that width.
     pub edit_cell: Option<(usize, f32)>,
+    /// Result of a symbolic evaluation (`expr →`) to draw after the arrow(s).
+    pub sym: Option<Expr>,
 }
 
 const ASC: f32 = 0.80;
 
 impl<'a> Ts<'a> {
     pub fn new(fonts: &'a Fonts) -> Ts<'a> {
-        Ts { fonts, color: Color32::BLACK, edit_cell: None }
+        Ts { fonts, color: Color32::BLACK, edit_cell: None, sym: None }
     }
 
     pub fn text_c(&self, s: &str, size: f32, color: Color32) -> Lay {
@@ -631,6 +633,35 @@ impl<'a> Ts<'a> {
                 let body = self.paren_if(body, f.precedence() < 5, size);
                 self.hcat(vec![op, self.space(size * 0.15), body, self.text(" d", size), self.expr(x, size)])
             }
+            ("integrate" | "∫", [f, x]) => {
+                let op = self.bigop("∫", size, None, None);
+                let body = self.expr(f, size);
+                let body = self.paren_if(body, f.precedence() < 5, size);
+                self.hcat(vec![op, self.space(size * 0.15), body, self.text(" d", size), self.expr(x, size)])
+            }
+            ("lim" | "limit", [f, x, a, rest @ ..]) => {
+                let sign = match rest.first() {
+                    Some(Expr::Num(d)) if *d > 0.0 => "+",
+                    Some(Expr::Num(d)) if *d < 0.0 => "−",
+                    Some(Expr::Unary(UnOp::Neg, _)) => "−",
+                    _ => "",
+                };
+                let mut below = vec![self.expr(x, small), self.text(" → ", small), self.expr(a, small)];
+                if !sign.is_empty() {
+                    below.push(self.text(sign, small * 0.85));
+                }
+                let word = self.text("lim", size);
+                let below = self.hcat(below);
+                let w = word.w.max(below.w);
+                let mut stack = Lay { w, asc: word.asc, desc: word.desc + below.asc + below.desc + size * 0.1, items: vec![], boxes: vec![] };
+                let (ww, bw) = (word.w, below.w);
+                let by = word.desc + below.asc + size * 0.1;
+                stack.place(word, (w - ww) / 2.0, 0.0);
+                stack.place(below, (w - bw) / 2.0, by);
+                let body = self.expr(f, size);
+                let body = self.paren_if(body, f.precedence() < 5, size);
+                self.hcat(vec![stack, self.space(size * 0.15), body])
+            }
             ("diff", [f, x, ..]) => {
                 let dx = self.hcat(vec![self.text("d", size), self.expr(x, size)]);
                 let d = self.frac(self.text("d", size), dx, size);
@@ -835,7 +866,62 @@ impl<'a> Ts<'a> {
                 self.hcat(parts)
             }
             Stmt::Show(e) => self.expr(e, size),
+            Stmt::Symbolic { target, expr, ops } => {
+                let mut parts = Vec::new();
+                if let Some((t, global)) = target {
+                    parts.push(self.target(t, size));
+                    parts.push(self.op(if *global { "≡" } else { ":=" }, size));
+                }
+                parts.push(self.expr(expr, size));
+                if ops.is_empty() {
+                    parts.push(self.sym_arrow(None, size));
+                }
+                for op in ops {
+                    let small = size * 0.75;
+                    let mut kw = vec![self.kw(&op.name, small)];
+                    for a in &op.args {
+                        kw.push(self.text(", ", small));
+                        kw.push(self.expr(a, small));
+                    }
+                    parts.push(self.sym_arrow(Some(self.hcat(kw)), size));
+                }
+                if let Some(r) = &self.sym {
+                    parts.push(self.space(size * 0.15));
+                    parts.push(self.expr(r, size));
+                } else if let Some((view, _)) = result {
+                    parts.push(self.space(size * 0.15));
+                    parts.push(self.result(view, size));
+                }
+                self.hcat(parts)
+            }
         }
+    }
+
+    /// Mathcad's symbolic arrow with the keyword stacked above it.
+    fn sym_arrow(&self, kw: Option<Lay>, size: f32) -> Lay {
+        let axis = self.axis(size);
+        let head = size * 0.17;
+        let pad = size * 0.2;
+        let lw = (size / 14.0).max(1.0);
+        let kw_w = kw.as_ref().map_or(0.0, |k| k.w);
+        let w = (kw_w + 2.0 * pad).max(size * 1.5);
+        let y = -axis;
+        let mut out = Lay { w, asc: axis + head + 1.0, desc: (head - axis).max(0.0) + 1.0, items: vec![], boxes: vec![] };
+        let (a, b) = (Vec2::new(pad * 0.5, y), Vec2::new(w - pad * 0.5, y));
+        out.items.push(Item::Line { a, b, w: lw, color: self.color });
+        out.items.push(Item::Path {
+            pts: vec![Vec2::new(b.x - head * 1.1, y - head * 0.7), b, Vec2::new(b.x - head * 1.1, y + head * 0.7)],
+            w: lw,
+            color: self.color,
+        });
+        if let Some(k) = kw {
+            let gap = size * 0.08;
+            let by = y - gap - k.desc;
+            out.asc = out.asc.max(-by + k.asc);
+            let kwid = k.w;
+            out.place(k, (w - kwid) / 2.0, by);
+        }
+        out
     }
 }
 

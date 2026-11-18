@@ -154,6 +154,13 @@ fn main() -> ExitCode {
                             None => println!("{lhs} {view}"),
                         }
                     }
+                    Output::Symbolic { result, note } => {
+                        let sep = if shown.ends_with('→') { "" } else { " →" };
+                        println!("{shown}{sep} {result}");
+                        if let Some(n) = note {
+                            println!("    note: {n}");
+                        }
+                    }
                     _ => println!("{shown}"),
                 }
             }

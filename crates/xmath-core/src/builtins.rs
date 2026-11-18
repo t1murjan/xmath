@@ -22,7 +22,7 @@ pub const NAMES: &[&str] = &[
     "logfit", "lnfit", "pwrfit", "sinfit", "linfit", "genfit", "medfit", "loess", "ksmooth", "medsmooth",
     "supsmooth", "predict", "rnd", "runif", "rnorm", "rexp", "rpois", "rbinom", "rgamma", "rchisq", "rbeta", "rt",
     "rlnorm", "rweibull", "rcauchy", "rlogis", "rgeom", "dbinom", "pbinom", "dpois", "ppois",
-    "Find", "Minerr", "Maximize", "Minimize",
+    "Find", "Minerr", "Maximize", "Minimize", "lim",
 ];
 
 pub(crate) fn arity(name: &str, args: &[Value], n: usize) -> EResult<()> {

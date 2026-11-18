@@ -37,11 +37,13 @@ pub struct Evaluator {
     depth: Cell<usize>,
     /// Loop iteration limit of a single program run.
     pub max_iterations: u64,
+    /// Definitions as source expressions, for symbolic evaluation (`→`).
+    pub sym: crate::symbolic::Defs,
 }
 
 impl Default for Evaluator {
     fn default() -> Self {
-        Evaluator { defs: Vec::new(), depth: Cell::new(0), max_iterations: MAX_LOOP_ITERATIONS }
+        Evaluator { defs: Vec::new(), depth: Cell::new(0), max_iterations: MAX_LOOP_ITERATIONS, sym: Default::default() }
     }
 }
 

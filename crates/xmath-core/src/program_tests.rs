@@ -11,7 +11,7 @@ fn run_with(ev: &mut Evaluator, lines: &[&str]) -> Result<Value, String> {
     for l in lines {
         match parse_statement(l).map_err(|e| e.msg)? {
             Stmt::Define { target, expr, .. } => ev.define(&target, &expr)?,
-            Stmt::Eval { expr, .. } | Stmt::Show(expr) => {
+            Stmt::Eval { expr, .. } | Stmt::Show(expr) | Stmt::Symbolic { expr, .. } => {
                 let sc = ev.top_scope();
                 last = ev.eval(&expr, &sc);
             }

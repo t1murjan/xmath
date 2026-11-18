@@ -278,6 +278,9 @@ pub enum Output {
     /// Nothing to show (definitions, text regions).
     None,
     Value { view: ResultView, unit: Option<Expr> },
+    /// Result of a symbolic evaluation (`expr →`): the result expression and, if any, a
+    /// remark about how it was obtained (e.g. "решено численно").
+    Symbolic { result: Expr, note: Option<String> },
     Error(String),
     Plot(PlotData),
 }
@@ -450,7 +453,7 @@ impl Worksheet {
         snap: Option<&mut Option<Snapshot>>,
     ) -> Output {
         let expr_of = |stmt: &Stmt| match stmt {
-            Stmt::Define { expr, .. } | Stmt::Eval { expr, .. } | Stmt::Show(expr) => expr.clone(),
+            Stmt::Define { expr, .. } | Stmt::Eval { expr, .. } | Stmt::Show(expr) | Stmt::Symbolic { expr, .. } => expr.clone(),
         };
         if matches!(stmt, Stmt::Show(Expr::Var(n)) if n.eq_ignore_ascii_case("given")) {
             if let Some(old) = block.take() {
@@ -502,6 +505,7 @@ impl Worksheet {
             }
             Stmt::Eval { unit, .. } => Stmt::Eval { expr: injected, unit: unit.clone() },
             Stmt::Show(_) => Stmt::Show(injected),
+            Stmt::Symbolic { target, ops, .. } => Stmt::Symbolic { target: target.clone(), expr: injected, ops: ops.clone() },
         };
         self.eval_stmt(ev, &new_stmt, snap)
     }
@@ -525,8 +529,50 @@ impl Worksheet {
                 self.value_output(ev, &v, unit)
             }
             Stmt::Show(_) => Ok(Output::None),
+            Stmt::Symbolic { target, expr, ops } => self.symbolic_output(ev, target, expr, ops, snap.as_deref_mut()),
         })();
         result.unwrap_or_else(Output::Error)
+    }
+
+    /// Symbolic evaluation of `expr →` (optionally defining `target` numerically first).
+    fn symbolic_output(
+        &self,
+        ev: &mut Evaluator,
+        target: &Option<(Target, bool)>,
+        expr: &Expr,
+        ops: &[crate::ast::SymOp],
+        snap: Option<&mut Option<Snapshot>>,
+    ) -> EResult<Output> {
+        use crate::symbolic::{self, convert::value_to_sx, Ctx, Outcome};
+        let outcome = {
+            let sc = ev.top_scope();
+            let numeric = |e: &Expr| ev.eval_iterated(e, &sc).ok().and_then(|v| value_to_sx(&v));
+            let value_of = |n: &str| ev.lookup(n, &sc).and_then(|v| value_to_sx(&v));
+            let ctx = Ctx { defs: &ev.sym, numeric: Some(&numeric), value_of: Some(&value_of) };
+            symbolic::evaluate(expr, ops, &ctx)?
+        };
+        if let Some((t, _)) = target {
+            // a numeric definition when possible; the symbolic definition is always recorded
+            let _ = ev.define_value(t, expr);
+            ev.sym.define(t, expr);
+        }
+        match outcome {
+            Outcome::Done(o) => {
+                if let Some(s) = snap {
+                    let sc = ev.top_scope();
+                    *s = ev.eval_iterated(&o.result, &sc).ok().and_then(|v| Snapshot::of(&v));
+                }
+                Ok(Output::Symbolic { result: o.result, note: o.note })
+            }
+            Outcome::Fallback(_) => {
+                let sc = ev.top_scope();
+                let v = ev.eval_iterated(expr, &sc)?;
+                if let Some(s) = snap {
+                    *s = Snapshot::of(&v);
+                }
+                self.value_output(ev, &v, &None)
+            }
+        }
     }
 
     /// Runs a definition; with a displayed value (`d := expr =`) the output is that value.
@@ -534,7 +580,11 @@ impl Worksheet {
     /// have no variable of their own to snapshot).
     fn define_output(&self, ev: &mut Evaluator, target: &Target, expr: &Expr, show: &Option<Option<Expr>>) -> (Output, Option<Snapshot>) {
         let mut shown = None;
-        let r = ev.define_value(target, expr).and_then(|v| match show {
+        let defined = ev.define_value(target, expr);
+        if defined.is_ok() {
+            ev.sym.define(target, expr);
+        }
+        let r = defined.and_then(|v| match show {
             None => Ok(Output::None),
             Some(unit) => {
                 // `v[i] := expr =` displays the assigned element(s), not the whole vector

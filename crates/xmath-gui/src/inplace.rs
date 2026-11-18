@@ -124,6 +124,17 @@ pub fn walk_stmt_mut(st: &mut Stmt, f: &mut dyn FnMut(&mut Expr)) {
             }
         }
         Stmt::Show(e) => walk_mut(e, f),
+        Stmt::Symbolic { target, expr, ops } => {
+            if let Some((t, _)) = target {
+                walk_target(t, f);
+            }
+            walk_mut(expr, f);
+            for op in ops {
+                for a in &mut op.args {
+                    walk_mut(a, f);
+                }
+            }
+        }
     }
 }
 
@@ -615,6 +626,9 @@ impl App {
                 Some(Output::Value { view, unit }) => Some((view, unit.as_ref())),
                 _ => None,
             };
+            if let Some(Output::Symbolic { result, .. }) = out.map(|o| &o.output) {
+                ts.sym = Some(result.clone());
+            }
             ts.statement(&st, result, fs)
         });
         resolve_boxes(&mut st, &mut lay.boxes);

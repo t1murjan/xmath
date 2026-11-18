@@ -14,7 +14,7 @@
 //! vectorize(v*w)           element-wise evaluation (arrow over the expression)
 //! ```
 
-use crate::ast::{BinOp, Expr, PStmt, Stmt, Target, UnOp};
+use crate::ast::{BinOp, Expr, PStmt, Stmt, SymOp, Target, UnOp};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,6 +52,8 @@ enum Tok {
     LBrace,
     RBrace,
     Arrow,
+    /// `->` / `→`: symbolic evaluation.
+    SymArrow,
     In,
     Define,
     GlobalDefine,
@@ -101,6 +103,7 @@ fn tok_text(t: &Tok) -> &'static str {
         Tok::LBrace => "{",
         Tok::RBrace => "}",
         Tok::Arrow => "←",
+        Tok::SymArrow => "→",
         Tok::In => "∈",
         Tok::Define => ":=",
         Tok::GlobalDefine => "≡",
@@ -240,6 +243,8 @@ fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
             (':', _) => (Tok::Define, 1),
             ('≔', _) => (Tok::Define, 1),
             ('<', '-') => (Tok::Arrow, 2),
+            ('-', '>') => (Tok::SymArrow, 2),
+            ('→', _) => (Tok::SymArrow, 1),
             ('←', _) => (Tok::Arrow, 1),
             ('∈', _) => (Tok::In, 1),
             ('{', _) => (Tok::LBrace, 1),
@@ -463,6 +468,16 @@ impl Parser {
         }
     }
 
+    /// An element of a list or matrix; `a = b` there is an equation (Mathcad's bold equal sign).
+    fn elem(&mut self) -> PResult<Expr> {
+        let a = self.expr_oe()?;
+        if self.eat(&Tok::Eq) {
+            let b = self.expr_oe()?;
+            return Ok(Expr::Binary(BinOp::Eq, Box::new(a), Box::new(b)));
+        }
+        Ok(a)
+    }
+
     /// Comma separated expressions up to (and including) `close`.
     fn list(&mut self, close: Tok) -> PResult<Vec<Expr>> {
         let mut items = Vec::new();
@@ -470,7 +485,7 @@ impl Parser {
             return Ok(items);
         }
         loop {
-            items.push(self.expr_oe()?);
+            items.push(self.elem()?);
             if self.eat(&Tok::Comma) {
                 continue;
             }
@@ -512,7 +527,7 @@ impl Parser {
                     return Err(ParseError { msg: "пустая матрица".into(), pos });
                 }
                 loop {
-                    row.push(self.expr_oe()?);
+                    row.push(self.elem()?);
                     match self.next() {
                         Tok::Comma => {}
                         Tok::Semi => rows.push(std::mem::take(&mut row)),
@@ -717,6 +732,32 @@ impl Parser {
         Ok(first)
     }
 
+    /// `-> keyword, arg, ... -> keyword ...` after the expression; the first arrow is current.
+    fn sym_ops(&mut self) -> PResult<Vec<SymOp>> {
+        let mut ops = Vec::new();
+        while self.eat(&Tok::SymArrow) {
+            if *self.peek() == Tok::Eof {
+                break;
+            }
+            let name = match self.next() {
+                Tok::Ident(n) => n,
+                t => return self.err(format!("ожидалось ключевое слово (simplify, solve, ...), найдено {}", t.describe())),
+            };
+            let mut args = Vec::new();
+            while self.eat(&Tok::Comma) {
+                let a = self.expr()?;
+                if self.eat(&Tok::Eq) {
+                    let b = self.expr()?;
+                    args.push(Expr::Binary(BinOp::Eq, Box::new(a), Box::new(b)));
+                } else {
+                    args.push(a);
+                }
+            }
+            ops.push(SymOp { name, args });
+        }
+        Ok(ops)
+    }
+
     fn statement(&mut self) -> PResult<Stmt> {
         let lhs_pos = self.pos();
         let lhs = self.range_or_expr()?;
@@ -725,25 +766,44 @@ impl Parser {
                 let global = self.next() == Tok::GlobalDefine;
                 let target = to_target(lhs).map_err(|msg| ParseError { msg, pos: lhs_pos })?;
                 let expr = self.range_or_expr()?;
-                // `d := expr =` / `d := expr = unit`: the value is displayed after the definition
-                let show = if self.eat(&Tok::Eq) {
-                    if *self.peek() == Tok::Eof {
-                        Some(None)
-                    } else {
-                        Some(Some(self.expr()?))
-                    }
+                if *self.peek() == Tok::SymArrow {
+                    let ops = self.sym_ops()?;
+                    Stmt::Symbolic { target: Some((target, global)), expr, ops }
                 } else {
-                    None
-                };
-                Stmt::Define { target, expr, global, show }
+                    // `d := expr =` / `d := expr = unit`: the value is displayed after the definition
+                    let show = if self.eat(&Tok::Eq) {
+                        if *self.peek() == Tok::Eof {
+                            Some(None)
+                        } else {
+                            Some(Some(self.expr()?))
+                        }
+                    } else {
+                        None
+                    };
+                    Stmt::Define { target, expr, global, show }
+                }
+            }
+            Tok::SymArrow => {
+                let ops = self.sym_ops()?;
+                Stmt::Symbolic { target: None, expr: lhs, ops }
             }
             Tok::Eq => {
                 self.next();
                 if matches!(lhs, Expr::Range(..)) {
                     return Err(ParseError { msg: "диапазон нельзя вычислить напрямую".into(), pos: lhs_pos });
                 }
-                let unit = if *self.peek() == Tok::Eof { None } else { Some(self.expr()?) };
-                Stmt::Eval { expr: lhs, unit }
+                if *self.peek() == Tok::Eof {
+                    Stmt::Eval { expr: lhs, unit: None }
+                } else {
+                    let rhs = self.expr()?;
+                    if *self.peek() == Tok::SymArrow {
+                        // an equation `lhs = rhs →`
+                        let ops = self.sym_ops()?;
+                        Stmt::Symbolic { target: None, expr: Expr::Binary(BinOp::Eq, Box::new(lhs), Box::new(rhs)), ops }
+                    } else {
+                        Stmt::Eval { expr: lhs, unit: Some(rhs) }
+                    }
+                }
             }
             _ => Stmt::Show(lhs),
         };

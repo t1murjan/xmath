@@ -134,6 +134,24 @@ pub enum Target {
     Vector(Vec<String>),
 }
 
+/// A symbolic keyword operation after an arrow: `expr → simplify`, `→ solve, x`,
+/// `→ substitute, x = 2`, `→ float, 5`. Chained arrows give several operations.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SymOp {
+    pub name: String,
+    pub args: Vec<Expr>,
+}
+
+impl fmt::Display for SymOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name)?;
+        for a in &self.args {
+            write!(f, ", {a}")?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     /// `target := expr` (or `≡` when `global`). `show` is the displayed value after the
@@ -144,6 +162,10 @@ pub enum Stmt {
     Eval { expr: Expr, unit: Option<Expr> },
     /// A bare expression that is only displayed.
     Show(Expr),
+    /// Symbolic evaluation `expr →`, `expr → keyword, args → keyword...` (`ops` is empty for
+    /// a plain arrow). With a `target` (`g := expr → ...`) the expression is also defined
+    /// numerically as `g` (the flag marks a global `≡` definition).
+    Symbolic { target: Option<(Target, bool)>, expr: Expr, ops: Vec<SymOp> },
 }
 
 fn fmt_num(f: &mut fmt::Formatter<'_>, x: f64) -> fmt::Result {
@@ -335,6 +357,19 @@ impl fmt::Display for Stmt {
                 Ok(())
             }
             Stmt::Show(e) => write!(f, "{e}"),
+            Stmt::Symbolic { target, expr, ops } => {
+                if let Some((t, global)) = target {
+                    write!(f, "{t} {} ", if *global { "≡" } else { ":=" })?;
+                }
+                write!(f, "{expr} →")?;
+                for (i, op) in ops.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " →")?;
+                    }
+                    write!(f, " {op}")?;
+                }
+                Ok(())
+            }
         }
     }
 }
