@@ -2430,9 +2430,15 @@ impl App {
                         let (legend_w, m) = (geom.legend_w, geom.margins);
                         let plot_rect = geom.plot_rect.translate(pos.to_vec2());
                         let view = plot::View { x_min: *x_min, x_max: *x_max, y_min: *y_min, y_max: *y_max, fmt, aspect: plot_rect.width() / plot_rect.height() };
+                        // a new plot without functions is an empty frame with placeholders (Mathcad)
+                        let empty = !polar && y.iter().all(|s| s.trim().is_empty());
                         let axes = if polar {
                             let g = plot::paint_polar(&painter, plot_rect, &data, &view, fs);
                             plot::Axes { x0: 0.0, x1: std::f64::consts::TAU, xs: 1.0, y0: g.r_min, y1: g.r_max, ys: g.r_step, log_x: false, log_y: false, y2: None, log_y2: false }
+                        } else if empty {
+                            painter.rect_filled(plot_rect, 0.0, Color32::WHITE);
+                            painter.rect_stroke(plot_rect, 0.0, Stroke::new(1.0_f32, Color32::BLACK), egui::StrokeKind::Inside);
+                            plot::axes(&data, &view)
                         } else {
                             plot::paint(&painter, plot_rect, &data, &view, fs)
                         };
@@ -2474,14 +2480,25 @@ impl App {
                             self.open_plot_dialog(id);
                         }
                         if selected || editing {
-                            self.axis_limit_boxes(ui, id, plot_rect, fs, &axes, [*x_min, *x_max, *y_min, *y_max], &m, polar, fmt.y2_axis.then(|| [fmt.y2_min, fmt.y2_max]));
+                            self.axis_limit_boxes(ui, id, plot_rect, fs, &axes, [*x_min, *x_max, *y_min, *y_max], &m, polar, fmt.y2_axis.then(|| [fmt.y2_min, fmt.y2_max]), empty);
+                        } else if empty {
+                            // the four optional limit placeholders of an empty plot
+                            for (k, r) in limit_slots(plot_rect, fs, &m).iter().enumerate() {
+                                if [*x_min, *x_max, *y_min, *y_max][k].is_none() {
+                                    optional_placeholder(&painter, r.center(), fs);
+                                }
+                            }
                         }
                         if editing {
                             if let Some((bid, mut ybuf, mut xbuf)) = self.plot_buf.clone().filter(|b| b.0 == id) {
                                 let yr = Rect::from_min_size(Pos2::new(pos.x, plot_rect.center().y - fs), Vec2::new(legend_w - 6.0, fs * 1.6));
-                                let r1 = ui.put(yr, TextEdit::singleline(&mut ybuf).id(edit_id(id)).font(FontId::proportional(fs)).lock_focus(true).hint_text("f(x)"));
+                                let r1 = ui.put(yr, TextEdit::singleline(&mut ybuf).id(edit_id(id)).font(FontId::proportional(fs)).lock_focus(true).hint_text(RichText::new("■").color(Color32::BLACK)));
                                 let xr = Rect::from_center_size(Pos2::new(plot_rect.center().x, label_row + fs * 0.8), Vec2::new(140.0 * z, fs * 1.6));
-                                let xhint = data.x_var.clone().unwrap_or_else(|| "x".into());
+                                // QuickPlot's variable in grey, otherwise Mathcad's placeholder
+                                let xhint = match &data.x_var {
+                                    Some(v) => RichText::new(v.clone()).color(Color32::GRAY),
+                                    None => RichText::new("■").color(Color32::BLACK),
+                                };
                                 let r2 = ui.put(
                                     xr,
                                     TextEdit::singleline(&mut xbuf)
@@ -2489,7 +2506,7 @@ impl App {
                                         .font(FontId::proportional(fs))
                                         .lock_focus(true)
                                         .horizontal_align(Align::Center)
-                                        .hint_text(RichText::new(xhint).color(Color32::GRAY)),
+                                        .hint_text(xhint),
                                 );
                                 // Tab / Shift+Tab hop between the two fields
                                 let back = ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::Tab));
@@ -3346,18 +3363,12 @@ impl App {
 
     /// The four editable axis-limit boxes around a selected plot.
     #[allow(clippy::too_many_arguments)]
-    fn axis_limit_boxes(&mut self, ui: &mut Ui, id: u64, pr: Rect, fs: f32, axes: &plot::Axes, user: [Option<f64>; 4], m: &plot::Margins, polar: bool, y2: Option<[Option<f64>; 2]>) {
+    #[allow(clippy::too_many_arguments)]
+    fn axis_limit_boxes(&mut self, ui: &mut Ui, id: u64, pr: Rect, fs: f32, axes: &plot::Axes, user: [Option<f64>; 4], m: &plot::Margins, polar: bool, y2: Option<[Option<f64>; 2]>, empty: bool) {
         let mut auto = axes.limits().to_vec();
         let mut user = user.to_vec();
         let (w, h) = (fs * 4.6, fs * 1.5);
-        let below = pr.bottom() + m.num_bottom.max(0.0) + 2.0;
-        let left = pr.left() - m.num_left - w - 2.0;
-        let mut slots = vec![
-            Rect::from_min_size(Pos2::new(pr.left(), below), Vec2::new(w, h)),
-            Rect::from_min_size(Pos2::new(pr.right() - w, below), Vec2::new(w, h)),
-            Rect::from_min_size(Pos2::new(left, pr.bottom() - h), Vec2::new(w, h)),
-            Rect::from_min_size(Pos2::new(left, pr.top()), Vec2::new(w, h)),
-        ];
+        let mut slots = limit_slots(pr, fs, m).to_vec();
         if let Some(u2) = y2 {
             let right = pr.right() + 4.0;
             slots.push(Rect::from_min_size(Pos2::new(right, pr.bottom() - h), Vec2::new(w, h)));
@@ -3375,7 +3386,9 @@ impl App {
                 Some(b) if mine => b.text.clone(),
                 _ => user[k].map(plot::fmt_limit).unwrap_or_default(),
             };
-            let hint = RichText::new(plot::fmt_limit(auto[k])).color(Color32::from_gray(120));
+            // an empty plot shows Mathcad's optional placeholder instead of the autoscale value
+            let hint = if empty { RichText::new("") } else { RichText::new(plot::fmt_limit(auto[k])).color(Color32::from_gray(120)) };
+            let show_ph = empty && text.is_empty() && !ui.memory(|mm| mm.has_focus(tid));
             let r = ui.put(
                 *slot,
                 TextEdit::singleline(&mut text)
@@ -3386,6 +3399,9 @@ impl App {
                     .hint_text(hint)
                     .lock_focus(true),
             );
+            if show_ph {
+                optional_placeholder(ui.painter(), slot.center(), fs);
+            }
             if r.has_focus() {
                 if !mine {
                     self.lim_buf = Some(LimBuf { id, k, text: text.clone(), changed: false });
@@ -3567,4 +3583,32 @@ impl eframe::App for App {
             self.title = title;
         }
     }
+}
+
+/// Where the axis limits of an X-Y plot are typed: x min, x max (below the frame, at its
+/// left and right ends), y min, y max (left of the frame, at its bottom and top).
+fn limit_slots(pr: Rect, fs: f32, m: &plot::Margins) -> [Rect; 4] {
+    let (w, h) = (fs * 4.6, fs * 1.5);
+    let below = pr.bottom() + m.num_bottom.max(0.0) + 2.0;
+    let left = pr.left() - m.num_left - w - 2.0;
+    [
+        Rect::from_min_size(Pos2::new(pr.left(), below), Vec2::new(w, h)),
+        Rect::from_min_size(Pos2::new(pr.right() - w, below), Vec2::new(w, h)),
+        Rect::from_min_size(Pos2::new(left, pr.bottom() - h), Vec2::new(w, h)),
+        Rect::from_min_size(Pos2::new(left, pr.top()), Vec2::new(w, h)),
+    ]
+}
+
+/// Mathcad's optional placeholder: a small black square with corner marks at its foot.
+fn optional_placeholder(p: &egui::Painter, c: Pos2, fs: f32) {
+    let (w, h) = (fs * 0.32, fs * 0.5);
+    let r = Rect::from_center_size(c, Vec2::new(w, h));
+    p.rect_filled(r, 0.0, Color32::BLACK);
+    let st = Stroke::new(1.0_f32, Color32::BLACK);
+    let (g, t) = (fs * 0.14, fs * 0.16);
+    let (yb, xl, xr) = (r.bottom() + g * 0.5, r.left() - g, r.right() + g);
+    p.line_segment([Pos2::new(xl, yb - t), Pos2::new(xl, yb)], st);
+    p.line_segment([Pos2::new(xl, yb), Pos2::new(xl + t, yb)], st);
+    p.line_segment([Pos2::new(xr, yb - t), Pos2::new(xr, yb)], st);
+    p.line_segment([Pos2::new(xr, yb), Pos2::new(xr - t, yb)], st);
 }
