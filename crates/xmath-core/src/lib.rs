@@ -3,6 +3,7 @@
 //! The crate is UI-independent: it parses math regions, evaluates them in
 //! worksheet order with physical units, and produces displayable results.
 
+pub mod live;
 pub mod ast;
 pub mod builtins;
 mod builtins_ext;

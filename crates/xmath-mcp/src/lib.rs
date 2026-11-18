@@ -3,6 +3,7 @@
 //! The protocol layer is a pure function, [`handle`], from one JSON-RPC message to an optional reply.
 
 mod help;
+mod live;
 mod tools;
 
 use serde_json::{json, Value};
@@ -122,6 +123,49 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// "Work in the open window": a fake xmath window on a socket; the tools read its worksheet
+    /// and put the changed one back instead of creating a file.
+    #[cfg(unix)]
+    #[test]
+    fn tools_work_in_the_open_window() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::sync::{Arc, Mutex};
+        let dir = temp_dir("live");
+        std::env::set_var("XDG_RUNTIME_DIR", &dir);
+        let sock_dir = xmath_core::live::socket_dir();
+        std::fs::create_dir_all(&sock_dir).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(sock_dir.join("4242.sock")).unwrap();
+        let sheet = Arc::new(Mutex::new(xmath_core::Worksheet::from_lines("a := 2")));
+        let s2 = sheet.clone();
+        std::thread::spawn(move || {
+            for st in listener.incoming().flatten() {
+                let mut line = String::new();
+                BufReader::new(&st).read_line(&mut line).unwrap();
+                let cmd: Value = serde_json::from_str(&line).unwrap();
+                let ws = s2.lock().unwrap().clone();
+                let reply = match cmd["cmd"].as_str().unwrap() {
+                    "info" => json!({"pid": 4242, "title": "Без имени:1", "path": null, "modified": false, "regions": ws.regions.len(), "focused_at": 1.0}),
+                    "get" => json!({"path": null, "worksheet": serde_json::from_str::<Value>(&ws.to_json()).unwrap()}),
+                    "set" => {
+                        *s2.lock().unwrap() = xmath_core::Worksheet::from_json(&cmd["worksheet"].to_string()).unwrap();
+                        json!({"ok": true})
+                    }
+                    _ => json!({"error": "?"}),
+                };
+                let mut w = &st;
+                writeln!(w, "{reply}").unwrap();
+            }
+        });
+        let mut st = State::default();
+        let r = call(&mut st, "list_open_windows", json!({}));
+        assert!(text(&r).contains("pid 4242"), "{}", text(&r));
+        let r = call(&mut st, "add_region", json!({"path": "window", "kind": "math", "source": "a*3 ="}));
+        assert!(text(&r).contains("= 6"), "{}", text(&r));
+        assert_eq!(sheet.lock().unwrap().regions.len(), 2);
+        // no file was written for "window"
+        assert!(!std::path::Path::new("window").exists());
     }
 
     /// What weaker models did: tall formulas overlapping, all plots at the end. Now every

@@ -25,7 +25,15 @@ Tools of the `xmath` MCP server (`claude mcp add xmath -- xmath-mcp`):
 | `add_region {path, kind, source/text/x_expr+y_exprs, after_id? / beside_id?}` | Insert a math / text / plot region below (`after_id`) or to the right of (`beside_id`) an existing one. |
 | `update_region {path, id, ...}`, `delete_region {path, id}` | Edit or remove a region by id. |
 | `open_worksheet {path}` | Load and evaluate a file; lists all regions with ids, results, errors, plot summaries. |
+| `list_open_windows` | The xmath program windows the user has open; then use `path: "window"` everywhere. |
 | `list_functions`, `list_units`, `syntax_help` | Catalogs and the syntax reference. |
+
+**The user's open xmath window.** If the user has the xmath program open and asks you to work "in the open
+window / in the open file / в открытом окне / в программе", do NOT start xmath, do NOT create or open a file:
+call `list_open_windows`, then pass `path: "window"` (or `"window:<pid>"` if several are open) to `open_worksheet`,
+`add_region`, `update_region`, `delete_region`, `create_worksheet` (only with `overwrite: true` on a non-empty
+window). The changes appear in that window immediately, also in an unsaved document, and the user can undo
+each of your edits with Ctrl+Z there. Saving stays the user's decision (Ctrl+S in the window).
 
 Recommended procedure:
 

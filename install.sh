@@ -47,7 +47,7 @@ xmath — установщик (свободная альтернатива Math
   --from-local     собрать из каталога со скриптом, не клонируя
   --no-skill       не устанавливать AI-навыки (по умолчанию ставятся в
                    ~/.claude/skills и, если есть Codex, в ~/.codex/skills)
-  --no-mcp         не подключать MCP-сервер к Claude Code / Codex
+  --no-mcp         не подключать MCP-сервер к Claude Code / Codex / OpenCode
   --force          пересобрать, даже если версия не изменилась
   --purge          при uninstall: удалить и каталог с исходниками
   -y, --yes        не задавать вопросов
@@ -82,6 +82,7 @@ MIME_DIR="$DATA_HOME/mime"
 SKILL_ROOTS=("$HOME/.claude/skills")
 [ -d "$HOME/.codex" ] && SKILL_ROOTS+=("$HOME/.codex/skills")
 SKILLS_FILE="$DATA_HOME/xmath/installed-skills"
+OPENCODE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -165,14 +166,57 @@ register_mcp() {
       warn "не удалось подключить MCP к Codex; вручную: codex mcp add xmath -- $mcp"
     fi
   fi
-  if ! have claude && ! have codex; then
+  if have opencode || [ -d "$OPENCODE_DIR" ]; then
+    opencode_mcp add "$mcp"
+  fi
+  if ! have claude && ! have codex && ! have opencode && [ ! -d "$OPENCODE_DIR" ]; then
     info "Подключение MCP-сервера к ИИ-клиенту: команда $mcp (stdio), см. docs/mcp.md"
+  fi
+}
+
+# OpenCode (в т.ч. с DeepSeek): MCP-сервер в ~/.config/opencode/opencode.json, ключ "mcp".
+# Навыки OpenCode читает и из ~/.claude/skills, куда они уже установлены.
+opencode_mcp() {
+  local what="$1" mcp="${2:-}" cfg="$OPENCODE_DIR/opencode.json"
+  if ! have python3; then
+    [ "$what" = add ] && info "OpenCode: добавьте в $cfg: \"mcp\": {\"xmath\": {\"type\": \"local\", \"command\": [\"$mcp\"], \"enabled\": true}}"
+    return 0
+  fi
+  mkdir -p "$OPENCODE_DIR"
+  if python3 - "$what" "$cfg" "$mcp" <<'PY'
+import json, os, sys
+what, cfg, mcp = sys.argv[1], sys.argv[2], sys.argv[3]
+data = {}
+if os.path.exists(cfg):
+    try:
+        with open(cfg, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        sys.exit(2)  # JSONC с комментариями: не трогаем
+if what == "add":
+    data.setdefault("$schema", "https://opencode.ai/config.json")
+    data.setdefault("mcp", {})["xmath"] = {"type": "local", "command": [mcp], "enabled": True}
+else:
+    if "xmath" not in data.get("mcp", {}):
+        sys.exit(3)
+    del data["mcp"]["xmath"]
+with open(cfg, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+    f.write("\n")
+PY
+  then
+    if [ "$what" = add ]; then info "MCP-сервер подключён к OpenCode ($cfg)"; else info "MCP-сервер отключён от OpenCode"; fi
+  else
+    case $? in
+      2) warn "OpenCode: $cfg содержит комментарии, добавьте вручную: \"mcp\": {\"xmath\": {\"type\": \"local\", \"command\": [\"$mcp\"]}}" ;;
+    esac
   fi
 }
 
 remove_mcp() {
   have claude && claude mcp remove --scope user xmath >/dev/null 2>&1 && info "MCP-сервер отключён от Claude Code"
   have codex && codex mcp remove xmath >/dev/null 2>&1 && info "MCP-сервер отключён от Codex"
+  [ -f "$OPENCODE_DIR/opencode.json" ] && opencode_mcp remove
   return 0
 }
 

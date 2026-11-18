@@ -254,6 +254,12 @@ pub struct App {
     import_log: Vec<String>,
     /// What the last save to .xmcd could not write (shown once in a dialog).
     save_warnings: Option<Vec<String>>,
+    /// The live link to AI assistants (MCP): this window's socket, see `xmath_core::live`.
+    #[cfg(unix)]
+    live: Option<crate::live::Server>,
+    /// When the window last had the keyboard focus (seconds since 1970): the MCP server picks
+    /// the window used last.
+    focused_at: f64,
     /// The Mathcad export notes last shown in the dialog (the same notes are not shown again on every Ctrl+S).
     shown_warnings: Vec<String>,
     /// Debug harness (`XMATH_DUMP_RECTS=path`): writes the rendered region sizes and exits.
@@ -339,6 +345,9 @@ impl App {
             has_bold_font,
             import_log: Vec::new(),
             save_warnings: None,
+            #[cfg(unix)]
+            live: crate::live::start(cc.egui_ctx.clone()),
+            focused_at: 0.0,
             shown_warnings: Vec::new(),
             dump_rects: std::env::var_os("XMATH_DUMP_RECTS").map(PathBuf::from),
             dump_frames: 0,
@@ -397,6 +406,55 @@ impl App {
 
     // -----------------------------------------------------------------
     // Document helpers
+
+    /// Answers the requests of AI assistants working in this window (MCP, see
+    /// `xmath_core::live`): they read the worksheet and put back the changed one, which
+    /// becomes one undo step here.
+    fn serve_live(&mut self, ctx: &Context) {
+        if ctx.input(|i| i.focused) {
+            self.focused_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+        }
+        #[cfg(unix)]
+        {
+            let reqs: Vec<crate::live::Request> = match &self.live {
+                Some(l) => l.rx.try_iter().collect(),
+                None => return,
+            };
+            for r in reqs {
+                let path = self.path.as_ref().map(|p| p.display().to_string());
+                let reply = match r.cmd["cmd"].as_str().unwrap_or("") {
+                    "info" => serde_json::json!({
+                        "pid": std::process::id(),
+                        "title": self.doc_name(),
+                        "path": path,
+                        "modified": self.modified,
+                        "regions": self.ws.regions.len(),
+                        "focused_at": self.focused_at,
+                    }),
+                    "get" => {
+                        let ws: serde_json::Value = serde_json::from_str(&self.ws.to_json()).unwrap_or_default();
+                        serde_json::json!({"path": path, "title": self.doc_name(), "worksheet": ws})
+                    }
+                    "set" => match Worksheet::from_json(&r.cmd["worksheet"].to_string()) {
+                        Ok(ws) => {
+                            if self.editing.is_some() {
+                                self.finish_edit(false);
+                            }
+                            self.checkpoint();
+                            self.ws = ws;
+                            self.selection.clear();
+                            self.changed();
+                            self.status = "Лист изменён ИИ-ассистентом (MCP); Ctrl+Z отменяет".into();
+                            serde_json::json!({"ok": true})
+                        }
+                        Err(e) => serde_json::json!({"error": e}),
+                    },
+                    other => serde_json::json!({"error": format!("неизвестная команда '{other}'")}),
+                };
+                let _ = r.reply.send(reply);
+            }
+        }
+    }
 
     fn doc_name(&self) -> String {
         match &self.path {
@@ -3513,6 +3571,7 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        self.serve_live(ctx);
         if ctx.input(|i| i.viewport().close_requested()) && self.modified && !self.allow_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm = Some(Action::Exit);

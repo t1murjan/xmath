@@ -19,7 +19,7 @@ const GAP: f32 = 0.0;
 const LEFT: f32 = 20.0;
 
 pub fn tool_list() -> Value {
-    let path = json!({"type":"string","description":"Path to a .xmath or Mathcad 15 .xmcd file (absolute, or relative to the server's working directory)."});
+    let path = json!({"type":"string","description":"Path to a .xmath or Mathcad 15 .xmcd file (absolute, or relative to the server's working directory), or \"window\" for the worksheet open in the xmath program window the user works in (\"window:<pid>\" picks one of several, see list_open_windows). With \"window\" the changes appear in that window at once (one Ctrl+Z step there); do not start xmath or open a new file then."});
     json!([
         {
             "name": "evaluate",
@@ -31,6 +31,11 @@ pub fn tool_list() -> Value {
                     "text": {"type":"string","description":"Alternative to `lines`: the same content as one string with newline-separated lines."}
                 }
             }
+        },
+        {
+            "name": "list_open_windows",
+            "description": "List the xmath program windows the user has open (pid, document title, file path or null if unsaved, modified flag, number of regions), the most recently used first. When the user asks to work in the open xmath / the open window / \"в открытом окне\", call this and then use path \"window\" in every other tool instead of creating or opening a file.",
+            "inputSchema": {"type":"object","properties":{}}
         },
         {
             "name": "open_worksheet",
@@ -136,6 +141,7 @@ pub fn call_tool(name: &str, args: &Value) -> Option<ToolResult> {
         "export_pdf" => export_pdf(a),
         "export_xmcd" => export_xmcd(a),
         "list_functions" => list_functions(),
+        "list_open_windows" => list_open_windows(),
         "list_units" => list_units(),
         "syntax_help" => Ok(ToolOutput { text: help::SYNTAX_HELP.to_string(), data: Value::Null }),
         _ => return None,
@@ -204,6 +210,9 @@ fn check_write_path(path: &str) -> Result<PathBuf, String> {
     if path.trim().is_empty() {
         return Err("`path` is empty".into());
     }
+    if crate::live::is_window(path) {
+        return Ok(PathBuf::from(path.trim()));
+    }
     let p = resolve(path);
     let ok = p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("xmath") || e.eq_ignore_ascii_case("xmcd"));
     if !ok {
@@ -214,6 +223,9 @@ fn check_write_path(path: &str) -> Result<PathBuf, String> {
 
 /// Like [`load`], and also reads Mathcad `.xmcd` files.
 fn load_any(p: &Path) -> Result<Worksheet, String> {
+    if let Some(spec) = p.to_str().filter(|s| crate::live::is_window(s)) {
+        return crate::live::load(spec).map(|(ws, _)| ws);
+    }
     let src = std::fs::read(p).map_err(|e| format!("cannot read {}: {e}", p.display()))?;
     let src = String::from_utf8_lossy(&src);
     if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmcd")) || src.trim_start().starts_with("<?xml") {
@@ -291,7 +303,8 @@ const SEP_GAP: f32 = 12.0;
 /// Keeps regions from overlapping, with their real drawn size (formulas with fractions,
 /// matrices, programs, results, plots): Mathcad's «Разделить области».
 fn separate(p: &Path, ws: &mut Worksheet) {
-    let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    let window = p.to_str().is_some_and(crate::live::is_window);
+    let dir = if window { PathBuf::from(".") } else { p.parent().filter(|d| !d.as_os_str().is_empty()).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(".")) };
     let env = xmath_core::EvalEnv { dir: Some(dir), allow_write: false, stack: Vec::new() };
     let outputs = ws.evaluate_with(false, &env);
     let sizes = xmath_gui::print::region_sizes(ws, &outputs);
@@ -301,6 +314,10 @@ fn separate(p: &Path, ws: &mut Worksheet) {
 /// Separates the regions, then writes the file.
 fn save(p: &Path, ws: &mut Worksheet) -> Result<(), String> {
     separate(p, ws);
+    if let Some(spec) = p.to_str().filter(|s| crate::live::is_window(s)) {
+        // the open window: the user sees the change at once and can undo it there
+        return crate::live::store(spec, ws);
+    }
     if let Some(dir) = p.parent() {
         if !dir.as_os_str().is_empty() && !dir.exists() {
             return Err(format!("directory {} does not exist", dir.display()));
@@ -566,6 +583,9 @@ fn create_worksheet(a: &Map<String, Value>) -> ToolResult {
     if p.exists() && !overwrite {
         return Err(format!("{} already exists; pass overwrite=true to replace it", p.display()));
     }
+    if crate::live::is_window(path) && !overwrite && load(&p).is_ok_and(|w| !w.regions.is_empty()) {
+        return Err("the open window already has regions: add to it with add_region (path \"window\"), or pass overwrite=true to replace its whole content".into());
+    }
     let mut ws = Worksheet::from_lines(&split_lines(a)?.join("\n"));
     save(&p, &mut ws)?;
     Ok(report(format!("created {} ({} regions)", p.display(), ws.regions.len()), &ws, None))
@@ -792,3 +812,29 @@ fn list_units() -> ToolResult {
     text.push_str("\nUse `expr = unit` to display a result in a unit; prefixed forms not listed here are not supported.\n");
     Ok(ToolOutput { text, data: json!({"groups": groups}) })
 }
+
+fn list_open_windows() -> ToolResult {
+    let ws = crate::live::windows();
+    if ws.is_empty() {
+        return Ok(ToolOutput {
+            text: "no xmath window is open (ask the user to start xmath, or work with a .xmcd/.xmath file)".into(),
+            data: json!({"windows": []}),
+        });
+    }
+    let mut text = String::from("open xmath windows (use path \"window\" for the first, \"window:<pid>\" for another):");
+    let mut list = Vec::new();
+    for (i, (_, info)) in ws.iter().enumerate() {
+        text.push_str(&format!(
+            "\n{}. pid {}: {} ({} regions{}{})",
+            i + 1,
+            info["pid"],
+            info["title"].as_str().unwrap_or("?"),
+            info["regions"],
+            info["path"].as_str().map(|p| format!(", file {p}")).unwrap_or_else(|| ", not saved yet".into()),
+            if info["modified"].as_bool() == Some(true) { ", modified" } else { "" }
+        ));
+        list.push(info.clone());
+    }
+    Ok(ToolOutput { text, data: json!({"windows": list}) })
+}
+

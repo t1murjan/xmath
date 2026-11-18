@@ -161,3 +161,23 @@ xmath-cli sheet.xmath
 - Сервер «молчит» — это нормально: он отвечает только на запросы клиента; логи смотрите в stderr клиента.
 - `refusing to write ... only .xmath` — сервер пишет только в `.xmath`.
 - Ошибка единиц (`Единицы измерения не совпадают`) — формула размерно неверна; не убирайте единицы, исправьте формулу.
+
+## Работа в открытом окне программы
+
+Каждое окно xmath слушает локальный сокет `$XDG_RUNTIME_DIR/xmath/<pid>.sock` (протокол — строки JSON,
+см. `crates/xmath-core/src/live.rs`). Инструмент `list_open_windows` перечисляет окна (последнее активное —
+первым), а `path: "window"` / `"window:<pid>"` вместо пути к файлу направляет `open_worksheet`, `add_region`,
+`update_region`, `delete_region`, `create_worksheet` и экспорт в открытый документ, в том числе несохранённый.
+Каждое изменение — один шаг отмены (Ctrl+Z) в окне; файл сохраняет сам пользователь.
+
+## OpenCode (DeepSeek и другие модели)
+
+`install.sh` добавляет в `~/.config/opencode/opencode.json`:
+
+```json
+{ "mcp": { "xmath": { "type": "local", "command": ["/home/<вы>/.local/bin/xmath-mcp"], "enabled": true } } }
+```
+
+Навык OpenCode берёт из `~/.claude/skills/xmath`. Если в файле настроек есть комментарии (JSONC),
+установщик его не трогает и показывает строку для ручного добавления.
+
