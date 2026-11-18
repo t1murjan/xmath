@@ -165,6 +165,7 @@ fn every_plot_field_survives() {
     ws.page.paper = Paper::A3;
     ws.page.landscape = true;
     ws.page.margins = [10.0, 12.0, 14.0, 16.0];
+    ws.page.within_margins = true;
     let mut pd = PlotFormat::new_plot_default();
     pd.grid = false;
     pd.title = "по умолчанию".into();
