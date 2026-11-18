@@ -180,7 +180,7 @@ The GUI edits all plot options (secondary Y axis, symbols, trace types, legend, 
 ## 7. File format
 
 `.xmath` is JSON: `{"version":1,"format":{...},"regions":[{"id":1,"x":20,"y":20,"type":"math","source":"L := 6 m"}, {"type":"text","text":"..."}, {"type":"plot","x_expr":"x","y_exprs":["sin(x)"]}, {"type":"plot","kind":"polar","x_expr":"t","y_exprs":["1+cos(t)"]}, {"type":"plot3d","kind":"surface","expr":"sin(x)*cos(y)","view":{"azimuth":35,"elevation":30,"zoom":1}}]}`.
-Use the MCP tools or `xmath-cli` instead of hand-editing it.
+Use the MCP tools or `xmath-cli` instead of hand-editing it. The same worksheets can be saved as Mathcad 15 `.xmcd` (the default format of the GUI; MCP tools accept `.xmcd` paths and import/export transparently; the xmath-only data of plots rides in `<!--xmath:… -->` comments).
 
 ## 8. Common pitfalls
 

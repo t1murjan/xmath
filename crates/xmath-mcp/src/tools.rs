@@ -19,7 +19,7 @@ const GAP: f32 = 0.0;
 const LEFT: f32 = 20.0;
 
 pub fn tool_list() -> Value {
-    let path = json!({"type":"string","description":"Path to a .xmath file (absolute, or relative to the server's working directory)."});
+    let path = json!({"type":"string","description":"Path to a .xmath or Mathcad 15 .xmcd file (absolute, or relative to the server's working directory)."});
     json!([
         {
             "name": "evaluate",
@@ -34,12 +34,12 @@ pub fn tool_list() -> Value {
         },
         {
             "name": "open_worksheet",
-            "description": "Load a .xmath worksheet file, evaluate it and return every region (id, type, position, source/text, result, error, plot summary) in evaluation order.",
+            "description": "Load a .xmath or Mathcad .xmcd worksheet file, evaluate it and return every region (id, type, position, source/text, result, error, plot summary) in evaluation order.",
             "inputSchema": {"type":"object","properties":{"path":path.clone()},"required":["path"]}
         },
         {
             "name": "create_worksheet",
-            "description": "Create a new .xmath worksheet file, optionally filled with lines (one math region per line; `# text` lines become text regions; regions are stacked vertically). Returns the evaluated regions. Refuses to overwrite an existing file unless `overwrite` is true.",
+            "description": "Create a new .xmath or .xmcd (Mathcad 15) worksheet file, optionally filled with lines (one math region per line; `# text` lines become text regions; regions are stacked vertically). Returns the evaluated regions. Refuses to overwrite an existing file unless `overwrite` is true.",
             "inputSchema": {
                 "type":"object",
                 "properties":{
@@ -52,7 +52,7 @@ pub fn tool_list() -> Value {
         },
         {
             "name": "add_region",
-            "description": "Insert a region into a .xmath worksheet and save it. kind `math` needs `source` (one statement, e.g. `A := b*h`), kind `text` needs `text`, kind `plot` needs `y_exprs` (list of expressions) and usually `x_expr` (a range variable defined above, e.g. `x`). Default position: below the last region; with `after_id` the region is placed right after that one and the following regions are pushed down; explicit `x`/`y` override. Remember that evaluation order is top-to-bottom, so definitions must sit above their uses. Returns the new region id and the re-evaluated worksheet.",
+            "description": "Insert a region into a .xmath or .xmcd worksheet and save it (an .xmcd file is rewritten as a Mathcad 15 file: plots as Mathcad plots with pictures, results stored). kind `math` needs `source` (one statement, e.g. `A := b*h`), kind `text` needs `text`, kind `plot` needs `y_exprs` (list of expressions) and usually `x_expr` (a range variable defined above, e.g. `x`). Default position: below the last region; with `after_id` the region is placed right after that one and the following regions are pushed down; explicit `x`/`y` override. Remember that evaluation order is top-to-bottom, so definitions must sit above their uses. Returns the new region id and the re-evaluated worksheet.",
             "inputSchema": {
                 "type":"object",
                 "properties":{
@@ -72,7 +72,7 @@ pub fn tool_list() -> Value {
         },
         {
             "name": "update_region",
-            "description": "Change an existing region of a .xmath worksheet (by id) and save. Pass `source` for math regions, `text` for text regions, `x_expr` / `y_exprs` for plots, and/or a new position `x` / `y`. Returns the re-evaluated worksheet.",
+            "description": "Change an existing region of a .xmath or .xmcd worksheet (by id) and save. Pass `source` for math regions, `text` for text regions, `x_expr` / `y_exprs` for plots, and/or a new position `x` / `y`. Returns the re-evaluated worksheet.",
             "inputSchema": {
                 "type":"object",
                 "properties":{
@@ -91,7 +91,7 @@ pub fn tool_list() -> Value {
         },
         {
             "name": "delete_region",
-            "description": "Delete a region (by id) from a .xmath worksheet, save, and return the re-evaluated worksheet. Other regions keep their positions and ids.",
+            "description": "Delete a region (by id) from a .xmath or .xmcd worksheet, save, and return the re-evaluated worksheet. Other regions keep their positions and ids.",
             "inputSchema": {"type":"object","properties":{"path":path,"id":{"type":"integer"}},"required":["path","id"]}
         },
         {
@@ -101,7 +101,7 @@ pub fn tool_list() -> Value {
         },
         {
             "name": "export_xmcd",
-            "description": "Save a worksheet as a Mathcad 15 .xmcd file (worksheet30 / math30 XML). Plots cannot be written (Mathcad stores them in a binary format) and are replaced by a text note; such problems are reported as warnings. Only files with the .xmcd extension may be written.",
+            "description": "Save a worksheet as a Mathcad 15 .xmcd file (worksheet30 / math30 XML). X-Y plots are written as Mathcad plots; polar and 3D plots as pictures (xmath restores them on opening); problems are reported as warnings. Only files with the .xmcd extension may be written.",
             "inputSchema": {"type":"object","properties":{"path":{"type":"string","description":"Worksheet to convert (.xmath or .xmcd)."},"out":{"type":"string","description":"Output file (must end in .xmcd)."}},"required":["path","out"]}
         },
         {
@@ -204,9 +204,9 @@ fn check_write_path(path: &str) -> Result<PathBuf, String> {
         return Err("`path` is empty".into());
     }
     let p = resolve(path);
-    let ok = p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("xmath"));
+    let ok = p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("xmath") || e.eq_ignore_ascii_case("xmcd"));
     if !ok {
-        return Err(format!("refusing to write '{path}': only files with the .xmath extension may be written"));
+        return Err(format!("refusing to write '{path}': only files with the .xmath or .xmcd extension may be written"));
     }
     Ok(p)
 }
@@ -218,7 +218,7 @@ fn load_any(p: &Path) -> Result<Worksheet, String> {
     if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmcd")) || src.trim_start().starts_with("<?xml") {
         xmath_core::xmcd::import_xmcd(&src).map(|r| r.worksheet).map_err(|e| format!("{}: {e}", p.display()))
     } else {
-        load(p)
+        load_xmath(p)
     }
 }
 
@@ -271,6 +271,11 @@ warning: {w}"));
 }
 
 fn load(p: &Path) -> Result<Worksheet, String> {
+    load_any(p)
+}
+
+/// The worksheet of an `.xmath` (JSON or one line per region) file.
+fn load_xmath(p: &Path) -> Result<Worksheet, String> {
     let src = std::fs::read_to_string(p).map_err(|e| format!("cannot read {}: {e}", p.display()))?;
     if src.trim_start().starts_with('{') {
         Worksheet::from_json(&src).map_err(|e| format!("{}: invalid worksheet JSON: {e}", p.display()))
@@ -284,6 +289,17 @@ fn save(p: &Path, ws: &Worksheet) -> Result<(), String> {
         if !dir.as_os_str().is_empty() && !dir.exists() {
             return Err(format!("directory {} does not exist", dir.display()));
         }
+    }
+    if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmcd")) {
+        // a Mathcad 15 file: plots as Mathcad plot items plus the pictures, results of the evaluation
+        let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+        let env = xmath_core::EvalEnv { dir: Some(dir), allow_write: false, stack: Vec::new() };
+        let outputs = ws.evaluate_with(true, &env);
+        let has_plots = ws.regions.iter().any(|r| matches!(r.kind, RegionKind::Plot { .. } | RegionKind::Plot3d { .. }));
+        let renderings = if has_plots { xmath_gui::print::render_plot_pngs(ws, &outputs) } else { Default::default() };
+        let opts = xmath_core::xmcd_export::ExportOptions { renderings, rendering_scale: xmath_gui::print::PNG_SCALE, env: Some(env), outputs: Some(outputs) };
+        let r = xmath_core::xmcd_export::export_xmcd_with(ws, &opts);
+        return std::fs::write(p, r.xml).map_err(|e| format!("cannot write {}: {e}", p.display()));
     }
     std::fs::write(p, ws.to_json()).map_err(|e| format!("cannot write {}: {e}", p.display()))
 }

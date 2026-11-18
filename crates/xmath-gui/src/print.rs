@@ -477,6 +477,50 @@ pub fn export_pdf(ws: &Worksheet, outputs: &HashMap<u64, RegionOutput>, opts: &P
     doc.finish()
 }
 
+/// Pixels per worksheet pixel of the pictures [`render_plot_pngs`] draws.
+pub const PNG_SCALE: f32 = 2.0;
+
+/// Draws every plot of `ws` (X-Y, polar, 3D) as the application does and returns PNG pictures by
+/// region id; they are stored in `.xmcd` files as `<rendering>`. `outputs` are the evaluation
+/// results of `ws`.
+pub fn render_plot_pngs(ws: &Worksheet, outputs: &HashMap<u64, RegionOutput>) -> HashMap<u64, Vec<u8>> {
+    let (defs, has_bold) = crate::fonts::definitions();
+    let ctx = Context::default();
+    ctx.set_fonts(defs.clone());
+    ctx.set_pixels_per_point(4.0);
+    let _ = ctx.run(Default::default(), |_| {});
+    let mut result = HashMap::new();
+    for region in ws.regions.iter().filter(|r| matches!(r.kind, RegionKind::Plot { .. } | RegionKind::Plot3d { .. })) {
+        // a worksheet of this region alone, placed at the origin of a page without margins
+        let mut one = Worksheet { regions: vec![region.clone()], format: ws.format, ..Worksheet::default() };
+        one.regions[0].x = 0.0;
+        one.regions[0].y = 0.0;
+        one.regions[0].anchor = [0.0, 0.0];
+        one.page = ws.page.clone();
+        let mut sheet: Option<Sheet> = None;
+        let _ = ctx.run(Default::default(), |ctx| {
+            sheet = Some(Sheet::layout(ctx, &one, outputs, 1.0, has_bold));
+        });
+        let Some(sheet) = sheet else { continue };
+        let Some(item) = sheet.items.first() else { continue };
+        // axis numbers and labels reach beyond the nominal rectangle of the region
+        let (pad_lo, pad_hi) = (18.0, 24.0);
+        let size = item.rect.size() + Vec2::splat(pad_lo + pad_hi);
+        let out = ctx.run(Default::default(), |ctx| {
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new(("plot-png", region.id))));
+            let clip = Rect::from_min_size(Pos2::ZERO, size);
+            sheet.paint_page(&painter.with_clip_rect(clip), 0, Pos2::new(pad_lo, pad_lo));
+        });
+        let Some(mut canvas) = crate::raster::RasterCanvas::new(size.x, size.y, PNG_SCALE, defs.clone()) else { continue };
+        canvas::paint_shapes(&out.shapes, &mut canvas, Vec2::ZERO, has_bold);
+        let png = canvas.png();
+        if !png.is_empty() {
+            result.insert(region.id, png);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

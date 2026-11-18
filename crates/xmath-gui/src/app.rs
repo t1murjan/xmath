@@ -252,6 +252,10 @@ pub struct App {
     pending: Vec<Action>,
     has_bold_font: bool,
     import_log: Vec<String>,
+    /// What the last save to .xmcd could not write (shown once in a dialog).
+    save_warnings: Option<Vec<String>>,
+    /// The Mathcad export notes last shown in the dialog (the same notes are not shown again on every Ctrl+S).
+    shown_warnings: Vec<String>,
     /// Debug harness (`XMATH_DUMP_RECTS=path`): writes the rendered region sizes and exits.
     dump_rects: Option<PathBuf>,
     dump_frames: u32,
@@ -334,6 +338,8 @@ impl App {
             pending: Vec::new(),
             has_bold_font,
             import_log: Vec::new(),
+            save_warnings: None,
+            shown_warnings: Vec::new(),
             dump_rects: std::env::var_os("XMATH_DUMP_RECTS").map(PathBuf::from),
             dump_frames: 0,
             scroll_off: Vec2::ZERO,
@@ -437,8 +443,9 @@ impl App {
         match result {
             Ok((ws, warnings)) => {
                 self.ws = ws;
-                // an imported Mathcad file is saved as a new .xmath next to it
-                self.path = if ext == "xmath" { Some(p.to_path_buf()) } else { None };
+                // Ctrl+S writes back to the file that was opened, in its own format (.xmcd or .xmath);
+                // plain-text imports have no document file yet
+                self.path = if ext == "xmath" || ext == "xmcd" { Some(p.to_path_buf()) } else { None };
                 self.after_load();
                 self.status = if warnings.is_empty() {
                     format!("Открыт файл {}", p.display())
@@ -462,20 +469,30 @@ impl App {
         self.cursor = Pos2::new(24.0, 24.0);
     }
 
+    /// Saves in the format of the extension: `.xmath` is xmath's own JSON, everything else is
+    /// Mathcad 15's `.xmcd` (a name without extension gets `.xmcd`).
     fn save_to(&mut self, p: PathBuf) {
-        if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmcd")) {
-            self.save_xmcd(&p);
+        let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if ext == "xmath" {
+            match std::fs::write(&p, self.ws.to_json()) {
+                Ok(()) => {
+                    self.status = format!("Сохранено: {}", p.display());
+                    self.path = Some(p);
+                    self.modified = false;
+                }
+                Err(e) => self.status = format!("Ошибка сохранения: {e}"),
+            }
             return;
         }
-        let p = if p.extension().is_none() { p.with_extension("xmath") } else { p };
-        match std::fs::write(&p, self.ws.to_json()) {
-            Ok(()) => {
-                self.status = format!("Сохранено: {}", p.display());
-                self.path = Some(p);
-                self.modified = false;
-            }
-            Err(e) => self.status = format!("Ошибка сохранения: {e}"),
-        }
+        let p = if ext == "xmcd" {
+            p
+        } else if ext.is_empty() {
+            p.with_extension("xmcd")
+        } else {
+            let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            p.with_file_name(format!("{name}.xmcd"))
+        };
+        self.save_xmcd(&p);
     }
 
     /// Saves to the current path, or asks for one.
@@ -511,7 +528,10 @@ impl App {
         if self.file_job.is_some() || self.path_dlg.is_some() {
             return;
         }
-        let name = self.doc_name().replace(':', "") + if kind == DlgKind::Pdf { ".pdf" } else { ".xmath" };
+        let name = self.doc_name().replace(':', "");
+        // the dialog (Save As, or the first save of a new document) offers Mathcad 15 files first;
+        // Ctrl+S on an existing document does not ask and keeps the type of its file
+        let name = file_stem_of(&name) + if kind == DlgKind::Pdf { ".pdf" } else { ".xmcd" };
         let (tx, rx) = mpsc::channel();
         let run = move || native_dialog(kind, &name);
         #[cfg(target_os = "linux")]
@@ -549,9 +569,9 @@ impl App {
         if failed {
             self.status = "Системный диалог выбора файла недоступен (нет xdg-desktop-portal?). Введите путь вручную.".into();
             let text = match (&self.path, job.kind) {
-                (Some(p), DlgKind::Save) => p.display().to_string(),
-                (None, DlgKind::Save) => std::env::current_dir().unwrap_or_default().join(self.doc_name().replace(':', "") + ".xmath").display().to_string(),
-                (_, DlgKind::Pdf) => std::env::current_dir().unwrap_or_default().join(self.doc_name().replace(':', "") + ".pdf").display().to_string(),
+                (Some(p), DlgKind::Save) => p.with_extension("xmcd").display().to_string(),
+                (None, DlgKind::Save) => std::env::current_dir().unwrap_or_default().join(file_stem_of(&self.doc_name().replace(':', "")) + ".xmcd").display().to_string(),
+                (_, DlgKind::Pdf) => std::env::current_dir().unwrap_or_default().join(file_stem_of(&self.doc_name().replace(':', "")) + ".pdf").display().to_string(),
                 _ => String::new(),
             };
             self.path_dlg = Some(PathDlg { kind: job.kind, text, then: job.then });
@@ -1393,11 +1413,20 @@ fn classic_scrollbars(ui: &mut Ui) {
     v.widgets.active.corner_radius = egui::CornerRadius::ZERO;
 }
 
+/// `report.xmcd` -> `report`; names of unsaved documents have no extension.
+fn file_stem_of(name: &str) -> String {
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if matches!(ext.to_lowercase().as_str(), "xmcd" | "xmath" | "txt") && !stem.is_empty() => stem.to_string(),
+        _ => name.to_string(),
+    }
+}
+
 fn native_dialog(kind: DlgKind, name: &str) -> Option<PathBuf> {
     match kind {
+        // the first filter is the default one
         DlgKind::Save => rfd::FileDialog::new()
-            .add_filter("Рабочий лист xmath (*.xmath)", &["xmath"])
             .add_filter("Mathcad 15 (*.xmcd)", &["xmcd"])
+            .add_filter("Рабочий лист xmath (*.xmath)", &["xmath"])
             .set_file_name(name)
             .save_file(),
         DlgKind::Pdf => rfd::FileDialog::new().add_filter("PDF (*.pdf)", &["pdf"]).set_file_name(name).save_file(),
@@ -3172,6 +3201,30 @@ impl App {
                 }
                 Some(_) => self.confirm = None,
                 None => {}
+            }
+        }
+
+        if let Some(list) = &self.save_warnings {
+            let mut close = false;
+            egui::Window::new("Сохранение в Mathcad 15")
+                .collapsible(false)
+                .resizable(true)
+                .default_width(480.0)
+                .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.label("Файл сохранён, но часть содержимого Mathcad покажет иначе, чем xmath:");
+                    ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                        for w in list {
+                            ui.label(format!("• {w}"));
+                        }
+                    });
+                    ui.add_space(4.0);
+                    if ui.button("ОК").clicked() {
+                        close = true;
+                    }
+                });
+            if close {
+                self.save_warnings = None;
             }
         }
 

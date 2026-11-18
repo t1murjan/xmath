@@ -156,7 +156,7 @@ fn text_picture_and_reference_roundtrip() {
     }));
     ws.regions.push(Region::new(5, 40.0, 440.0, RegionKind::new_plot3d(xmath_core::Plot3dKind::Surface)));
     let ex = export_xmcd(&ws);
-    assert_eq!(ex.warnings.len(), 2, "{:?}", ex.warnings); // the plots
+    assert_eq!(ex.warnings.len(), 1, "{:?}", ex.warnings); // the 3D plot is a picture for Mathcad
     let back = import_xmcd(&ex.xml).unwrap().worksheet;
     assert_eq!(back.format.precision, 5);
     assert!(back.page.landscape);
@@ -170,7 +170,8 @@ fn text_picture_and_reference_roundtrip() {
     }
     assert!(matches!(&back.regions.iter().find(|r| r.id == 2).unwrap().kind, RegionKind::Reference { href } if href == "lib/other.xmcd"));
     assert!(matches!(&back.regions.iter().find(|r| r.id == 3).unwrap().kind, RegionKind::Image { png_base64, .. } if png_base64 == png));
-    assert!(matches!(&back.regions.iter().find(|r| r.id == 4).unwrap().kind, RegionKind::Text { text, .. } if text.contains("sin(t)")));
+    assert!(matches!(&back.regions.iter().find(|r| r.id == 4).unwrap().kind, RegionKind::Plot { y, .. } if y == &vec!["sin(t)".to_string()]));
+    assert!(matches!(&back.regions.iter().find(|r| r.id == 5).unwrap().kind, RegionKind::Plot3d { .. }));
 }
 
 /// The exporter output has the structure of real Mathcad files (checked in a lenient way):

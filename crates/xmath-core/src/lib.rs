@@ -23,6 +23,7 @@ pub mod xmcd;
 pub mod xmcd_check;
 pub mod xmcd_export;
 pub mod xmcd_plot;
+pub mod xmcd_plot_write;
 pub mod worksheet;
 
 #[cfg(test)]

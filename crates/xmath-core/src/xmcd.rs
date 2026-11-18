@@ -7,7 +7,7 @@
 use crate::ast::{BinOp, Expr, PStmt, Stmt, Target, UnOp};
 use crate::parser::{parse_expr, parse_statement};
 use crate::units::{self, Dim};
-use crate::worksheet::{Paper, Region, RegionKind, TextFont, TextStyle, Worksheet};
+use crate::worksheet::{Paper, PlotKind, Region, RegionKind, TextFont, TextStyle, Worksheet};
 use base64::Engine;
 use roxmltree::{Document, Node};
 use std::collections::{HashMap, HashSet};
@@ -107,6 +107,19 @@ pub fn import_xmcd(xml: &str) -> Result<ImportResult, String> {
         }
         if let Some(pm) = settings.descendants().find(|n| n.is_element() && lname(*n) == "pageModel") {
             read_page_model(&mut ws, pm);
+        }
+    }
+
+    // xmath's own worksheet settings (exact values that Mathcad's settings cannot hold)
+    if let Some(saved) = xmath_comment(root, "worksheet").and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok()) {
+        if let Some(f) = saved.get("format").and_then(|v| serde_json::from_value(v.clone()).ok()) {
+            ws.format = f;
+        }
+        if let Some(pd) = saved.get("plot_defaults").and_then(|v| serde_json::from_value(v.clone()).ok()) {
+            ws.plot_defaults = pd;
+        }
+        if let Some(pg) = saved.get("page").and_then(|v| serde_json::from_value(v.clone()).ok()) {
+            ws.page = pg;
         }
     }
 
@@ -242,6 +255,42 @@ fn is_true(v: Option<&str>) -> bool {
 
 // ------------------------------------------------------------------- regions
 
+/// The JSON of an `<!--xmath:name {json}-->` comment among the children of `n`.
+fn xmath_comment(n: Node, name: &str) -> Option<String> {
+    let prefix = format!("xmath:{name} ");
+    n.children().filter(|c| c.is_comment()).find_map(|c| c.text()?.strip_prefix(prefix.as_str()).map(|j| j.to_string()))
+}
+
+/// Whether a plot saved in xmath's comment still describes what Mathcad's own plot item says:
+/// an X-Y plot whose expressions or limits changed was edited in Mathcad, and the comment is stale.
+fn saved_plot_is_current(saved: &RegionKind, decoded: &RegionKind) -> bool {
+    let (
+        RegionKind::Plot { x: sx, y: sy, xs: sxs, x_min: a0, x_max: a1, y_min: a2, y_max: a3, kind: sk, .. },
+        RegionKind::Plot { x: dx, y: dy, xs: dxs, x_min: b0, x_max: b1, y_min: b2, y_max: b3, kind: dk, .. },
+    ) = (saved, decoded)
+    else {
+        // a saved text region is current while the text is the same
+        if let (RegionKind::Text { text: a, .. }, RegionKind::Text { text: b, .. }) = (saved, decoded) {
+            let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+            return words(a) == words(b);
+        }
+        return true;
+    };
+    if *sk != PlotKind::Xy || *dk != PlotKind::Xy {
+        return true;
+    }
+    let norm = |s: &str| crate::parser::parse_expr(s).map(|e| e.to_string()).unwrap_or_else(|_| s.trim().to_string());
+    let xs_of = |x: &String, xs: &Vec<String>| -> Vec<String> {
+        if xs.is_empty() {
+            if x.trim().is_empty() { vec![] } else { vec![norm(x)] }
+        } else {
+            xs.iter().map(|s| norm(s)).collect()
+        }
+    };
+    let ys_of = |y: &Vec<String>| -> Vec<String> { y.iter().filter(|s| !s.trim().is_empty()).map(|s| norm(s)).collect() };
+    xs_of(sx, sxs) == xs_of(dx, dxs) && ys_of(sy) == ys_of(dy) && (a0, a1, a2, a3) == (b0, b1, b2, b3)
+}
+
 /// Imports one `<region>`; an `<area>` contributes the regions nested in it.
 fn import_region(cx: &mut Cx, reg: Node) {
     if lname(reg) != "region" {
@@ -286,7 +335,13 @@ fn import_region(cx: &mut Cx, reg: Node) {
             cx.expected.insert(id, e);
         }
     }
-    let kind = convert_region(cx, reg, body, w, h, (raw_w, raw_h));
+    let mut kind = convert_region(cx, reg, body, w, h, (raw_w, raw_h));
+    // what xmath itself wrote next to the region wins, unless the region was edited since
+    if let Some(saved) = xmath_comment(reg, "region").and_then(|j| serde_json::from_str::<RegionKind>(&j).ok()) {
+        if saved_plot_is_current(&saved, &kind) {
+            kind = saved;
+        }
+    }
     cx.regions.push(Region { id, x, y, anchor, kind });
 }
 
@@ -1343,6 +1398,7 @@ fn mathcad_unit(name: &str) -> Option<&'static units::UnitDef> {
         ("mile", "mi"),
         ("nautical_mile", "nmi"),
         ("mil", "mil"),
+        ("kilogram", "kg"),
         ("pound", "lb"),
         ("pound_mass", "lb"),
         ("ounce", "oz"),
