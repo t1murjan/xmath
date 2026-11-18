@@ -477,6 +477,7 @@ impl<'a> Ts<'a> {
                     BinOp::Ge => self.op("≥", size),
                     BinOp::And => self.op("∧", size),
                     BinOp::Or => self.op("∨", size),
+                    BinOp::Xor => self.op("⊕", size),
                     BinOp::Div | BinOp::Pow => unreachable!(),
                 };
                 let sym = if *op == BinOp::Eq { self.bold(sym) } else { sym };
@@ -568,6 +569,11 @@ impl<'a> Ts<'a> {
     /// Mathcad program: a vertical bar on the left, one statement per line.
     pub fn program(&self, stmts: &[PStmt], size: f32) -> Lay {
         let rows = self.program_rows(stmts, size);
+        self.block(rows, size)
+    }
+
+    /// The program block around laid-out lines: centred on the math axis, with the bar.
+    fn block(&self, rows: Vec<Lay>, size: f32) -> Lay {
         let vgap = size * 0.22;
         let total_h: f32 = rows.iter().map(|r| r.h()).sum::<f32>() + vgap * rows.len().saturating_sub(1) as f32;
         let axis = self.axis(size);
@@ -590,8 +596,50 @@ impl<'a> Ts<'a> {
         out
     }
 
-    fn block_row(&self, body: &[PStmt], size: f32) -> Lay {
-        self.hcat(vec![self.space(size * 0.9), self.program(body, size)])
+    /// A loop: the header line, and below it the body block, indented (Mathcad 15). The
+    /// baseline is the header's, so the loop sits in its block like any other line.
+    fn loop_lay(&self, header: Lay, body: Lay, size: f32) -> Lay {
+        let gap = size * 0.22;
+        let indent = size * 0.9;
+        let w = header.w.max(indent + body.w);
+        let mut out = Lay { w, asc: header.asc, desc: header.desc + gap + body.h(), items: vec![], boxes: vec![] };
+        let body_base = header.desc + gap + body.asc;
+        out.place(header, 0.0, 0.0);
+        out.place(body, indent, body_base);
+        out
+    }
+
+    /// The statement left of `if` / `otherwise`: one simple line, or a nested block.
+    fn stmt_lay(&self, stmts: &[PStmt], size: f32) -> Lay {
+        if stmts.len() == 1 && stmts[0].is_simple() {
+            self.program_rows(stmts, size).remove(0)
+        } else {
+            self.program(stmts, size)
+        }
+    }
+
+    /// The program nodes of the structural editor (see `editor::P_PROG`): drawn exactly like
+    /// `Expr::Program`, but every operand is an editable node with its own hit box.
+    fn prog_call(&self, name: &str, args: &[Expr], size: f32) -> Lay {
+        let a = |i: usize| args.get(i).map(|e| self.expr(e, size)).unwrap_or_default();
+        match name {
+            "⟦prog⟧" => self.block(args.iter().map(|l| self.expr(l, size)).collect(), size),
+            "⟦←⟧" => self.hcat(vec![a(0), self.op("←", size), a(1)]),
+            "⟦if⟧" => self.hcat(vec![a(0), self.kw(" if ", size), a(1)]),
+            "⟦otherwise⟧" => self.hcat(vec![a(0), self.kw(" otherwise", size)]),
+            "⟦for⟧" => {
+                let head = self.hcat(vec![self.kw("for ", size), a(0), self.kw(" ∈ ", size), a(1)]);
+                self.loop_lay(head, a(2), size)
+            }
+            "⟦while⟧" => {
+                let head = self.hcat(vec![self.kw("while ", size), a(0)]);
+                self.loop_lay(head, a(1), size)
+            }
+            "⟦break⟧" => self.kw("break", size),
+            "⟦continue⟧" => self.kw("continue", size),
+            "⟦return⟧" => self.hcat(vec![self.kw("return ", size), a(0)]),
+            _ => self.text(name, size),
+        }
     }
 
     fn program_rows(&self, stmts: &[PStmt], size: f32) -> Vec<Lay> {
@@ -603,31 +651,20 @@ impl<'a> Ts<'a> {
                     rows.push(self.hcat(vec![lt, self.op("←", size), self.expr(e, size)]));
                 }
                 PStmt::Expr(e) => rows.push(self.expr(e, size)),
+                // Mathcad 15: `statement if condition`, then `statement otherwise`
                 PStmt::If { cond, then, else_ } => {
-                    if else_.is_none() && then.len() == 1 && then[0].is_simple() {
-                        let simple = self.program_rows(then, size).remove(0);
-                        rows.push(self.hcat(vec![simple, self.kw(" if ", size), self.expr(cond, size)]));
-                    } else {
-                        rows.push(self.hcat(vec![self.kw("if ", size), self.expr(cond, size)]));
-                        rows.push(self.block_row(then, size));
-                        if let Some(e) = else_ {
-                            rows.push(self.kw("otherwise", size));
-                            rows.push(self.block_row(e, size));
-                        }
+                    rows.push(self.hcat(vec![self.stmt_lay(then, size), self.kw(" if ", size), self.expr(cond, size)]));
+                    if let Some(e) = else_ {
+                        rows.push(self.hcat(vec![self.stmt_lay(e, size), self.kw(" otherwise", size)]));
                     }
                 }
                 PStmt::For { var, iter, body } => {
-                    rows.push(self.hcat(vec![
-                        self.kw("for ", size),
-                        self.ident(var, size),
-                        self.kw(" ∈ ", size),
-                        self.expr(iter, size),
-                    ]));
-                    rows.push(self.block_row(body, size));
+                    let head = self.hcat(vec![self.kw("for ", size), self.ident(var, size), self.kw(" ∈ ", size), self.expr(iter, size)]);
+                    rows.push(self.loop_lay(head, self.program(body, size), size));
                 }
                 PStmt::While { cond, body } => {
-                    rows.push(self.hcat(vec![self.kw("while ", size), self.expr(cond, size)]));
-                    rows.push(self.block_row(body, size));
+                    let head = self.hcat(vec![self.kw("while ", size), self.expr(cond, size)]);
+                    rows.push(self.loop_lay(head, self.program(body, size), size));
                 }
                 PStmt::Break => rows.push(self.kw("break", size)),
                 PStmt::Continue => rows.push(self.kw("continue", size)),
@@ -653,6 +690,9 @@ impl<'a> Ts<'a> {
     }
 
     fn call(&self, name: &str, args: &[Expr], size: f32) -> Lay {
+        if name.starts_with('⟦') {
+            return self.prog_call(name, args, size);
+        }
         let small = size * 0.72;
         match (name, args) {
             // explicit parentheses typed in the structural editor

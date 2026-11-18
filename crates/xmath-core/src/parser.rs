@@ -67,6 +67,7 @@ enum Tok {
     Bar,
     And,
     Or,
+    Xor,
     Not,
     Sqrt,
     Eof,
@@ -116,6 +117,7 @@ fn tok_text(t: &Tok) -> &'static str {
         Tok::Bar => "|",
         Tok::And => "and",
         Tok::Or => "or",
+        Tok::Xor => "⊕",
         Tok::Not => "¬",
         Tok::Sqrt => "√",
         _ => "?",
@@ -266,6 +268,7 @@ fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
             ('|', _) => (Tok::Bar, 1),
             ('∧', _) | ('&', _) => (Tok::And, 1),
             ('∨', _) => (Tok::Or, 1),
+            ('⊕', _) => (Tok::Xor, 1),
             ('¬', _) => (Tok::Not, 1),
             ('√', _) => (Tok::Sqrt, 1),
             ('…', _) => (Tok::DotDot, 1),
@@ -330,9 +333,16 @@ impl Parser {
 
     fn expr(&mut self) -> PResult<Expr> {
         let mut a = self.and_expr()?;
-        while self.eat(&Tok::Or) {
+        loop {
+            let op = if self.eat(&Tok::Or) {
+                BinOp::Or
+            } else if self.eat(&Tok::Xor) {
+                BinOp::Xor
+            } else {
+                break;
+            };
             let b = self.and_expr()?;
-            a = Expr::Binary(BinOp::Or, Box::new(a), Box::new(b));
+            a = Expr::Binary(op, Box::new(a), Box::new(b));
         }
         Ok(a)
     }

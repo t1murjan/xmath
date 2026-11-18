@@ -37,6 +37,20 @@ fn feed_keys(ctx: &Context, ed: &mut Ed) -> Option<bool> {
             Event::Key { key, pressed: true, modifiers: m, .. } => {
                 if m.command {
                     match key {
+                        // Boolean toolbar
+                        Key::Num1 | Key::Exclamationmark if m.shift => ed.type_char('¬'),
+                        Key::Num7 if m.shift => ed.type_char('∧'),
+                        Key::Num6 if m.shift => ed.type_char('∨'),
+                        Key::Num5 if m.shift => ed.type_char('⊕'),
+                        // Programming toolbar (Mathcad 15 keys)
+                        Key::CloseBracket | Key::CloseCurlyBracket if m.shift => ed.otherwise_stmt(),
+                        Key::CloseBracket => ed.while_stmt(),
+                        Key::OpenBracket | Key::OpenCurlyBracket if m.shift => ed.jump_stmt(editor::P_BREAK),
+                        Key::OpenBracket => ed.jump_stmt(editor::P_CONTINUE),
+                        Key::Quote if m.shift => ed.for_stmt(),
+                        Key::Quote => ed.on_error(),
+                        Key::Pipe => ed.return_stmt(),
+                        Key::Backslash if m.shift => ed.return_stmt(),
                         Key::Z if m.shift => ed.type_char('∞'),
                         Key::Z => {
                             ed.undo();

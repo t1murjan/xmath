@@ -127,6 +127,13 @@ cargo build --release
 | `break`, `continue`, `return expr` | управление циклом / досрочный выход |
 | `expr1 on error expr2` | значение `expr2`, если вычисление `expr1` завершилось ошибкой |
 
+В программе формулы набираются в 2D, как в Mathcad 15 (палитра «Программирование» делает то же):
+`]` — добавить строку, `{` — локальное определение `←`, `}` — `if`, Ctrl+Shift+] — `otherwise`,
+Ctrl+Shift+' — `for`, Ctrl+] — `while`, Ctrl+Shift+[ — `break`, Ctrl+[ — `continue`,
+Ctrl+Shift+\ — `return`, Ctrl+' — `on error`. Булевы операторы: Ctrl+= — `=` (равно),
+Ctrl+3 — `≠`, Ctrl+9 — `≤`, Ctrl+0 — `≥`, Ctrl+Shift+1 — `¬`, Ctrl+Shift+7 — `∧`, Ctrl+Shift+6 — `∨`,
+Ctrl+Shift+5 — `⊕` (исключающее ИЛИ).
+
 Подряд идущие `if` образуют цепочку: `otherwise` выполняется, только если не сработал ни один предыдущий `if` цепочки
 (`{ a if x < 0; if x >= 0 and x < 5 { b } otherwise { c } }`).
 

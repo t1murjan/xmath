@@ -198,6 +198,9 @@ impl Evaluator {
                     BinOp::Or => {
                         return Ok(Value::bool(self.eval(a, sc)?.truthy()? || self.eval(b, sc)?.truthy()?));
                     }
+                    BinOp::Xor => {
+                        return Ok(Value::bool(self.eval(a, sc)?.truthy()? != self.eval(b, sc)?.truthy()?));
+                    }
                     _ => {}
                 }
                 // `x °C` / `x °F` (units.rs: offset units) is an absolute temperature;
@@ -362,7 +365,7 @@ impl Evaluator {
                     _ => builtins::call("factorial", &[x[0].clone()], 0).unwrap(),
                 })
             }
-            Expr::Binary(BinOp::And | BinOp::Or, ..) => self.eval(e, sc),
+            Expr::Binary(BinOp::And | BinOp::Or | BinOp::Xor, ..) => self.eval(e, sc),
             Expr::Binary(op, a, b) => {
                 let x = self.veval(a, sc)?;
                 let y = self.veval(b, sc)?;

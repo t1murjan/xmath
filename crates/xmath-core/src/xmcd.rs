@@ -735,6 +735,10 @@ fn conv_apply(cx: &mut Cx, n: Node) -> R<Expr> {
             let v = conv_all(cx, args)?;
             fold(BinOp::Or, v)
         }
+        "xor" => {
+            let v = conv_all(cx, args)?;
+            fold(BinOp::Xor, v)
+        }
         "parens" => {
             need(args, 1, "parens")?;
             conv(cx, args[0])
@@ -769,10 +773,6 @@ fn conv_apply(cx: &mut Cx, n: Node) -> R<Expr> {
         "vectorSum" => {
             need(args, 1, "vectorSum")?;
             Ok(Expr::Call("sum".into(), vec![conv(cx, args[0])?]))
-        }
-        "xor" => {
-            need(args, 2, "xor")?;
-            Ok(Expr::Call("xor".into(), vec![conv(cx, args[0])?, conv(cx, args[1])?]))
         }
         "polyroots" => {
             need(args, 1, "polyroots")?;

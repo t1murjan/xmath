@@ -200,22 +200,20 @@ pub static BOOLEAN: &[Btn] = &[
     b("¬", "Логическое НЕ  Ctrl+Shift+1", Insert("¬")),
     b("∧", "Логическое И  Ctrl+Shift+7", Insert("∧")),
     b("∨", "Логическое ИЛИ  Ctrl+Shift+6", Insert("∨")),
-    b("⊕", "Исключающее ИЛИ", Todo),
+    b("⊕", "Исключающее ИЛИ  Ctrl+Shift+5", Insert("⊕")),
 ];
 
 pub static PROGRAMMING: &[Btn] = &[
-    b("Программа", "Блок программы { ... }", Insert("{ ■ }")),
-    b("Add Line", "Добавить строку программы (;)", Insert("; ■")),
-    b("←", "Локальное присваивание", Insert(" ← ■")),
-    b("if", "Условие: if условие { ... }", Insert("if ■ { ■ }")),
-    b("otherwise", "Иначе: otherwise { ... }", Insert(" otherwise { ■ }")),
-    b("for", "Цикл for: for i ∈ 1..n { ... }", Insert("for ■ ∈ ■ { ■ }")),
-    b("while", "Цикл while: while условие { ... }", Insert("while ■ { ■ }")),
-    b("break", "Прервать цикл", Insert("break")),
-    b("continue", "Продолжить цикл", Insert("continue")),
-    b("return", "Возврат значения", Insert("return ■")),
-    b("on error", "Обработка ошибки: выражение on error значение", Insert(" on error ■")),
-    b("if()", "Функция if(условие, да, нет)", Insert("if(■, ■, ■)")),
+    b("Add Line", "Добавить строку  ]", Insert("; ■")),
+    b("←", "Локальное определение  {", Insert(" ← ■")),
+    b("if", "Условный оператор  }", Insert("if ■ { ■ }")),
+    b("otherwise", "Иначе  Ctrl+Shift+}", Insert(" otherwise { ■ }")),
+    b("for", "Цикл for  Ctrl+Shift+\"", Insert("for ■ ∈ ■ { ■ }")),
+    b("while", "Цикл while  Ctrl+]", Insert("while ■ { ■ }")),
+    b("break", "Прервать цикл  Ctrl+Shift+{", Insert("break")),
+    b("continue", "Следующая итерация цикла  Ctrl+[", Insert("continue")),
+    b("return", "Вернуть значение  Ctrl+Shift+|", Insert("return ■")),
+    b("on error", "Обработка ошибки  Ctrl+'", Insert(" on error ■")),
 ];
 
 pub static GREEK: &[Btn] = &[

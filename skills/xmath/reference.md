@@ -27,7 +27,7 @@ linear text. Everything defined above (smaller `y`) is visible below; `≡` (glo
 ## 2. Numbers, operators, constants
 
 * Numbers: `5`, `0.25`, `1.5e-3`, `2i` / `3 + 4i` (complex).
-* `+ - * / ^`, unary minus, parentheses, factorial `n!`, absolute value / magnitude `|x|`, comparisons `< > <= >= ≠` (give 1 or 0).
+* `+ - * / ^`, unary minus, parentheses, factorial `n!`, absolute value / magnitude `|x|`, comparisons `< > <= >= ≠` and the bold equality `==` (give 1 or 0), Boolean operators `¬x` (not), `a ∧ b` / `a and b`, `a ∨ b` / `a or b`, `a ⊕ b` (exclusive or).
 * Implicit multiplication: `2 y`, `5 kN`, `2(x+1)`, `3 m`. Prefer an explicit `*` when in doubt.
 * `^` is right-associative; `x^-1` works; `A^-1` is the matrix inverse.
 * Constants / built-in variables: `π` (or `pi`), `e`, `i` (imaginary unit, only if you did not redefine it as a range variable), `∞`, `g` (gravity 9.807 m/s^2), `ORIGIN` (= 0, index of the first element), `TOL` (= 0.001).

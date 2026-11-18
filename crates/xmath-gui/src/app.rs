@@ -1099,6 +1099,11 @@ impl App {
                 (Key::Num2, Action::InsertSurface),
                 (Key::Num5, Action::InsertContour),
             ] {
+                // Ctrl+Shift+digit are the Boolean operators of the math editor (egui's
+                // shortcut matching ignores Shift)
+                if i.modifiers.shift && matches!(k, Key::Num7 | Key::Num5) {
+                    continue;
+                }
                 if i.consume_shortcut(&ctrl(k)) {
                     acts.push(a);
                 }
@@ -1165,6 +1170,32 @@ impl App {
             let mut tab = false;
             let mut tab_back = false;
             ctx.input_mut(|i| {
+                // Ctrl+Shift combinations first (egui's shortcut matching ignores Shift)
+                if i.modifiers.shift && i.modifiers.command {
+                    for (k, s) in [
+                        (Key::Num1, "¬"),
+                        (Key::Exclamationmark, "¬"),
+                        (Key::Num7, "∧"),
+                        (Key::Num6, "∨"),
+                        (Key::Num5, "⊕"),
+                        (Key::CloseCurlyBracket, " otherwise { ■ }"),
+                        (Key::CloseBracket, " otherwise { ■ }"),
+                        (Key::Quote, "for ■ ∈ ■ { ■ }"),
+                        (Key::OpenCurlyBracket, "break"),
+                        (Key::OpenBracket, "break"),
+                        (Key::Pipe, "return ■"),
+                        (Key::Backslash, "return ■"),
+                    ] {
+                        if i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, k) {
+                            inserts.push(s);
+                        }
+                    }
+                }
+                for (k, s) in [(Key::CloseBracket, "while ■ { ■ }"), (Key::OpenBracket, "continue"), (Key::Quote, " on error ■")] {
+                    if i.consume_key(Modifiers::COMMAND, k) {
+                        inserts.push(s);
+                    }
+                }
                 for (k, s) in [
                     (Key::Num3, "≠"),
                     (Key::Num9, "≤"),

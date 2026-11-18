@@ -460,6 +460,7 @@ impl Exporter {
                     BinOp::Ge => "ml:greaterOrEqual",
                     BinOp::And => "ml:and",
                     BinOp::Or => "ml:or",
+                    BinOp::Xor => "ml:xor",
                 };
                 let p = op.precedence();
                 let (pa, pb) = if *op == BinOp::Pow {
