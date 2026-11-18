@@ -93,6 +93,16 @@ pub fn tool_list() -> Value {
             "inputSchema": {"type":"object","properties":{"path":path,"id":{"type":"integer"}},"required":["path","id"]}
         },
         {
+            "name": "export_pdf",
+            "description": "Render a worksheet (.xmath, or a Mathcad .xmcd) to a PDF file: formulas typeset in 2D with their results, text, plots and pictures, paginated by the page setup of the worksheet (A4 by default). Relative file names inside the worksheet (READPRN, READEXCEL, references) are resolved in the worksheet's folder; files are never written during the export. Only files with the .pdf extension may be written.",
+            "inputSchema": {"type":"object","properties":{"path":{"type":"string","description":"Worksheet to render (.xmath or .xmcd)."},"out":{"type":"string","description":"Output PDF file (must end in .pdf)."}},"required":["path","out"]}
+        },
+        {
+            "name": "export_xmcd",
+            "description": "Save a worksheet as a Mathcad 15 .xmcd file (worksheet30 / math30 XML). Plots cannot be written (Mathcad stores them in a binary format) and are replaced by a text note; such problems are reported as warnings. Only files with the .xmcd extension may be written.",
+            "inputSchema": {"type":"object","properties":{"path":{"type":"string","description":"Worksheet to convert (.xmath or .xmcd)."},"out":{"type":"string","description":"Output file (must end in .xmcd)."}},"required":["path","out"]}
+        },
+        {
             "name": "list_functions",
             "description": "List all built-in functions with one-line descriptions (trigonometry, statistics, matrices, integrate/diff/root, sum/prod, ...).",
             "inputSchema": {"type":"object","properties":{}}
@@ -120,6 +130,8 @@ pub fn call_tool(name: &str, args: &Value) -> Option<ToolResult> {
         "add_region" => add_region(a),
         "update_region" => update_region(a),
         "delete_region" => delete_region(a),
+        "export_pdf" => export_pdf(a),
+        "export_xmcd" => export_xmcd(a),
         "list_functions" => list_functions(),
         "list_units" => list_units(),
         "syntax_help" => Ok(ToolOutput { text: help::SYNTAX_HELP.to_string(), data: Value::Null }),
@@ -195,6 +207,65 @@ fn check_write_path(path: &str) -> Result<PathBuf, String> {
         return Err(format!("refusing to write '{path}': only files with the .xmath extension may be written"));
     }
     Ok(p)
+}
+
+/// Like [`load`], and also reads Mathcad `.xmcd` files.
+fn load_any(p: &Path) -> Result<Worksheet, String> {
+    let src = std::fs::read(p).map_err(|e| format!("cannot read {}: {e}", p.display()))?;
+    let src = String::from_utf8_lossy(&src);
+    if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmcd")) || src.trim_start().starts_with("<?xml") {
+        xmath_core::xmcd::import_xmcd(&src).map(|r| r.worksheet).map_err(|e| format!("{}: {e}", p.display()))
+    } else {
+        load(p)
+    }
+}
+
+fn check_out_path(path: &str, ext: &str) -> Result<PathBuf, String> {
+    if path.trim().is_empty() {
+        return Err("`out` is empty".into());
+    }
+    let p = resolve(path);
+    if !p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case(ext)) {
+        return Err(format!("refusing to write '{path}': only files with the .{ext} extension may be written by this tool"));
+    }
+    if let Some(dir) = p.parent() {
+        if !dir.as_os_str().is_empty() && !dir.exists() {
+            return Err(format!("directory {} does not exist", dir.display()));
+        }
+    }
+    Ok(p)
+}
+
+fn export_pdf(a: &Map<String, Value>) -> ToolResult {
+    let src = resolve(req_str(a, "path")?);
+    let out = check_out_path(req_str(a, "out")?, "pdf")?;
+    let ws = load_any(&src)?;
+    let dir = src.parent().filter(|d| !d.as_os_str().is_empty()).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    // reading is allowed (READPRN, references); nothing is written while evaluating
+    let env = xmath_core::EvalEnv { dir: Some(dir), allow_write: false, stack: Vec::new() };
+    let outputs = xmath_core::evaluate_worksheet_with(&ws, false, &env);
+    let title = src.file_stem().map_or_else(|| "xmath".to_string(), |s| s.to_string_lossy().into_owned());
+    let bytes = xmath_gui::print::export_pdf(&ws, &outputs, &xmath_gui::print::PdfOptions { title });
+    let pages = String::from_utf8_lossy(&bytes).matches("/Type /Page").count() - String::from_utf8_lossy(&bytes).matches("/Type /Pages").count();
+    std::fs::write(&out, &bytes).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
+    Ok(ToolOutput {
+        text: format!("wrote {} ({pages} page(s), {} bytes)", out.display(), bytes.len()),
+        data: json!({"out": out.display().to_string(), "pages": pages, "bytes": bytes.len()}),
+    })
+}
+
+fn export_xmcd(a: &Map<String, Value>) -> ToolResult {
+    let src = resolve(req_str(a, "path")?);
+    let out = check_out_path(req_str(a, "out")?, "xmcd")?;
+    let ws = load_any(&src)?;
+    let r = xmath_core::xmcd_export::export_xmcd(&ws);
+    std::fs::write(&out, &r.xml).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
+    let mut text = format!("wrote {} ({} regions)", out.display(), ws.regions.len());
+    for w in &r.warnings {
+        text.push_str(&format!("
+warning: {w}"));
+    }
+    Ok(ToolOutput { text, data: json!({"out": out.display().to_string(), "warnings": r.warnings}) })
 }
 
 fn load(p: &Path) -> Result<Worksheet, String> {
@@ -281,6 +352,11 @@ fn row(r: &Region, out: Option<&RegionOutput>) -> Row {
             obj.insert("width".into(), (*width).into());
             obj.insert("height".into(), (*height).into());
             text = format!("[{}] [image {}x{}]", r.id, width.round(), height.round());
+        }
+        RegionKind::Reference { href } => {
+            obj.insert("type".into(), "reference".into());
+            obj.insert("href".into(), href.clone().into());
+            text = format!("[{}] [reference: {href}]", r.id);
         }
         RegionKind::Plot { x, y, .. } => {
             obj.insert("type".into(), "plot".into());
@@ -432,6 +508,7 @@ fn region_height(r: &Region) -> f32 {
         RegionKind::Math { .. } => MATH_H,
         RegionKind::Text { text, .. } => MATH_H + 14.0 * (text.lines().count().max(1) - 1) as f32,
         RegionKind::Plot { height, .. } | RegionKind::Image { height, .. } => height + 10.0,
+        RegionKind::Reference { .. } => MATH_H,
     }
 }
 
@@ -535,6 +612,7 @@ fn update_region(a: &Map<String, Value>) -> ToolResult {
             }
         }
         RegionKind::Image { .. } => return Err("image regions cannot be edited; delete or move them".into()),
+        RegionKind::Reference { .. } => return Err("reference regions cannot be edited; delete or move them".into()),
         RegionKind::Plot { x, y, .. } => {
             no_extra(a, "plot", &["source", "text"])?;
             if let Some(s) = get_str(a, "x_expr")? {

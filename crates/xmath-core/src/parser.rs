@@ -762,6 +762,8 @@ fn to_target(e: Expr) -> Result<Target, String> {
             for a in args {
                 match a {
                     Expr::Var(p) => params.push(p),
+                    // `WRITEPRN("file") := M`: the file name is kept with its quotes
+                    Expr::Str(s) if crate::fileio::is_write_name(&n) => params.push(format!("\"{s}\"")),
                     other => return Err(format!("параметр функции должен быть именем, найдено '{other}'")),
                 }
             }

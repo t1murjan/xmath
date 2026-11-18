@@ -16,4 +16,5 @@ path = "src/main.rs"
 
 [dependencies]
 xmath-core.workspace = true
+xmath-gui = { path = "../xmath-gui", default-features = false }
 serde_json.workspace = true

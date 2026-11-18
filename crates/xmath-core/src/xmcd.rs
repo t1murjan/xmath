@@ -7,7 +7,7 @@
 use crate::ast::{BinOp, Expr, PStmt, Stmt, Target, UnOp};
 use crate::parser::{parse_expr, parse_statement};
 use crate::units::{self, Dim};
-use crate::worksheet::{Region, RegionKind, TextStyle, Worksheet};
+use crate::worksheet::{Paper, Region, RegionKind, TextStyle, Worksheet};
 use base64::Engine;
 use roxmltree::{Document, Node};
 use std::collections::{HashMap, HashSet};
@@ -93,6 +93,21 @@ pub fn import_xmcd(xml: &str) -> Result<ImportResult, String> {
             ws.format.exp_threshold = t;
         }
         read_text_styles(&mut cx, settings);
+        // attributes written by Mathcad 15 and by xmath's own exporter
+        if let Some(g) = settings.descendants().find(|n| n.is_element() && lname(*n) == "general") {
+            if let Some(p) = g.attribute("precision").and_then(|v| v.trim().parse::<usize>().ok()).filter(|p| *p <= 20) {
+                ws.format.precision = p;
+            }
+            if let Some(t) = g.attribute("exponential-threshold").and_then(|v| v.trim().parse::<i32>().ok()) {
+                ws.format.exp_threshold = t;
+            }
+            if let Some(t) = g.attribute("zero-threshold").and_then(|v| v.trim().parse::<i32>().ok()) {
+                ws.format.zero_threshold = t;
+            }
+        }
+        if let Some(pm) = settings.descendants().find(|n| n.is_element() && lname(*n) == "pageModel") {
+            read_page_model(&mut ws, pm);
+        }
     }
 
     if let Some(bc) = child(root, "binaryContent") {
@@ -317,6 +332,7 @@ fn convert_region(cx: &mut Cx, reg: Node, body: Node, w: Option<f32>, h: Option<
                 },
             }
         }
+        "reference" if reference_href(reg, body).is_some() => RegionKind::Reference { href: reference_href(reg, body).unwrap_or_default() },
         name @ ("picture" | "image" | "ole" | "component" | "reference") => match image_kind(cx, reg, raw) {
             Some(img) => {
                 if name != "picture" && name != "image" {
@@ -338,6 +354,40 @@ fn convert_region(cx: &mut Cx, reg: Node, body: Node, w: Option<f32>, h: Option<
             note(&format!("[Область «{other}» не импортирована]"), w)
         }
     }
+}
+
+/// Paper, orientation and margins (points) of `<pageModel>`.
+fn read_page_model(ws: &mut Worksheet, pm: Node) {
+    let pt_mm = 25.4 / 72.0;
+    let paper = match pm.attribute("paper-code").map(str::trim) {
+        Some("1") => Some(Paper::Letter),
+        Some("5") => Some(Paper::Legal),
+        Some("8") => Some(Paper::A3),
+        Some("9") => Some(Paper::A4),
+        Some("11") => Some(Paper::A5),
+        _ => None,
+    };
+    if let Some(p) = paper {
+        ws.page.paper = p;
+    }
+    ws.page.landscape = pm.attribute("orientation").is_some_and(|o| o.trim().eq_ignore_ascii_case("landscape"));
+    if let Some(m) = child(pm, "margins") {
+        let get = |n: &str| num_attr(m, n).map(|v| (v * pt_mm).clamp(0.0, 100.0));
+        if let (Some(l), Some(r), Some(t), Some(b)) = (get("left"), get("right"), get("top"), get("bottom")) {
+            ws.page.margins = [l, t, r, b];
+        }
+    }
+}
+
+/// The path of a referenced worksheet: the relative `<link href>` Mathcad writes next to the
+/// reference, otherwise the file name of the original document.
+fn reference_href(reg: Node, body: Node) -> Option<String> {
+    if let Some(h) = child(reg, "link").and_then(|l| l.attribute("href")).map(str::trim).filter(|h| !h.is_empty()) {
+        let h = h.replace('\\', "/");
+        return Some(h.strip_prefix("./").unwrap_or(&h).to_string());
+    }
+    let h = child(body, "originRef").and_then(|o| o.attribute("href")).map(str::trim).filter(|h| !h.is_empty())?;
+    h.rsplit(['\\', '/']).next().filter(|n| !n.is_empty()).map(str::to_string)
 }
 
 // ---------------------------------------------------------------------- math
@@ -478,6 +528,7 @@ fn conv_target(cx: &mut Cx, n: Node) -> R<Target> {
                 for a in args {
                     match a {
                         Expr::Var(v) => ps.push(v),
+                        Expr::Str(s) if crate::fileio::is_write_name(&name) => ps.push(format!("\"{s}\"")),
                         _ => return Err("параметры функции должны быть именами".into()),
                     }
                 }

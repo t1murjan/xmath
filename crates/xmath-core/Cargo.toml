@@ -14,3 +14,7 @@ serde_json.workspace = true
 roxmltree = "0.20"
 base64 = "0.21"
 flate2 = "1"
+calamine = "0.38.0"
+
+[dev-dependencies]
+zip = { version = "9", default-features = false }

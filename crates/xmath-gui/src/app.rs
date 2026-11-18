@@ -16,18 +16,18 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use xmath_core::{
-    evaluate_worksheet, AxisStyle, FormatOptions, LineStyle, Output, PlotFormat, Region, RegionKind, RegionOutput,
+    AxisStyle, FormatOptions, LineStyle, Output, PlotFormat, Region, RegionKind, RegionOutput,
     TraceFormat, UnitSystem, Worksheet,
 };
 
 #[path = "inplace.rs"]
 mod inplace;
+#[path = "print_ui.rs"]
+mod print_ui;
 #[path = "structural.rs"]
 mod structural;
 
 const GRID: f32 = 8.0;
-const PAGE_W: f32 = 760.0;
-const PAGE_H: f32 = 1040.0;
 const BASE_PT: f32 = 10.0;
 const LEGEND_W: f32 = 80.0;
 
@@ -84,6 +84,11 @@ pub enum Action {
     About,
     Zoom(u32),
     ZoomFitWidth,
+    PageSetup,
+    PrintPreview,
+    Print,
+    ExportPdf,
+    InsertReference,
 }
 
 pub static EXAMPLES: &[(&str, &str)] = &[
@@ -143,6 +148,10 @@ struct EvalDone {
 enum DlgKind {
     Open,
     Save,
+    /// Export to PDF.
+    Pdf,
+    /// The file of a reference region.
+    Reference,
 }
 
 /// A native file dialog running on a background thread.
@@ -249,6 +258,8 @@ pub struct App {
     reveal: Option<Rect>,
     /// The rectangle of the edited region last time it was revealed.
     last_edit_rect: Option<(u64, Rect)>,
+    /// Print preview, page setup, reference dialog.
+    print: print_ui::PrintUi,
 }
 
 impl App {
@@ -318,6 +329,7 @@ impl App {
             scroll_req: None,
             reveal: None,
             last_edit_rect: None,
+            print: Default::default(),
         };
         if let Some(st) = cc.storage.and_then(|s| s.get_string("xmath-ui")) {
             app.restore_ui(&st);
@@ -433,6 +445,10 @@ impl App {
     }
 
     fn save_to(&mut self, p: PathBuf) {
+        if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmcd")) {
+            self.save_xmcd(&p);
+            return;
+        }
         let p = if p.extension().is_none() { p.with_extension("xmath") } else { p };
         match std::fs::write(&p, self.ws.to_json()) {
             Ok(()) => {
@@ -477,7 +493,7 @@ impl App {
         if self.file_job.is_some() || self.path_dlg.is_some() {
             return;
         }
-        let name = self.doc_name().replace(':', "") + ".xmath";
+        let name = self.doc_name().replace(':', "") + if kind == DlgKind::Pdf { ".pdf" } else { ".xmath" };
         let (tx, rx) = mpsc::channel();
         let run = move || native_dialog(kind, &name);
         #[cfg(target_os = "linux")]
@@ -517,6 +533,7 @@ impl App {
             let text = match (&self.path, job.kind) {
                 (Some(p), DlgKind::Save) => p.display().to_string(),
                 (None, DlgKind::Save) => std::env::current_dir().unwrap_or_default().join(self.doc_name().replace(':', "") + ".xmath").display().to_string(),
+                (_, DlgKind::Pdf) => std::env::current_dir().unwrap_or_default().join(self.doc_name().replace(':', "") + ".pdf").display().to_string(),
                 _ => String::new(),
             };
             self.path_dlg = Some(PathDlg { kind: job.kind, text, then: job.then });
@@ -535,6 +552,8 @@ impl App {
                 self.save_to(p);
                 self.continue_after_save(ctx, then);
             }
+            DlgKind::Pdf => self.export_pdf_to(p),
+            DlgKind::Reference => self.reference_chosen(p),
         }
     }
 
@@ -643,9 +662,10 @@ impl App {
             Action::AlignAcross | Action::AlignDown => self.align(a == Action::AlignAcross),
             Action::Help => self.show_help = true,
             Action::About => self.show_about = true,
+            Action::PageSetup | Action::PrintPreview | Action::Print | Action::ExportPdf | Action::InsertReference => self.print_action(ctx, a),
             Action::Zoom(p) => self.zoom = p as f32 / 100.0,
             Action::ZoomFitWidth => {
-                let right = self.rects.values().map(|r| r.right()).fold(PAGE_W, f32::max);
+                let right = self.rects.values().map(|r| r.right()).fold(self.page_px().0, f32::max);
                 let old = self.zoom;
                 self.zoom = (((self.view_size.x - 8.0).max(200.0) / (right + 16.0)) * 100.0).floor().clamp(25.0, 400.0) / 100.0;
                 self.scroll_req = Some(Vec2::new(0.0, self.scroll_off.y / old * self.zoom));
@@ -665,6 +685,7 @@ impl App {
                 RegionKind::Text { text, .. } => text.clone(),
                 RegionKind::Plot { x, y, .. } => format!("plot({}; {x})", y.join(", ")),
                 RegionKind::Image { .. } => "[изображение]".to_string(),
+                RegionKind::Reference { href } => format!("[ссылка: {href}]"),
             })
             .collect();
         ctx.copy_text(text.join("\n"));
@@ -947,6 +968,7 @@ impl App {
             || self.dlg_plot.is_some()
             || self.dlg_options.is_some()
             || self.path_dlg.is_some()
+            || self.print.any_open()
             || self.file_job.is_some()
             || self.confirm.is_some()
     }
@@ -963,6 +985,9 @@ impl App {
         ctx.input_mut(|i| {
             if i.consume_shortcut(&ctrl_shift(Key::S)) {
                 acts.push(Action::SaveAs);
+            }
+            if !i.modifiers.shift && i.consume_shortcut(&ctrl(Key::P)) {
+                acts.push(Action::Print);
             }
             for (k, a) in [
                 (Key::N, Action::New),
@@ -1235,7 +1260,15 @@ fn classic_scrollbars(ui: &mut Ui) {
 
 fn native_dialog(kind: DlgKind, name: &str) -> Option<PathBuf> {
     match kind {
-        DlgKind::Save => rfd::FileDialog::new().add_filter("Рабочий лист xmath (*.xmath)", &["xmath"]).set_file_name(name).save_file(),
+        DlgKind::Save => rfd::FileDialog::new()
+            .add_filter("Рабочий лист xmath (*.xmath)", &["xmath"])
+            .add_filter("Mathcad 15 (*.xmcd)", &["xmcd"])
+            .set_file_name(name)
+            .save_file(),
+        DlgKind::Pdf => rfd::FileDialog::new().add_filter("PDF (*.pdf)", &["pdf"]).set_file_name(name).save_file(),
+        DlgKind::Reference => rfd::FileDialog::new()
+            .add_filter("Рабочие листы (*.xmath, *.xmcd)", &["xmath", "xmcd"])
+            .pick_file(),
         DlgKind::Open => rfd::FileDialog::new()
             .add_filter("Все поддерживаемые", &["xmath", "xmcd", "txt"])
             .add_filter("Рабочий лист xmath (*.xmath)", &["xmath"])
@@ -1499,9 +1532,19 @@ impl App {
                     act = Some(Action::SaveAs);
                 }
                 ui.separator();
-                menu_item(ui, "Параметры страницы...", "", false);
-                menu_item(ui, "Предварительный просмотр", "", false);
-                menu_item(ui, "Печать...", "Ctrl+P", false);
+                if menu_item(ui, "Экспорт в PDF...", "", true) {
+                    act = Some(Action::ExportPdf);
+                }
+                ui.separator();
+                if menu_item(ui, "Параметры страницы...", "", true) {
+                    act = Some(Action::PageSetup);
+                }
+                if menu_item(ui, "Предварительный просмотр", "", true) {
+                    act = Some(Action::PrintPreview);
+                }
+                if menu_item(ui, "Печать...", "Ctrl+P", true) {
+                    act = Some(Action::Print);
+                }
                 ui.separator();
                 if menu_item(ui, "Выход", "Alt+F4", true) {
                     act = Some(Action::Exit);
@@ -1591,6 +1634,9 @@ impl App {
                     act = Some(Action::InsertUnit);
                 }
                 menu_item(ui, "Рисунок", "Ctrl+T", false);
+                if menu_item(ui, "Ссылка...", "", true) {
+                    act = Some(Action::InsertReference);
+                }
                 ui.separator();
                 if menu_item(ui, "Математическая область", "", true) {
                     act = Some(Action::InsertMath);
@@ -1679,8 +1725,12 @@ impl App {
                 act = Some(Action::Save);
             }
             separator(ui);
-            icon_button(ui, "Печать", false, icon_printer);
-            icon_button(ui, "Предварительный просмотр", false, icon_preview);
+            if icon_button(ui, "Печать (Ctrl+P)", true, icon_printer) {
+                act = Some(Action::Print);
+            }
+            if icon_button(ui, "Предварительный просмотр", true, icon_preview) {
+                act = Some(Action::PrintPreview);
+            }
             tb_button(ui, RichText::new("ABC").size(9.0).color(Color32::from_gray(160)), "Орфография", false);
             separator(ui);
             if icon_button(ui, "Вырезать (Ctrl+X)", sel, icon_cut) {
@@ -1899,7 +1949,7 @@ impl App {
             };
             ui.label(RichText::new(msg).size(12.0));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let page = (self.scroll_off.y / self.zoom / PAGE_H).floor().max(0.0) as i32 + 1;
+                let page = (self.scroll_off.y / self.zoom / self.page_px().1).floor().max(0.0) as i32 + 1;
                 status_box(ui, &format!("Страница {page}"), 84.0);
                 status_box(ui, "NUM", 40.0);
                 status_box(ui, if self.auto_calc { "АВТО" } else { "ВРУЧН." }, 56.0);
@@ -1997,11 +2047,12 @@ impl App {
             let painter = ui.painter_at(rect);
 
             // right margin and page breaks
-            let mx = origin.x + PAGE_W * z;
+            let (page_w, page_h) = self.page_px();
+            let mx = origin.x + page_w * z;
             painter.line_segment([Pos2::new(mx, rect.top()), Pos2::new(mx, rect.bottom())], Stroke::new(1.0_f32, Color32::from_gray(190)));
             let mut k = 1.0;
-            while k * PAGE_H * z < rect.height() {
-                let y = origin.y + k * PAGE_H * z;
+            while k * page_h * z < rect.height() {
+                let y = origin.y + k * page_h * z;
                 painter.extend(Shape::dashed_line(&[Pos2::new(rect.left(), y), Pos2::new(mx, y)], Stroke::new(1.0_f32, Color32::from_gray(170)), 4.0, 4.0));
                 k += 1.0;
             }
@@ -2120,7 +2171,7 @@ impl App {
                         }
                     }
                     RegionKind::Text { text, style, width, lock_width } => {
-                        let wrap = if *lock_width { (*width * z).max(20.0) } else { (PAGE_W * z - (pos.x - origin.x)).max(120.0 * z) };
+                        let wrap = if *lock_width { (*width * z).max(20.0) } else { (page_w * z - (pos.x - origin.x)).max(120.0 * z) };
                         if editing {
                             let mut t = text.clone();
                             let family = if style.bold && self.has_bold_font { FontFamily::Name("bold".into()) } else { FontFamily::Proportional };
@@ -2160,6 +2211,11 @@ impl App {
                                 painter.galley(at + Vec2::X * 0.7, g, Color32::BLACK);
                             }
                         }
+                    }
+                    RegionKind::Reference { href } => {
+                        let (galley, size) = crate::print::reference_layout(&ctx, href, z);
+                        region_rect = Rect::from_min_size(pos, size);
+                        crate::print::paint_reference(&painter, pos, &galley, size);
                     }
                     RegionKind::Image { png_base64, width, height } => {
                         region_rect = Rect::from_min_size(pos, Vec2::new(width * z, height * z));
@@ -2289,6 +2345,11 @@ impl App {
                     let resp = ui.interact(region_rect, Id::new(("region", id)), Sense::click_and_drag());
                     self.region_interaction(&ctx, id, &resp, z);
                     clicked_region |= resp.clicked();
+                    if resp.double_clicked() {
+                        if let RegionKind::Reference { href } = &region.kind {
+                            self.open_reference_dialog(Some(id), href);
+                        }
+                    }
                     if resp.hovered() {
                         if let Some(e) = &error {
                             resp.on_hover_text(RichText::new(e).color(RED));
@@ -2411,6 +2472,7 @@ impl App {
                     RegionKind::Text { .. } => ("text", 4.0),
                     RegionKind::Plot { .. } => ("plot", 0.0),
                     RegionKind::Image { .. } => ("image", 0.0),
+                    RegionKind::Reference { .. } => ("reference", 0.0),
                 };
                 out.push_str(&format!("{} {} {:.2} {:.2} {:.2} {:.2} {}\n", r.id, kind, r.x, r.y, q.width() - pad, q.height() - pad, src));
             }
@@ -2848,7 +2910,11 @@ impl App {
 
         if let Some(d) = &mut self.path_dlg {
             let mut res: Option<bool> = None;
-            let title = if d.kind == DlgKind::Open { "Открыть файл" } else { "Сохранить как" };
+            let title = match d.kind {
+                DlgKind::Open | DlgKind::Reference => "Открыть файл",
+                DlgKind::Pdf => "Экспорт в PDF",
+                DlgKind::Save => "Сохранить как",
+            };
             egui::Window::new(title).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
                 ui.label("Системный диалог недоступен. Введите путь к файлу:");
                 let r = ui.add(TextEdit::singleline(&mut d.text).desired_width(460.0));
@@ -3104,6 +3170,7 @@ impl App {
                 self.eval_gen += 1;
                 let gen = self.eval_gen;
                 let ws = self.ws.clone();
+                let env = self.eval_env();
                 let tx = self.eval_tx.clone();
                 let c = ctx.clone();
                 self.dirty = false;
@@ -3111,7 +3178,7 @@ impl App {
                 self.dirty_since = None;
                 self.evaluating = true;
                 std::thread::spawn(move || {
-                    let outputs = evaluate_worksheet(&ws);
+                    let outputs = xmath_core::evaluate_worksheet_with(&ws, false, &env);
                     let _ = tx.send(EvalDone { gen, outputs });
                     c.request_repaint();
                 });
@@ -3211,6 +3278,7 @@ impl eframe::App for App {
         });
         self.palette_windows(ctx);
         self.dialogs(ctx);
+        self.print_windows(ctx);
 
         for a in std::mem::take(&mut self.pending) {
             self.run(ctx, a);

@@ -1,0 +1,433 @@
+//! Laying out a worksheet on pages for the print preview and the PDF export.
+//!
+//! [`Sheet::layout`] turns every region into something that can be painted (a typeset formula,
+//! a text galley, a plot, a picture) in *device pixels* (worksheet pixels times `zoom`).
+//! [`Sheet::paginate`] cuts the sheet into pages like Mathcad does: at the page-break lines
+//! (multiples of the printable page height); a region that would be cut by a break moves to
+//! the next page. [`Sheet::paint_page`] paints one page with an [`egui::Painter`]: the
+//! preview window uses the painter of the application, the PDF export a headless context
+//! whose shapes are translated by [`crate::canvas::paint_shapes`].
+
+use crate::canvas::{self, Bitmap};
+use crate::mathview::{Lay, Ts, RED};
+use crate::pdf::PdfDoc;
+use crate::plot;
+use base64::Engine;
+use egui::text::{LayoutJob, TextFormat};
+use egui::{Align2, Color32, Context, FontFamily, FontId, Painter, Pos2, Rect, Stroke, TextureHandle, TextureOptions, Vec2};
+use std::collections::HashMap;
+use std::sync::Arc;
+use xmath_core::worksheet::MM_TO_PX;
+use xmath_core::{Output, PageSetup, PlotData, PlotFormat, RegionKind, RegionOutput, Worksheet};
+
+pub const BASE_PT: f32 = 10.0;
+pub const LEGEND_W: f32 = 80.0;
+
+/// Points to worksheet pixels at `zoom`.
+pub fn px(pt: f32, zoom: f32) -> f32 {
+    pt * 4.0 / 3.0 * zoom
+}
+
+pub enum Item {
+    Math { lay: Lay },
+    Text { galley: Arc<egui::Galley>, fake_bold: bool },
+    Image { bitmap: Arc<Bitmap>, texture: Option<TextureHandle> },
+    Plot(Box<PlotItem>),
+    /// A small grey box (reference to another worksheet).
+    Note { galley: Arc<egui::Galley> },
+}
+
+pub struct PlotItem {
+    pub plot_rect: Rect,
+    pub data: PlotData,
+    pub limits: [Option<f64>; 4],
+    pub fmt: PlotFormat,
+    pub y_labels: Vec<String>,
+    pub x_label: String,
+    pub x_grey: bool,
+    pub legend_w: f32,
+    pub fs: f32,
+}
+
+/// A laid-out region; `rect` is its place on the sheet.
+pub struct Placed {
+    pub rect: Rect,
+    pub item: Item,
+}
+
+pub struct Sheet {
+    pub zoom: f32,
+    pub setup: PageSetup,
+    pub has_bold: bool,
+    pub items: Vec<Placed>,
+    /// Start of every page on the sheet (device pixels); one more entry marks the end.
+    pub breaks: Vec<f32>,
+}
+
+/// Wrapped text of a text region.
+pub fn text_galley(ctx: &Context, text: &str, style: &xmath_core::worksheet::TextStyle, wrap: f32, zoom: f32, has_bold: bool) -> Arc<egui::Galley> {
+    let size = px(style.size, zoom);
+    let family = if style.bold && has_bold { FontFamily::Name("bold".into()) } else { FontFamily::Proportional };
+    let mut job = LayoutJob::default();
+    job.wrap.max_width = wrap;
+    job.append(
+        if text.is_empty() { " " } else { text },
+        0.0,
+        TextFormat {
+            font_id: FontId::new(size, family),
+            color: Color32::BLACK,
+            italics: style.italic,
+            underline: if style.underline { Stroke::new(1.0_f32, Color32::BLACK) } else { Stroke::NONE },
+            ..Default::default()
+        },
+    );
+    ctx.fonts(|f| f.layout_job(job))
+}
+
+/// The grey box shown for a reference region: its galley and size.
+pub fn reference_layout(ctx: &Context, href: &str, zoom: f32) -> (Arc<egui::Galley>, Vec2) {
+    let fs = px(BASE_PT, zoom);
+    let galley = ctx.fonts(|f| f.layout_no_wrap(format!("Ссылка: {href}"), FontId::proportional(fs * 0.95), Color32::from_gray(70)));
+    let size = galley.size() + Vec2::new(fs, fs * 0.5);
+    (galley, size)
+}
+
+/// Paints the reference box with its top-left corner at `pos`.
+pub fn paint_reference(painter: &Painter, pos: Pos2, galley: &Arc<egui::Galley>, size: Vec2) {
+    let r = Rect::from_min_size(pos, size);
+    painter.rect_filled(r, 0.0, Color32::from_gray(238));
+    painter.rect_stroke(r, 0.0, Stroke::new(1.0_f32, Color32::from_gray(150)), egui::StrokeKind::Inside);
+    painter.galley(pos + Vec2::new(size.x - galley.size().x, size.y - galley.size().y) * 0.5, galley.clone(), Color32::from_gray(70));
+}
+
+/// Draws the region of a plot like the canvas does.
+fn paint_plot(painter: &Painter, pos: Pos2, p: &PlotItem) {
+    let view = plot::View { x_min: p.limits[0], x_max: p.limits[1], y_min: p.limits[2], y_max: p.limits[3], fmt: &p.fmt };
+    let plot_rect = p.plot_rect.translate(pos.to_vec2());
+    let fs = p.fs;
+    plot::paint(painter, plot_rect, &p.data, &view, fs);
+    let label_row = plot_rect.bottom() + fs * 0.4;
+    let n = p.y_labels.len().max(1) as f32;
+    let mut ly = plot_rect.center().y - n * fs * 1.2;
+    for (i, label) in p.y_labels.iter().enumerate() {
+        let l = if label.is_empty() { "■" } else { label.as_str() };
+        let r = painter.text(Pos2::new(pos.x + p.legend_w - 8.0, ly), Align2::RIGHT_TOP, l, FontId::proportional(fs), Color32::BLACK);
+        let (lc, ls, lw) = plot::trace_style(i, &p.fmt);
+        plot::sample(painter, Pos2::new(r.left(), r.bottom() + 3.0), Pos2::new(r.right().max(r.left() + 24.0), r.bottom() + 3.0), lc, ls, lw);
+        ly += fs * 2.4;
+    }
+    let color = if p.x_grey { Color32::GRAY } else { Color32::BLACK };
+    painter.text(Pos2::new(plot_rect.center().x, label_row), Align2::CENTER_TOP, &p.x_label, FontId::proportional(fs), color);
+    let mut y = label_row + fs * 1.6;
+    for e in &p.data.errors {
+        painter.text(Pos2::new(plot_rect.left(), y), Align2::LEFT_TOP, e, FontId::proportional(fs * 0.85), RED);
+        y += fs * 1.2;
+    }
+}
+
+impl Sheet {
+    /// Lays out all regions of `ws` (with the results in `outputs`) at `zoom`. `ctx` must have
+    /// its fonts available (inside `Context::run`, or in the application's update).
+    pub fn layout(ctx: &Context, ws: &Worksheet, outputs: &HashMap<u64, RegionOutput>, zoom: f32, has_bold: bool) -> Sheet {
+        let setup = ws.page.clone();
+        let (page_w, _) = setup.printable_px();
+        let fs = px(BASE_PT, zoom);
+        let mut items = Vec::new();
+        for region in &ws.regions {
+            let pos = Pos2::new(region.x * zoom, region.y * zoom);
+            let out = outputs.get(&region.id);
+            match &region.kind {
+                RegionKind::Math { source } => {
+                    let (lay, _) = math_layout(ctx, out, source, fs);
+                    let rect = Rect::from_min_size(pos, Vec2::new(lay.w + 4.0, lay.h() + 6.0));
+                    // the formula is drawn with its baseline at `asc + 3`
+                    let mut lay = lay;
+                    lay.boxes.clear();
+                    items.push(Placed { rect, item: Item::Math { lay } });
+                }
+                RegionKind::Text { text, style, width, lock_width } => {
+                    let wrap = if *lock_width { (*width * zoom).max(20.0) } else { (page_w * zoom - pos.x).max(120.0 * zoom) };
+                    let galley = text_galley(ctx, text, style, wrap, zoom, has_bold);
+                    let rect = Rect::from_min_size(pos, galley.size() + Vec2::splat(4.0));
+                    items.push(Placed { rect, item: Item::Text { galley, fake_bold: style.bold && !has_bold } });
+                }
+                RegionKind::Image { png_base64, width, height } => {
+                    let rect = Rect::from_min_size(pos, Vec2::new(width * zoom, height * zoom));
+                    if let Some(bitmap) = decode_bitmap(png_base64) {
+                        let image = egui::ColorImage::from_rgba_unmultiplied([bitmap.width as usize, bitmap.height as usize], &bitmap.rgba);
+                        let texture = Some(ctx.load_texture(format!("print-{}", region.id), image, TextureOptions::LINEAR));
+                        items.push(Placed { rect, item: Item::Image { bitmap: Arc::new(bitmap), texture } });
+                    } else {
+                        items.push(Placed { rect, item: Item::Image { bitmap: Arc::new(Bitmap { width: 0, height: 0, rgba: Vec::new() }), texture: None } });
+                    }
+                }
+                RegionKind::Plot { x, y, width, height, x_min, x_max, y_min, y_max, fmt, .. } => {
+                    let legend_w = LEGEND_W * zoom;
+                    let plot_rect = Rect::from_min_size(
+                        Pos2::new(legend_w, 0.0),
+                        Vec2::new((width * zoom - legend_w).max(60.0), (height * zoom - fs * 2.0).max(40.0)),
+                    );
+                    let data = match out.map(|o| &o.output) {
+                        Some(Output::Plot(d)) => d.clone(),
+                        _ => Default::default(),
+                    };
+                    let (x_label, x_grey) = match (x.is_empty(), &data.x_var) {
+                        (false, _) => (x.clone(), false),
+                        (true, Some(v)) => (v.clone(), true),
+                        (true, None) => ("■".to_string(), false),
+                    };
+                    let mut bottom = plot_rect.bottom() + fs * 0.4 + fs * 1.6;
+                    bottom += data.errors.len() as f32 * fs * 1.2;
+                    let rect = Rect::from_min_max(pos, pos + Vec2::new(plot_rect.right(), bottom));
+                    items.push(Placed {
+                        rect,
+                        item: Item::Plot(Box::new(PlotItem {
+                            plot_rect,
+                            data,
+                            limits: [*x_min, *x_max, *y_min, *y_max],
+                            fmt: fmt.clone(),
+                            y_labels: y.clone(),
+                            x_label,
+                            x_grey,
+                            legend_w,
+                            fs,
+                        })),
+                    });
+                }
+                RegionKind::Reference { href } => {
+                    let (galley, size) = reference_layout(ctx, href, zoom);
+                    items.push(Placed { rect: Rect::from_min_size(pos, size), item: Item::Note { galley } });
+                }
+            }
+        }
+        let mut sheet = Sheet { zoom, setup, has_bold, items, breaks: Vec::new() };
+        sheet.paginate();
+        sheet
+    }
+
+    /// Height of the printable area of a page in device pixels.
+    pub fn page_h(&self) -> f32 {
+        self.setup.printable_px().1 * self.zoom
+    }
+
+    pub fn page_w(&self) -> f32 {
+        self.setup.printable_px().0 * self.zoom
+    }
+
+    /// Decides where the pages begin. A page is at most one printable height; a region cut by
+    /// a page break (and small enough for a page) moves to the next page.
+    fn paginate(&mut self) {
+        let ph = self.page_h();
+        let bottom = self.items.iter().map(|i| i.rect.bottom()).fold(0.0f32, f32::max);
+        let mut starts = vec![0.0f32];
+        let mut start = 0.0f32;
+        let mut guard = 0;
+        while start + ph < bottom - 0.5 && guard < 10_000 {
+            guard += 1;
+            let mut limit = start + ph;
+            // pull the break up above regions that it would cut
+            loop {
+                let cut = self
+                    .items
+                    .iter()
+                    .filter(|i| i.rect.top() > start + 0.5 && i.rect.top() < limit - 0.5 && i.rect.bottom() > limit + 0.5 && i.rect.height() <= ph)
+                    .map(|i| i.rect.top())
+                    .fold(f32::INFINITY, f32::min);
+                if cut.is_finite() && cut < limit {
+                    limit = cut;
+                } else {
+                    break;
+                }
+            }
+            starts.push(limit);
+            start = limit;
+        }
+        self.breaks = starts;
+    }
+
+    pub fn page_count(&self) -> usize {
+        self.breaks.len().max(1)
+    }
+
+    /// Vertical extent of page `k` on the sheet (device pixels): from its start to the start
+    /// of the next page, at most one printable height.
+    pub fn page_range(&self, k: usize) -> (f32, f32) {
+        let k = k.min(self.breaks.len() - 1);
+        let y0 = self.breaks[k];
+        let full = y0 + self.page_h();
+        (y0, self.breaks.get(k + 1).copied().unwrap_or(full).min(full))
+    }
+
+    /// Items that appear on page `k` (those of a taller region continue on the next page).
+    fn on_page(&self, k: usize) -> impl Iterator<Item = &Placed> {
+        let (y0, end) = self.page_range(k);
+        self.items.iter().filter(move |i| i.rect.bottom() > y0 && i.rect.top() < end)
+    }
+
+    /// Paints page `k`; `origin` is where the top-left corner of the printable area goes and
+    /// the painter's clip rectangle should already limit drawing to that area.
+    pub fn paint_page(&self, painter: &Painter, k: usize, origin: Pos2) {
+        let (y0, _) = self.page_range(k);
+        let o = origin - Vec2::new(0.0, y0);
+        for p in self.on_page(k) {
+            let pos = p.rect.min + o.to_vec2();
+            match &p.item {
+                Item::Math { lay } => {
+                    lay.paint(painter, pos + Vec2::new(2.0, 3.0 + lay.asc));
+                }
+                Item::Text { galley, fake_bold } => {
+                    let at = pos + Vec2::splat(2.0);
+                    painter.galley(at, galley.clone(), Color32::BLACK);
+                    if *fake_bold {
+                        painter.galley(at + Vec2::X * 0.7 * self.zoom, galley.clone(), Color32::BLACK);
+                    }
+                }
+                Item::Image { bitmap, texture } => match texture {
+                    Some(t) if bitmap.width > 0 => {
+                        painter.image(t.id(), Rect::from_min_size(pos, p.rect.size()), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                    }
+                    _ => {
+                        let r = Rect::from_min_size(pos, p.rect.size());
+                        painter.rect_stroke(r, 0.0, Stroke::new(1.0_f32, Color32::GRAY), egui::StrokeKind::Inside);
+                    }
+                },
+                Item::Plot(pl) => paint_plot(painter, pos, pl),
+                Item::Note { galley } => paint_reference(painter, pos, galley, p.rect.size()),
+            }
+        }
+    }
+
+    /// Pictures on page `k` with their place on the paper (for [`canvas::Canvas::image`]),
+    /// `origin` as in [`Sheet::paint_page`].
+    pub fn page_images(&self, k: usize, origin: Pos2) -> Vec<([f32; 4], Arc<Bitmap>)> {
+        let (y0, _) = self.page_range(k);
+        let o = origin - Vec2::new(0.0, y0);
+        self.on_page(k)
+            .filter_map(|p| match &p.item {
+                Item::Image { bitmap, .. } if bitmap.width > 0 => {
+                    let r = p.rect.translate(o.to_vec2());
+                    Some(([r.min.x, r.min.y, r.max.x, r.max.y], bitmap.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+fn decode_bitmap(b64: &str) -> Option<Bitmap> {
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64.as_bytes()).ok()?;
+    let img = ::image::load_from_memory(&bytes).ok()?.to_rgba8();
+    Some(Bitmap { width: img.width(), height: img.height(), rgba: img.into_raw() })
+}
+
+fn math_layout(ctx: &Context, out: Option<&RegionOutput>, source: &str, fs: f32) -> (Lay, Option<String>) {
+    ctx.fonts(|f| {
+        let mut ts = Ts::new(f);
+        let err = out.and_then(|o| o.error());
+        match out.and_then(|o| o.stmt.clone()) {
+            Some(Ok(stmt)) => {
+                if err.is_some() {
+                    ts.color = RED;
+                }
+                let result = match out.map(|o| &o.output) {
+                    Some(Output::Value { view, unit }) => Some((view, unit.as_ref())),
+                    _ => None,
+                };
+                (ts.statement(&stmt, result, fs), err)
+            }
+            _ => match xmath_core::parse_statement(source) {
+                Ok(stmt) => (ts.statement(&stmt, None, fs), err),
+                Err(e) => (ts.text_c(source, fs, RED), Some(e.msg)),
+            },
+        }
+    })
+}
+
+// ------------------------------------------------------------------ PDF export
+
+/// Options of [`export_pdf`].
+pub struct PdfOptions {
+    pub title: String,
+}
+
+/// Renders the worksheet to PDF bytes: every page of the sheet becomes a PDF page of the
+/// paper size from the page setup. Formulas, text and plots are vector graphics; text is real
+/// (embedded fonts). `outputs` are the evaluation results of `ws`.
+pub fn export_pdf(ws: &Worksheet, outputs: &HashMap<u64, RegionOutput>, opts: &PdfOptions) -> Vec<u8> {
+    let (defs, has_bold) = crate::fonts::definitions();
+    let ctx = Context::default();
+    ctx.set_fonts(defs.clone());
+    // a fine pixel grid keeps the glyph positions precise
+    ctx.set_pixels_per_point(4.0);
+    // the first pass makes the fonts available
+    let _ = ctx.run(Default::default(), |_| {});
+
+    let setup = ws.page.clone();
+    let (pw_mm, ph_mm) = setup.paper_mm();
+    let (paper_w, paper_h) = (pw_mm * MM_TO_PX, ph_mm * MM_TO_PX);
+    let (ml, mt) = (setup.margins[0] * MM_TO_PX, setup.margins[1] * MM_TO_PX);
+    let (_, ch) = setup.printable_px();
+
+    let mut doc = PdfDoc::new(defs, &opts.title);
+    let mut sheet: Option<Sheet> = None;
+    let _ = ctx.run(Default::default(), |ctx| {
+        sheet = Some(Sheet::layout(ctx, ws, outputs, 1.0, has_bold));
+    });
+    let sheet = sheet.expect("layout pass ran");
+    for k in 0..sheet.page_count() {
+        let out = ctx.run(Default::default(), |ctx| {
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new(("print-page", k))));
+            let (y0, y1) = sheet.page_range(k);
+            // regions may reach into the side margins; only the paper edge cuts them off
+            let clip = Rect::from_min_size(Pos2::new(0.0, mt), Vec2::new(paper_w, (y1 - y0).min(ch)));
+            sheet.paint_page(&painter.with_clip_rect(clip), k, Pos2::new(ml, mt));
+        });
+        let mut page = doc.page(paper_w, paper_h);
+        use canvas::Canvas;
+        canvas::paint_shapes(&out.shapes, &mut page, Vec2::ZERO, has_bold);
+        let (y0, y1) = sheet.page_range(k);
+        page.clip(Some([0.0, mt, paper_w, mt + (y1 - y0).min(ch)]));
+        for (r, bm) in sheet.page_images(k, Pos2::new(ml, mt)) {
+            page.image(r, &bm);
+        }
+        page.clip(None);
+        page.finish();
+    }
+    doc.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn page_count(s: &str) -> usize {
+        s.matches("/Type /Page").count() - s.matches("/Type /Pages").count()
+    }
+
+    fn pdf_of(lines: &str) -> Vec<u8> {
+        let ws = Worksheet::from_lines(lines);
+        let out = xmath_core::evaluate_worksheet(&ws);
+        export_pdf(&ws, &out, &PdfOptions { title: "test".into() })
+    }
+
+    #[test]
+    fn pdf_has_header_and_one_page() {
+        let b = pdf_of("# Заголовок\na := 3\nb := a^2 + 1/2\nb =");
+        assert!(b.starts_with(b"%PDF"));
+        let s = String::from_utf8_lossy(&b);
+        assert_eq!(page_count(&s), 1);
+    }
+
+    #[test]
+    fn long_worksheet_has_several_pages() {
+        let mut lines = String::new();
+        for i in 0..80 {
+            lines.push_str(&format!("x{i} := {i}\n"));
+        }
+        let ws = Worksheet::from_lines(&lines);
+        let out = xmath_core::evaluate_worksheet(&ws);
+        let b = export_pdf(&ws, &out, &PdfOptions { title: "t".into() });
+        let n = page_count(&String::from_utf8_lossy(&b));
+        assert!(n >= 3, "pages: {n}"); // 80 rows * 30 px = 2400 px: three printable pages
+    }
+}

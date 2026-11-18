@@ -156,7 +156,7 @@ mod tests {
         let names: Vec<&str> = r["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
         for n in [
             "evaluate", "open_worksheet", "create_worksheet", "add_region", "update_region", "delete_region",
-            "list_functions", "list_units", "syntax_help",
+            "list_functions", "list_units", "syntax_help", "export_pdf", "export_xmcd",
         ] {
             assert!(names.contains(&n), "missing {n}");
         }

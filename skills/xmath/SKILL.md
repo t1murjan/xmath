@@ -179,6 +179,13 @@ Programs are `{ stmt; stmt; ... }` expressions: `â†` assigns a local, `for i âˆ
 `stmt if cond`, `break`, `continue`, `return e`, `e1 on error e2`. The value is the last statement (or `return`).
 Details in reference.md ("Programs").
 
+## Export, PDF and files
+
+* MCP `export_pdf {path, out}` renders a worksheet to PDF (A4 by default); `export_xmcd {path, out}` writes a Mathcad 15 file (plots become text notes). CLI: `xmath-cli sheet.xmath --pdf out.pdf` / `--export-xmcd out.xmcd`.
+* File functions (paths relative to the worksheet folder): `READPRN("a.prn")`, `READFILE("a.csv","delimited")`, `READCSV`, `READEXCEL("a.xlsx","Sheet1!A1:C10")`; writing is a special definition: `WRITEPRN("out.prn") := M`, `APPENDPRN(...)`, `WRITECSV(...)`. Writes never leave the worksheet folder (no `..`); the MCP server never writes while evaluating.
+* A reference region (Insert -> Reference) evaluates another .xmath/.xmcd first and exposes its definitions below it.
+* Details: docs/export-print.md.
+
 ## Common pitfalls
 
 - `g` is gravity (9.807 m/s^2); grams are `gm`. `10 gm = 0.01 kg`.
