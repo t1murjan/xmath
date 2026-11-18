@@ -58,7 +58,7 @@ pub fn export_xmcd_with(ws: &Worksheet, opts: &ExportOptions) -> ExportResult {
         Some(o) if o.values().any(|r| r.value.is_some()) => o.clone(),
         _ => ws.evaluate_with(true, &opts.env.clone().unwrap_or_default()),
     };
-    let mut x = Exporter { warnings: Vec::new(), items: Vec::new(), outputs, renderings: &opts.renderings, rendering_scale: if opts.rendering_scale > 0.0 { opts.rendering_scale } else { 1.0 }, pending_result: None };
+    let mut x = Exporter { warnings: Vec::new(), items: Vec::new(), outputs, renderings: &opts.renderings, rendering_scale: if opts.rendering_scale > 0.0 { opts.rendering_scale } else { 1.0 }, pending_result: None, pending_sym: None };
     let mut out = String::new();
     out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n");
     out.push_str(
@@ -124,6 +124,8 @@ struct Exporter<'a> {
     rendering_scale: f32,
     /// `<result>` of the math region being written, consumed by its first `ml:eval`.
     pending_result: Option<Snapshot>,
+    /// Symbolic result of the region being written (`<ml:symResult>`).
+    pending_sym: Option<Expr>,
 }
 
 impl Exporter<'_> {
@@ -210,6 +212,10 @@ impl Exporter<'_> {
                 Ok(stmt) => {
                     let mut body = String::new();
                     self.pending_result = self.outputs.get(&r.id).and_then(|o| o.value.clone());
+                    self.pending_sym = match self.outputs.get(&r.id).map(|o| &o.output) {
+                        Some(crate::worksheet::Output::Symbolic { result, .. }) => Some(result.clone()),
+                        _ => None,
+                    };
                     let res = self.stmt(&stmt, &mut body, 4);
                     self.pending_result = None;
                     if let Err(e) = res {
@@ -475,6 +481,13 @@ impl Exporter<'_> {
                     }
                     ind(o, dd + 1);
                     o.push_str("</ml:symKeyword>\n");
+                }
+                if let Some(r) = self.pending_sym.take() {
+                    ind(o, dd + 1);
+                    o.push_str("<ml:symResult>\n");
+                    self.expr(&r, o, dd + 2)?;
+                    ind(o, dd + 1);
+                    o.push_str("</ml:symResult>\n");
                 }
                 ind(o, dd);
                 o.push_str("</ml:symEval>\n");
