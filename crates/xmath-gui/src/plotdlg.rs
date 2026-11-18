@@ -611,6 +611,8 @@ impl App {
             egui::Window::new("plot-format").title_bar(false).order(egui::Order::Foreground).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).frame(
                 egui::Frame::window(&ctx.style()).fill(BG).inner_margin(10),
             ).show(ctx, |ui| {
+                let max = ctx.screen_rect().size() - Vec2::new(40.0, 60.0);
+                egui::ScrollArea::both().max_height(max.y).max_width(max.x).auto_shrink(true).show(ui, |ui| {
                 ui.set_width(548.0);
                 dialog_visuals(ui);
                 if caption(ui, title) {
@@ -635,6 +637,7 @@ impl App {
                 if bres != Btn::None {
                     res = bres;
                 }
+                });
             });
             match res {
                 Btn::Ok => {
@@ -667,6 +670,8 @@ impl App {
             egui::Window::new("plot3d-format").title_bar(false).order(egui::Order::Foreground).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).frame(
                 egui::Frame::window(&ctx.style()).fill(BG).inner_margin(10),
             ).show(ctx, |ui| {
+                let max = ctx.screen_rect().size() - Vec2::new(40.0, 60.0);
+                egui::ScrollArea::both().max_height(max.y).max_width(max.x).auto_shrink(true).show(ui, |ui| {
                 ui.set_width(400.0);
                 dialog_visuals(ui);
                 if caption(ui, title) {
@@ -718,6 +723,7 @@ impl App {
                 if bres != Btn::None {
                     res = bres;
                 }
+                });
             });
             ctx.data_mut(|m| *m.get_temp_mut_or_default::<usize>(Id::new("plot3d-tab")) = tab);
             let apply = |app: &mut App, d: &Plot3dDlg| {

@@ -268,6 +268,10 @@ pub struct App {
     last_edit_rect: Option<(u64, Rect)>,
     /// Print preview, page setup, reference dialog.
     print: print_ui::PrintUi,
+    /// Interface scale choice (None = auto), cached auto factor, preferences dialog.
+    ui_scale: crate::uiscale::Choice,
+    ui_scale_auto: Option<f32>,
+    show_prefs: bool,
 }
 
 impl App {
@@ -340,6 +344,9 @@ impl App {
             reveal: None,
             last_edit_rect: None,
             print: Default::default(),
+            ui_scale: None,
+            ui_scale_auto: None,
+            show_prefs: false,
         };
         if let Some(st) = cc.storage.and_then(|s| s.get_string("xmath-ui")) {
             app.restore_ui(&st);
@@ -364,6 +371,7 @@ impl App {
                     self.palettes = Palette::ALL.iter().copied().filter(|p| v.split(',').any(|n| n == p.title())).collect();
                 }
                 Some(("auto", v)) => self.auto_calc = v != "0",
+                Some(("uiscale", v)) => self.ui_scale = crate::uiscale::parse(v),
                 _ => {}
             }
         }
@@ -378,7 +386,7 @@ impl App {
             }
         }
         let pal: Vec<&str> = Palette::ALL.iter().filter(|p| self.palettes.contains(p)).map(|p| p.title()).collect();
-        format!("bars:{bars};palettes:{};auto:{}", pal.join(","), self.auto_calc as u8)
+        format!("bars:{bars};palettes:{};auto:{};uiscale:{}", pal.join(","), self.auto_calc as u8, crate::uiscale::serialize(self.ui_scale))
     }
 
     // -----------------------------------------------------------------
@@ -1696,6 +1704,24 @@ impl App {
                 });
                 ui.checkbox(&mut self.bars.status, "Строка состояния");
                 ui.separator();
+                ui.menu_button("Масштаб интерфейса", |ui| {
+                    let mut choices: Vec<crate::uiscale::Choice> = vec![None];
+                    choices.extend(crate::uiscale::LEVELS.iter().map(|p| Some(*p)));
+                    for c in choices {
+                        if ui.radio(self.ui_scale == c, crate::uiscale::label(c)).clicked() {
+                            self.ui_scale = c;
+                            ui.close_menu();
+                        }
+                    }
+                    ui.separator();
+                    let eff = ctx.zoom_factor();
+                    if menu_item(ui, "Увеличить интерфейс", "", true) {
+                        self.ui_scale = crate::uiscale::step(self.ui_scale, eff, true);
+                    }
+                    if menu_item(ui, "Уменьшить интерфейс", "", true) {
+                        self.ui_scale = crate::uiscale::step(self.ui_scale, eff, false);
+                    }
+                });
                 ui.menu_button("Масштаб", |ui| {
                     for z in [50, 75, 100, 125, 150, 200] {
                         if menu_item(ui, &format!("{z}%"), "", true) {
@@ -1790,6 +1816,9 @@ impl App {
                 });
                 if menu_item(ui, "Параметры рабочего листа...", "", true) {
                     act = Some(Action::WorksheetOptions);
+                }
+                if menu_item(ui, "Параметры...", "", true) {
+                    self.show_prefs = true;
                 }
             });
             ui.menu_button("Символика", |ui| {
@@ -2991,6 +3020,24 @@ impl App {
             }
         }
 
+        if self.show_prefs {
+            let mut open = true;
+            egui::Window::new("Параметры").collapsible(false).resizable(false).open(&mut open).anchor(Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Масштаб интерфейса:");
+                    egui::ComboBox::from_id_salt("ui-scale").selected_text(crate::uiscale::label(self.ui_scale)).show_ui(ui, |ui| {
+                        let mut choices: Vec<crate::uiscale::Choice> = vec![None];
+                        choices.extend(crate::uiscale::LEVELS.iter().map(|p| Some(*p)));
+                        for c in choices {
+                            ui.selectable_value(&mut self.ui_scale, c, crate::uiscale::label(c));
+                        }
+                    });
+                });
+                ui.label(RichText::new("Не влияет на масштаб рабочего листа (Вид → Масштаб).").weak());
+            });
+            self.show_prefs = open;
+        }
+
         if let Some(d) = &mut self.dlg_options {
             let mut result: Option<bool> = None;
             egui::Window::new("Параметры рабочего листа").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
@@ -3391,6 +3438,8 @@ impl eframe::App for App {
         if !self.hint.is_empty() {
             ctx.request_repaint();
         }
+        let f = crate::uiscale::effective(ctx, self.ui_scale, &mut self.ui_scale_auto);
+        crate::uiscale::apply(ctx, f);
         self.poll_dialog(ctx);
         self.shortcuts(ctx);
         self.sheet_keys(ctx);

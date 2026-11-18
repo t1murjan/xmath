@@ -280,3 +280,5 @@ functions, ranges, matrices, numeric integrals/derivatives/roots, X-Y plots, a M
 with palettes, `.xmcd` import, and an MCP server for AI assistants.
 Install: `curl -fsSL https://raw.githubusercontent.com/t1murjan/xmath/main/install.sh | bash`
 (also supports `update` and `uninstall`). Licensed under MIT OR Apache-2.0.
+
+Масштаб всего интерфейса (меню, панели, палитры, диалоги) задаётся в «Вид → Масштаб интерфейса» (Авто, 100–300 %; также «Инструменты → Параметры…»), выбор сохраняется; переопределить на один запуск можно `XMATH_UI_SCALE=1.5 xmath` или `xmath --ui-scale 1.5`.
