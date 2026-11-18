@@ -76,6 +76,11 @@ pub enum Act {
     /// Insert text at the cursor (or start a new math region).
     Insert(&'static str),
     InsertPlot,
+    InsertPolar,
+    InsertSurface,
+    InsertContour,
+    InsertBar,
+    InsertScatter,
     MatrixDialog,
     /// Not implemented yet; shown disabled.
     Todo,
@@ -133,11 +138,11 @@ pub static CALCULATOR: &[Btn] = &[
 
 pub static GRAPH: &[Btn] = &[
     b("X-Y", "Декартов график  @", InsertPlot),
-    b("Полярн.", "Полярный график  Ctrl+7", Todo),
-    b("Поверхн.", "График поверхности  Ctrl+2", Todo),
-    b("Контур", "Контурный график  Ctrl+5", Todo),
-    b("3D бар", "3D гистограмма", Todo),
-    b("3D точ.", "3D точечный график", Todo),
+    b("Полярн.", "Полярный график  Ctrl+7", InsertPolar),
+    b("Поверхн.", "График поверхности  Ctrl+2", InsertSurface),
+    b("Контур", "Контурный график  Ctrl+5", InsertContour),
+    b("3D бар", "3D гистограмма", InsertBar),
+    b("3D точ.", "3D точечный график", InsertScatter),
     b("Вектор", "Векторное поле", Todo),
     b("Масштаб", "Масштаб", Todo),
     b("Трасс.", "Трассировка", Todo),

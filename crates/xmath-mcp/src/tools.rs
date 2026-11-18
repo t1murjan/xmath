@@ -4,7 +4,7 @@ use crate::help;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use xmath_core::{evaluate_worksheet, Output, Region, RegionKind, RegionOutput, Worksheet};
+use xmath_core::{evaluate_worksheet, Output, Plot3dKind, PlotKind, Region, RegionKind, RegionOutput, Worksheet};
 
 /// Successful tool result: human-readable text plus structured data.
 pub struct ToolOutput {
@@ -57,7 +57,8 @@ pub fn tool_list() -> Value {
                 "type":"object",
                 "properties":{
                     "path":path.clone(),
-                    "kind":{"type":"string","enum":["math","text","plot"]},
+                    "kind":{"type":"string","enum":["math","text","plot","polar_plot","surface_plot","contour_plot","scatter_plot","bar_plot"],"description":"polar_plot takes x_expr (angle) and y_exprs (radii); surface_plot / contour_plot / bar_plot take `expr` (a matrix, a function of two variables, or an expression in x and y); scatter_plot takes `expr` = `X, Y, Z`."},
+                    "expr":{"type":"string","description":"3D plots: what to plot (matrix name, function name, expression in x, y, or `X, Y, Z` vectors for scatter_plot)."},
                     "source":{"type":"string","description":"math: the single-line statement."},
                     "text":{"type":"string","description":"text: the comment text."},
                     "x_expr":{"type":"string","description":"plot: abscissa expression, normally a range variable such as `x`."},
@@ -80,6 +81,7 @@ pub fn tool_list() -> Value {
                     "source":{"type":"string"},
                     "text":{"type":"string"},
                     "x_expr":{"type":"string"},
+                    "expr":{"type":"string","description":"3D plots: what to plot."},
                     "y_exprs":{"type":"array","items":{"type":"string"}},
                     "x":{"type":"number"},
                     "y":{"type":"number"}
@@ -358,8 +360,34 @@ fn row(r: &Region, out: Option<&RegionOutput>) -> Row {
             obj.insert("href".into(), href.clone().into());
             text = format!("[{}] [reference: {href}]", r.id);
         }
-        RegionKind::Plot { x, y, .. } => {
-            obj.insert("type".into(), "plot".into());
+        RegionKind::Plot3d { kind, expr, .. } => {
+            let tname = match kind {
+                Plot3dKind::Surface => "surface_plot",
+                Plot3dKind::Contour => "contour_plot",
+                Plot3dKind::Scatter => "scatter_plot",
+                Plot3dKind::Bar => "bar_plot",
+            };
+            obj.insert("type".into(), tname.into());
+            obj.insert("expr".into(), expr.clone().into());
+            text = format!("[{}] {tname} {expr}", r.id);
+            if let Some(Output::Plot3d(d)) = out.map(|o| &o.output) {
+                let mut summary = json!({"grid": [d.nx(), d.ny()], "points": d.pts.len(), "x_range": fmt_range(d.xs.iter().copied()), "y_range": fmt_range(d.ys.iter().copied())});
+                summary["z_range"] = d.z_range().map_or(Value::Null, |(a, b)| json!([a, b]));
+                if *kind == Plot3dKind::Scatter {
+                    summary["x_range"] = fmt_range(d.pts.iter().map(|p| p[0]));
+                    summary["y_range"] = fmt_range(d.pts.iter().map(|p| p[1]));
+                }
+                text.push_str(&format!("\n    grid {}x{}, {} points, z in {}", d.nx(), d.ny(), d.pts.len(), summary["z_range"]));
+                if let Some(e) = &d.error {
+                    text.push_str(&format!("\n    PLOT ERROR: {e}"));
+                    summary["error"] = e.clone().into();
+                }
+                obj.insert("plot".into(), summary);
+            }
+        }
+        RegionKind::Plot { x, y, kind, .. } => {
+            let polar = *kind == PlotKind::Polar;
+            obj.insert("type".into(), if polar { "polar_plot" } else { "plot" }.into());
             obj.insert("x_expr".into(), x.clone().into());
             obj.insert("y_exprs".into(), json!(y));
             let mut summary = json!({"series": [], "errors": []});
@@ -378,7 +406,7 @@ fn row(r: &Region, out: Option<&RegionOutput>) -> Row {
                     .collect();
                 summary = json!({"series": series, "errors": p.errors});
             }
-            text = format!("[{}] plot {} vs {}", r.id, y.join(", "), if x.is_empty() { "(auto)" } else { x });
+            text = format!("[{}] {} {} {} {}", r.id, if polar { "polar_plot" } else { "plot" }, y.join(", "), if polar { "over angle" } else { "vs" }, if x.is_empty() { "(auto)" } else { x });
             if let Some(arr) = summary["series"].as_array() {
                 for s in arr {
                     text.push_str(&format!(
@@ -507,7 +535,7 @@ fn region_height(r: &Region) -> f32 {
     match &r.kind {
         RegionKind::Math { .. } => MATH_H,
         RegionKind::Text { text, .. } => MATH_H + 14.0 * (text.lines().count().max(1) - 1) as f32,
-        RegionKind::Plot { height, .. } | RegionKind::Image { height, .. } => height + 10.0,
+        RegionKind::Plot { height, .. } | RegionKind::Plot3d { height, .. } | RegionKind::Image { height, .. } => height + 10.0,
         RegionKind::Reference { .. } => MATH_H,
     }
 }
@@ -562,7 +590,38 @@ fn add_region(a: &Map<String, Value>) -> ToolResult {
             }
             k
         }
-        other => return Err(format!("unknown kind '{other}': use math, text or plot")),
+        "polar_plot" => {
+            no_extra(a, "polar_plot", &["source", "text", "expr"])?;
+            let y = get_str_list(a, "y_exprs")?.unwrap_or_default();
+            if y.iter().all(|s| s.trim().is_empty()) {
+                return Err("a polar plot needs `y_exprs` (radius expressions)".into());
+            }
+            let mut k = RegionKind::new_polar_plot();
+            if let RegionKind::Plot { x, y: ys, .. } = &mut k {
+                *x = get_str(a, "x_expr")?.unwrap_or("").trim().to_string();
+                *ys = y.iter().map(|s| s.trim().to_string()).collect();
+            }
+            k
+        }
+        "surface_plot" | "contour_plot" | "scatter_plot" | "bar_plot" => {
+            no_extra(a, kind_name, &["source", "text", "x_expr", "y_exprs"])?;
+            let e = single_line(req_str(a, "expr")?, "expr")?;
+            if e.trim().is_empty() {
+                return Err("`expr` is empty".into());
+            }
+            let pk = match kind_name {
+                "surface_plot" => Plot3dKind::Surface,
+                "contour_plot" => Plot3dKind::Contour,
+                "scatter_plot" => Plot3dKind::Scatter,
+                _ => Plot3dKind::Bar,
+            };
+            let mut k = RegionKind::new_plot3d(pk);
+            if let RegionKind::Plot3d { expr, .. } = &mut k {
+                *expr = e.trim().to_string();
+            }
+            k
+        }
+        other => return Err(format!("unknown kind '{other}': use math, text, plot, polar_plot, surface_plot, contour_plot, scatter_plot or bar_plot")),
     };
     let mut ws = load(&p)?;
     let after = get_id(a, "after_id")?;
@@ -612,9 +671,15 @@ fn update_region(a: &Map<String, Value>) -> ToolResult {
             }
         }
         RegionKind::Image { .. } => return Err("image regions cannot be edited; delete or move them".into()),
+        RegionKind::Plot3d { expr, .. } => {
+            no_extra(a, "3d plot", &["source", "text", "x_expr", "y_exprs"])?;
+            if let Some(s) = get_str(a, "expr")? {
+                *expr = single_line(s, "expr")?.trim().to_string();
+            }
+        }
         RegionKind::Reference { .. } => return Err("reference regions cannot be edited; delete or move them".into()),
         RegionKind::Plot { x, y, .. } => {
-            no_extra(a, "plot", &["source", "text"])?;
+            no_extra(a, "plot", &["source", "text", "expr"])?;
             if let Some(s) = get_str(a, "x_expr")? {
                 *x = s.trim().to_string();
             }

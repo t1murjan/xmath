@@ -24,7 +24,7 @@ fn plot_format_roundtrip() {
         fmt.grid = false;
         fmt.axes = AxisStyle::Boxed;
         fmt.log_y = true;
-        fmt.traces.push(TraceFormat { color: Some([1, 2, 3]), line: Some(LineStyle::Dash), width: Some(3.0) });
+        fmt.traces.push(TraceFormat { color: Some([1, 2, 3]), line: Some(LineStyle::Dash), width: Some(3.0), ..Default::default() });
     }
     ws.regions.push(xmath_core::Region::new(1, 0.0, 0.0, k));
     let back = Worksheet::from_json(&ws.to_json()).unwrap();

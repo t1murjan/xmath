@@ -202,12 +202,25 @@ impl Exporter {
                     pt(*height)
                 );
             }
-            RegionKind::Plot { x, y, width, height, .. } => {
+            RegionKind::Plot3d { kind, expr, width, .. } => {
+                self.warnings.push(format!(
+                    "область {}: {} не может быть записан в .xmcd (бинарный формат Mathcad); вместо него записан текст",
+                    r.id,
+                    kind.title()
+                ));
+                let what = format!("[{}: {}]", kind.title(), expr);
+                self.text_region(r, &what, &TextStyle::default(), *width, true, out);
+            }
+            RegionKind::Plot { x, y, width, height, kind, .. } => {
                 self.warnings.push(format!(
                     "область {}: график не может быть записан в .xmcd (бинарный формат Mathcad); вместо него записан текст",
                     r.id
                 ));
-                let what = format!("[График: {} от {}]", y.join(", "), if x.is_empty() { "x" } else { x });
+                let what = if *kind == crate::worksheet::PlotKind::Polar {
+                    format!("[Полярный график: r = {} от θ = {}]", y.join(", "), if x.is_empty() { "θ" } else { x })
+                } else {
+                    format!("[График: {} от {}]", y.join(", "), if x.is_empty() { "x" } else { x })
+                };
                 self.text_region(r, &what, &TextStyle::default(), *width, true, out);
                 let _ = height;
             }

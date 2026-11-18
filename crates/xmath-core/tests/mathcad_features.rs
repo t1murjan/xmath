@@ -147,6 +147,7 @@ fn source(ws: &Worksheet, id: u64) -> String {
         RegionKind::Text { text, .. } => format!("TEXT:{text}"),
         RegionKind::Plot { x, y, .. } => format!("PLOT:{x}|{}", y.join("|")),
         RegionKind::Image { .. } => "IMAGE".to_string(),
+        RegionKind::Plot3d { expr, .. } => format!("PLOT3D:{expr}"),
         RegionKind::Reference { href } => format!("REF:{href}"),
     }
 }

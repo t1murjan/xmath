@@ -247,6 +247,19 @@ mod tests {
         assert_eq!(plot["plot"]["series"][0]["points"], 5);
         assert_eq!(plot["plot"]["series"][0]["y_range"], json!([0.0, 4.0]));
 
+        // polar and 3D plots
+        let r = call(&mut st, "add_region", json!({"path": p, "kind": "polar_plot", "x_expr": "x", "y_exprs": ["1 + cos(x)"]}));
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let r = call(&mut st, "add_region", json!({"path": p, "kind": "surface_plot", "expr": "sin(a)*cos(b)"}));
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let regs = r["result"]["structuredContent"]["regions"].as_array().unwrap().clone();
+        assert!(regs.iter().any(|r| r["type"] == "polar_plot" && r["plot"]["series"][0]["points"] == 5));
+        let s = regs.iter().find(|r| r["type"] == "surface_plot").unwrap();
+        assert_eq!(s["plot"]["grid"], json!([25, 25]));
+        assert!(s["plot"]["z_range"][0].as_f64().unwrap() < -0.9);
+        let r = call(&mut st, "add_region", json!({"path": p, "kind": "surface_plot"}));
+        assert_eq!(r["result"]["isError"], true);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

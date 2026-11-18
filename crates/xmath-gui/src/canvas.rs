@@ -45,6 +45,8 @@ pub struct TextRun {
     pub italic: bool,
     /// Draw twice, shifted by a fraction of the size (a bold face that the system lacks).
     pub fake_bold: bool,
+    /// Rotation of the baseline in radians (clockwise on the y-down page; 0 is horizontal).
+    pub angle: f32,
     pub glyphs: Vec<GlyphPos>,
 }
 
@@ -216,11 +218,11 @@ fn paint_shape(shape: &Shape, canvas: &mut dyn Canvas, o: Vec2, has_bold: bool) 
 }
 
 fn paint_text(t: &TextShape, canvas: &mut dyn Canvas, o: Vec2, has_bold: bool) {
-    if t.angle != 0.0 {
-        return;
-    }
     let job = &t.galley.job;
     let org = t.pos + o;
+    let (sin, cos) = t.angle.sin_cos();
+    // glyph positions are laid out horizontally from `org` and rotated about it
+    let place = |gx: f32, gy: f32| -> (f32, f32) { (org.x + gx * cos - gy * sin, org.y + gx * sin + gy * cos) };
     for row in &t.galley.rows {
         // consecutive glyphs of one section form a run
         let mut i = 0;
@@ -239,7 +241,10 @@ fn paint_text(t: &TextShape, canvas: &mut dyn Canvas, o: Vec2, has_bold: bool) {
             let glyphs: Vec<GlyphPos> = row.glyphs[i..j]
                 .iter()
                 .filter(|g| !g.chr.is_control())
-                .map(|g| GlyphPos { ch: g.chr, x: org.x + g.pos.x, y: org.y + g.pos.y })
+                .map(|g| {
+                    let (x, y) = place(g.pos.x, g.pos.y);
+                    GlyphPos { ch: g.chr, x, y }
+                })
                 .collect();
             let bold_fam = matches!(&f.font_id.family, FontFamily::Name(n) if &**n == "bold");
             if !glyphs.is_empty() && color.a() > 0 {
@@ -249,6 +254,7 @@ fn paint_text(t: &TextShape, canvas: &mut dyn Canvas, o: Vec2, has_bold: bool) {
                     color: Rgba::from_color32(color),
                     italic: f.italics,
                     fake_bold: bold_fam && !has_bold,
+                    angle: t.angle,
                     glyphs,
                 });
             }
@@ -260,7 +266,7 @@ fn paint_text(t: &TextShape, canvas: &mut dyn Canvas, o: Vec2, has_bold: bool) {
                         0 => first.pos.y - first.font_ascent + first.line_height,
                         _ => first.pos.y - first.font_ascent + first.line_height / 2.0,
                     };
-                    canvas.line((org.x + first.pos.x, org.y + y), (org.x + last.pos.x + last.advance_width, org.y + y), stroke.width, Rgba::from_color32(stroke.color), None);
+                    canvas.line(place(first.pos.x, y), place(last.pos.x + last.advance_width, y), stroke.width, Rgba::from_color32(stroke.color), None);
                 }
             }
             i = j;

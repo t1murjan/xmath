@@ -195,12 +195,27 @@ fn main() -> ExitCode {
             }
             RegionKind::Image { width, height, .. } => println!("[изображение {}×{}]", width.round(), height.round()),
             RegionKind::Reference { href } => println!("[ссылка: {href}]"),
-            RegionKind::Plot { x, y, .. } => {
+            RegionKind::Plot { x, y, kind, .. } => {
                 let n = match &out.output {
                     Output::Plot(p) => p.series.len(),
                     _ => 0,
                 };
-                println!("[plot {} vs {x}: {n} series]", y.join(", "));
+                if *kind == xmath_core::PlotKind::Polar {
+                    println!("[полярный график r = {} по θ = {x}: {n} кривых]", y.join(", "));
+                } else {
+                    println!("[plot {} vs {x}: {n} series]", y.join(", "));
+                }
+            }
+            RegionKind::Plot3d { kind, expr, .. } => {
+                let info = match &out.output {
+                    Output::Plot3d(d) if kind == &xmath_core::Plot3dKind::Scatter => format!("{} точек", d.pts.len()),
+                    Output::Plot3d(d) => match d.z_range() {
+                        Some((a, b)) => format!("сетка {}×{}, z от {a:.4} до {b:.4}", d.nx(), d.ny()),
+                        None => format!("сетка {}×{}", d.nx(), d.ny()),
+                    },
+                    _ => String::new(),
+                };
+                println!("[{} {expr}: {info}]", kind.title());
             }
         }
         if let Some(e) = out.error() {

@@ -159,9 +159,27 @@ Create it with `add_region` kind `plot`: `x_expr: "x"`, `y_exprs: ["sin(x)", "x^
 Define the range above the plot (`x := 0, 0.1..6.28`). If `x` is undefined, a quick-plot over -10..10 is used.
 The server's result describes each series (label, point count, x/y range) — it cannot render images.
 
+Other plot kinds (all through `add_region`; `open_worksheet` reports them with `type` and data ranges):
+
+| `kind` | arguments | what is drawn |
+|--------|-----------|---------------|
+| `polar_plot` | `x_expr` = angle θ (range variable; empty: 0..2π), `y_exprs` = radii | polar curves, angles in degrees, radius rings; negative radius is drawn on the opposite side |
+| `surface_plot` | `expr` | surface of a matrix `M` (rows = x index, columns = y index), of a function name `f` of two variables, or of an expression in `x`, `y` (QuickPlot over -5..5, 25x25 grid) |
+| `contour_plot` | `expr` (same as surface) | filled contours with 10 labelled level lines (marching squares) |
+| `bar_plot` | `expr` (matrix) | 3D bars |
+| `scatter_plot` | `expr` = `X, Y, Z` (three vectors) or an n×3 matrix | 3D points |
+
+`open_worksheet` regions of these kinds have `type` `polar_plot`, `surface_plot`, `contour_plot`, `bar_plot`
+or `scatter_plot`; 3D ones carry `plot: {grid: [nx, ny], points, x_range, y_range, z_range}` (or `error`).
+Axis numbers follow the worksheet result format: with the default exponential threshold 3, `0.001` is
+shown as `1×10⁻³`. Values of quantities with units are plotted in SI base units (like Mathcad 15) and the
+unit is shown in grey next to the axis (`[m]`) unless the axis has its own title.
+The GUI edits all plot options (secondary Y axis, symbols, trace types, legend, titles, number format,
+3D view angles, colour maps, contour levels) in the format dialogs; they are stored in the region's `fmt` / `view`.
+
 ## 7. File format
 
-`.xmath` is JSON: `{"version":1,"format":{...},"regions":[{"id":1,"x":20,"y":20,"type":"math","source":"L := 6 m"}, {"type":"text","text":"..."}, {"type":"plot","x":"x","y":["sin(x)"]}]}`.
+`.xmath` is JSON: `{"version":1,"format":{...},"regions":[{"id":1,"x":20,"y":20,"type":"math","source":"L := 6 m"}, {"type":"text","text":"..."}, {"type":"plot","x_expr":"x","y_exprs":["sin(x)"]}, {"type":"plot","kind":"polar","x_expr":"t","y_exprs":["1+cos(t)"]}, {"type":"plot3d","kind":"surface","expr":"sin(x)*cos(y)","view":{"azimuth":35,"elevation":30,"zoom":1}}]}`.
 Use the MCP tools or `xmath-cli` instead of hand-editing it.
 
 ## 8. Common pitfalls

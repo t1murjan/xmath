@@ -22,6 +22,7 @@ fn show(ws: &Worksheet) -> HashMap<u64, String> {
                 }
                 (RegionKind::Text { text, .. }, _) => text.split_whitespace().collect::<Vec<_>>().join(" "),
                 (RegionKind::Plot { .. }, _) => "PLOT".into(),
+                (RegionKind::Plot3d { .. }, _) => "PLOT3D".into(),
                 (RegionKind::Image { .. }, _) => "IMAGE".into(),
                 (RegionKind::Reference { href }, _) => format!("REF {href}"),
             };
@@ -44,7 +45,7 @@ fn check_example(path: &str) {
     let (a, b) = (show(&ws), show(&back));
     let mut bad = Vec::new();
     for r in &ws.regions {
-        if matches!(r.kind, RegionKind::Plot { .. }) {
+        if matches!(r.kind, RegionKind::Plot { .. } | RegionKind::Plot3d { .. }) {
             continue; // plots are not exported
         }
         if a.get(&r.id) != b.get(&r.id) {
@@ -151,9 +152,11 @@ fn text_picture_and_reference_roundtrip() {
         y_max: None,
         xs: vec![],
         fmt: Default::default(),
+        kind: Default::default(),
     }));
+    ws.regions.push(Region::new(5, 40.0, 440.0, RegionKind::new_plot3d(xmath_core::Plot3dKind::Surface)));
     let ex = export_xmcd(&ws);
-    assert_eq!(ex.warnings.len(), 1, "{:?}", ex.warnings); // the plot
+    assert_eq!(ex.warnings.len(), 2, "{:?}", ex.warnings); // the plots
     let back = import_xmcd(&ex.xml).unwrap().worksheet;
     assert_eq!(back.format.precision, 5);
     assert!(back.page.landscape);
@@ -209,7 +212,7 @@ fn corpus_roundtrip() {
         let (a, b) = (show(&ws), show(&back));
         let mut file_bad = 0;
         for r in &ws.regions {
-            if matches!(r.kind, RegionKind::Plot { .. } | RegionKind::Image { .. }) {
+            if matches!(r.kind, RegionKind::Plot { .. } | RegionKind::Plot3d { .. } | RegionKind::Image { .. }) {
                 continue;
             }
             regions += 1;

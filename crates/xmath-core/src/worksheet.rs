@@ -7,11 +7,27 @@ use crate::fileio::EvalEnv;
 use crate::format::{FormatOptions, ResultView};
 use crate::solve;
 use crate::parser::{parse_expr, parse_statement, ParseError};
+use crate::plot3d::{Plot3dData, Plot3dFormat, Plot3dKind, View3d};
 use crate::value::{EResult, Num, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub const FILE_VERSION: u32 = 1;
+
+/// Kind of a 2D plot: Cartesian X-Y or polar.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlotKind {
+    #[default]
+    Xy,
+    Polar,
+}
+
+impl PlotKind {
+    pub fn is_xy(&self) -> bool {
+        *self == PlotKind::Xy
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Worksheet {
@@ -19,6 +35,9 @@ pub struct Worksheet {
     pub version: u32,
     #[serde(default)]
     pub format: FormatOptions,
+    /// Document-level default format of new plots («Использовать в качестве значений по умолчанию»).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plot_defaults: Option<PlotFormat>,
     /// Paper, orientation and margins for printing and PDF export.
     #[serde(default, skip_serializing_if = "PageSetup::is_default")]
     pub page: PageSetup,
@@ -111,7 +130,7 @@ fn file_version() -> u32 {
 
 impl Default for Worksheet {
     fn default() -> Self {
-        Worksheet { version: FILE_VERSION, format: FormatOptions::default(), page: PageSetup::default(), regions: Vec::new() }
+        Worksheet { version: FILE_VERSION, format: FormatOptions::default(), plot_defaults: None, page: PageSetup::default(), regions: Vec::new() }
     }
 }
 
@@ -189,6 +208,24 @@ pub enum RegionKind {
         /// Grid, axis style, log scales and trace formatting.
         #[serde(default, skip_serializing_if = "PlotFormat::is_default")]
         fmt: PlotFormat,
+        /// Cartesian (`x` = abscissa) or polar (`x` = angle θ, `y` = radii).
+        #[serde(default, skip_serializing_if = "PlotKind::is_xy")]
+        kind: PlotKind,
+    },
+    /// Surface, contour, 3D bar and 3D scatter plots: one placeholder with a
+    /// matrix, a function of two variables, or `X, Y, Z` vectors.
+    Plot3d {
+        #[serde(default)]
+        kind: Plot3dKind,
+        expr: String,
+        #[serde(default = "default_plot_w")]
+        width: f32,
+        #[serde(default = "default_plot_h")]
+        height: f32,
+        #[serde(default)]
+        view: View3d,
+        #[serde(default, skip_serializing_if = "Plot3dFormat::is_default")]
+        fmt: Plot3dFormat,
     },
     /// Reference to another worksheet (Mathcad: Insert → Reference): that worksheet is
     /// evaluated first and its definitions are visible below this region. `href` is a path
@@ -232,37 +269,264 @@ pub enum LineStyle {
     Points,
 }
 
+/// Marker symbol of a trace.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Symbol {
+    #[default]
+    None,
+    Triangle,
+    Square,
+    Circle,
+    Diamond,
+    Cross,
+    Plus,
+    OCircle,
+    OSquare,
+}
+
+impl Symbol {
+    pub const ALL: [Symbol; 9] = [
+        Symbol::None,
+        Symbol::Triangle,
+        Symbol::Square,
+        Symbol::Circle,
+        Symbol::Diamond,
+        Symbol::Cross,
+        Symbol::Plus,
+        Symbol::OCircle,
+        Symbol::OSquare,
+    ];
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Symbol::None => "",
+            Symbol::Triangle => "▲",
+            Symbol::Square => "■",
+            Symbol::Circle => "●",
+            Symbol::Diamond => "◆",
+            Symbol::Cross => "×",
+            Symbol::Plus => "+",
+            Symbol::OCircle => "○",
+            Symbol::OSquare => "□",
+        }
+    }
+    fn is_none(&self) -> bool {
+        *self == Symbol::None
+    }
+}
+
+/// Mathcad's trace types.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TraceType {
+    #[default]
+    Lines,
+    Points,
+    Error,
+    Bars,
+    Step,
+    Stem,
+}
+
+impl TraceType {
+    pub const ALL: [TraceType; 6] = [TraceType::Lines, TraceType::Points, TraceType::Error, TraceType::Bars, TraceType::Step, TraceType::Stem];
+    pub fn name(self) -> &'static str {
+        match self {
+            TraceType::Lines => "линии",
+            TraceType::Points => "точки",
+            TraceType::Error => "ошибки",
+            TraceType::Bars => "столбцы",
+            TraceType::Step => "ступенчатый",
+            TraceType::Stem => "гистограмма",
+        }
+    }
+    fn is_lines(&self) -> bool {
+        *self == TraceType::Lines
+    }
+}
+
 /// Overrides of the default look of one trace.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TraceFormat {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<[u8; 3]>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<LineStyle>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<f32>,
+    /// Legend label (empty: "кривая N").
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub legend: String,
+    #[serde(skip_serializing_if = "Symbol::is_none")]
+    pub symbol: Symbol,
+    /// A symbol is drawn at every n-th point (0 is treated as 1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol_freq: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol_width: Option<f32>,
+    #[serde(skip_serializing_if = "TraceType::is_lines")]
+    pub kind: TraceType,
+    /// Plotted against the secondary Y axis.
+    #[serde(skip_serializing_if = "is_false")]
+    pub y2: bool,
+}
+
+/// Per-axis options of the format dialog.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AxisOpts {
+    /// `None`: follows `PlotFormat::grid`.
+    pub grid: Option<bool>,
+    pub grid_color: [u8; 3],
+    pub numbering: bool,
+    /// Draw marker lines.
+    pub markers: bool,
+    pub marker_color: [u8; 3],
+    pub autogrid: bool,
+    /// Number of grid lines when `autogrid` is off.
+    pub grids: u32,
+    /// Values of the marker lines, e.g. `0.5, 2` (used when `markers` is on).
+    pub marker_values: String,
+}
+
+impl Default for AxisOpts {
+    fn default() -> Self {
+        AxisOpts { grid: None, grid_color: [0, 200, 0], numbering: true, markers: false, marker_color: [255, 0, 0], autogrid: true, grids: 10, marker_values: String::new() }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LegendPos {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+    #[default]
+    Bottom,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NumKind {
+    #[default]
+    General,
+    Decimal,
+    Scientific,
+    Engineering,
+    Fraction,
+}
+
+/// Number format of the axis numbers («Формат числа»).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NumFormat {
+    pub kind: NumKind,
+    pub precision: u32,
+    pub trailing_zeros: bool,
+    pub eng_exponents: bool,
+    pub exp_threshold: i32,
+}
+
+impl Default for NumFormat {
+    fn default() -> Self {
+        NumFormat { kind: NumKind::General, precision: 3, trailing_zeros: false, eng_exponents: false, exp_threshold: 3 }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AxisLabel {
+    pub show: bool,
+    pub text: String,
+}
+
+impl Default for AxisLabel {
+    fn default() -> Self {
+        AxisLabel { show: true, text: String::new() }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PlotFormat {
+    /// Grid lines of the X axis (and the default for the Y axes).
     pub grid: bool,
     pub axes: AxisStyle,
     pub log_x: bool,
     pub log_y: bool,
+    pub log_y2: bool,
+    /// Show the legend even when no trace has its own label.
     pub legend: bool,
+    pub hide_legend: bool,
+    pub legend_pos: LegendPos,
+    pub hide_args: bool,
     pub traces: Vec<TraceFormat>,
+    /// Options of the X, main Y and secondary Y axes.
+    pub axis: [AxisOpts; 3],
+    /// Secondary Y axis enabled.
+    pub y2_axis: bool,
+    pub y2_min: Option<f64>,
+    pub y2_max: Option<f64>,
+    /// Equal scale on both axes.
+    pub equal_scale: bool,
+    pub number: NumFormat,
+    pub title: String,
+    pub title_bottom: bool,
+    pub show_title: bool,
+    /// Axis titles: X, Y, Y2.
+    pub labels: [AxisLabel; 3],
 }
 
 impl Default for PlotFormat {
     fn default() -> Self {
-        PlotFormat { grid: true, axes: AxisStyle::Crossed, log_x: false, log_y: false, legend: false, traces: Vec::new() }
+        PlotFormat {
+            grid: true,
+            axes: AxisStyle::Crossed,
+            log_x: false,
+            log_y: false,
+            log_y2: false,
+            legend: false,
+            hide_legend: false,
+            legend_pos: LegendPos::Bottom,
+            hide_args: false,
+            traces: Vec::new(),
+            axis: Default::default(),
+            y2_axis: false,
+            y2_min: None,
+            y2_max: None,
+            equal_scale: false,
+            number: NumFormat::default(),
+            title: String::new(),
+            title_bottom: false,
+            show_title: true,
+            labels: Default::default(),
+        }
     }
 }
 
 impl PlotFormat {
+    /// The format of a freshly inserted plot: like the default, but with Mathcad's manual grid
+    /// (about ten grid lines) instead of automatic steps. Saved files without a format keep `default()`.
+    pub fn new_plot_default() -> PlotFormat {
+        let mut f = PlotFormat::default();
+        for a in &mut f.axis {
+            a.autogrid = false;
+        }
+        f
+    }
+
     pub fn is_default(&self) -> bool {
         *self == PlotFormat::default()
+    }
+    /// Grid of axis `k` (0 = X, 1 = Y, 2 = Y2).
+    pub fn grid_of(&self, k: usize) -> bool {
+        self.axis[k].grid.unwrap_or(self.grid)
+    }
+    /// Whether a legend is drawn.
+    pub fn legend_visible(&self) -> bool {
+        !self.hide_legend && (self.legend || self.traces.iter().any(|t| !t.legend.is_empty()))
     }
 }
 
@@ -306,7 +570,22 @@ impl RegionKind {
             y_max: None,
             fmt: PlotFormat::default(),
             xs: Vec::new(),
+            kind: PlotKind::Xy,
         }
+    }
+
+    pub fn new_polar_plot() -> RegionKind {
+        let mut k = RegionKind::new_plot();
+        if let RegionKind::Plot { kind, width, height, .. } = &mut k {
+            *kind = PlotKind::Polar;
+            *width = 300.0;
+            *height = 280.0;
+        }
+        k
+    }
+
+    pub fn new_plot3d(kind: Plot3dKind) -> RegionKind {
+        RegionKind::Plot3d { kind, expr: String::new(), width: 340.0, height: 280.0, view: View3d::default(), fmt: Plot3dFormat::default() }
     }
 
     pub fn new_text(text: impl Into<String>) -> RegionKind {
@@ -332,6 +611,12 @@ pub struct PlotData {
     pub x_max: Option<f64>,
     pub y_min: Option<f64>,
     pub y_max: Option<f64>,
+    pub kind: PlotKind,
+    /// Display units of the swept variable and of the first ordinate (`""`: unitless).
+    /// Values are plotted in SI base units, like Mathcad 15 does; the unit is
+    /// shown next to the axis.
+    pub x_unit: String,
+    pub y_unit: String,
 }
 
 /// A plain copy of a computed value (for comparing results with Mathcad's
@@ -368,6 +653,7 @@ pub enum Output {
     Value { view: ResultView, unit: Option<Expr> },
     Error(String),
     Plot(PlotData),
+    Plot3d(Plot3dData),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -512,19 +798,22 @@ impl Worksheet {
                 (RegionKind::Math { .. }, Some(Ok(stmt))) => {
                     self.eval_in_block(ev, stmt, region.id, &mut block, &mut out, snapshots.then_some(&mut value))
                 }
-                (RegionKind::Plot { x, y, xs, x_min, x_max, y_min, y_max, .. }, _) => {
+                (RegionKind::Plot3d { kind, expr, .. }, _) => Output::Plot3d(plot3d(ev, *kind, expr)),
+                (RegionKind::Plot { x, y, xs, x_min, x_max, y_min, y_max, kind, .. }, _) => {
+                    let polar = *kind == PlotKind::Polar;
                     let mut d = if xs.len() == y.len() && xs.iter().any(|v| v != &xs[0]) {
                         let mut d = PlotData::default();
                         for (xi, yi) in xs.iter().zip(y) {
-                            let part = plot(ev, xi, std::slice::from_ref(yi));
+                            let part = plot(ev, xi, std::slice::from_ref(yi), polar);
                             d.series.extend(part.series);
                             d.errors.extend(part.errors);
                             d.x_var = d.x_var.or(part.x_var);
                         }
                         d
                     } else {
-                        plot(ev, if x.is_empty() { xs.first().map_or("", |s| s.as_str()) } else { x }, y)
+                        plot(ev, if x.is_empty() { xs.first().map_or("", |s| s.as_str()) } else { x }, y, polar)
                     };
+                    d.kind = *kind;
                     (d.x_min, d.x_max, d.y_min, d.y_max) = (*x_min, *x_max, *y_min, *y_max);
                     Output::Plot(d)
                 }
@@ -725,7 +1014,7 @@ fn snapshot_var(ev: &Evaluator, target: &Target) -> Option<Snapshot> {
     }
 }
 
-fn plot(ev: &Evaluator, x_src: &str, y_srcs: &[String]) -> PlotData {
+fn plot(ev: &Evaluator, x_src: &str, y_srcs: &[String], polar: bool) -> PlotData {
     let mut data = PlotData::default();
     let ys: Vec<(String, Expr)> = y_srcs
         .iter()
@@ -769,16 +1058,24 @@ fn plot(ev: &Evaluator, x_src: &str, y_srcs: &[String]) -> PlotData {
             let values: Vec<Num> = match ev.lookup(&name, &sc) {
                 Some(Value::Range(r)) => r.values().collect(),
                 _ => {
-                    let (a, b, n) = QUICKPLOT_RANGE;
+                    let (a, b, n) = if polar { (0.0, std::f64::consts::TAU, 360) } else { QUICKPLOT_RANGE };
                     (0..=n).map(|k| Num::real(a + (b - a) * k as f64 / n as f64)).collect()
                 }
             };
+            if let Some(t) = values.first().filter(|t| !t.dim.is_none()) {
+                data.x_unit = crate::format::unit_text(t.dim).to_string();
+            }
             for (label, e) in &ys {
                 let mut points = Vec::with_capacity(values.len());
                 let mut first_err = None;
                 for t in &values {
                     match ev.eval(e, &sc.with(&name, Value::Num(*t))).and_then(|v| v.as_num()) {
-                        Ok(y) if y.is_real() && y.v.re.is_finite() => points.push([t.v.re, y.v.re]),
+                        Ok(y) if y.is_real() && y.v.re.is_finite() => {
+                            if data.y_unit.is_empty() && !y.dim.is_none() {
+                                data.y_unit = crate::format::unit_text(y.dim).to_string();
+                            }
+                            points.push([t.v.re, y.v.re])
+                        }
                         Ok(_) => points.push([t.v.re, f64::NAN]),
                         Err(err) => {
                             first_err.get_or_insert(err);
@@ -803,12 +1100,22 @@ fn plot(ev: &Evaluator, x_src: &str, y_srcs: &[String]) -> PlotData {
                     return data;
                 }
             };
+            if let Some(t) = xs.first().filter(|t| !t.dim.is_none()) {
+                data.x_unit = crate::format::unit_text(t.dim).to_string();
+            }
             for (label, e) in &ys {
                 match vector_of(ev, e, &sc) {
-                    Ok(yv) if yv.len() == xs.len() => data.series.push(Series {
+                    Ok(yv) if yv.len() == xs.len() => {
+                        if let Some(y) = yv.first().filter(|y| !y.dim.is_none()) {
+                            if data.y_unit.is_empty() {
+                                data.y_unit = crate::format::unit_text(y.dim).to_string();
+                            }
+                        }
+                        data.series.push(Series {
                         label: label.clone(),
                         points: xs.iter().zip(&yv).map(|(x, y)| [x.v.re, y.v.re]).collect(),
-                    }),
+                    })
+                    }
                     Ok(yv) => data.errors.push(format!(
                         "{label}: {} значений, а по оси X — {}",
                         yv.len(),
@@ -828,5 +1135,170 @@ fn vector_of(ev: &Evaluator, e: &Expr, sc: &Scope) -> EResult<Vec<Num>> {
         Value::Num(n) => Ok(vec![n]),
         Value::Range(r) => Ok(r.values().collect()),
         other => Err(format!("ожидался вектор, найдено: {}", other.type_name())),
+    }
+}
+
+
+const QUICKPLOT_3D: (f64, f64, usize) = (-5.0, 5.0, 25);
+
+/// Computes the data of a 3D plot. `expr` is a matrix (surface/contour/bar over
+/// the index grid), a function of two variables or an expression with up to two
+/// undefined variables (QuickPlot over -5..5), and for scatter plots `X, Y, Z`
+/// vectors or an n x 3 matrix.
+fn plot3d(ev: &Evaluator, kind: Plot3dKind, src: &str) -> Plot3dData {
+    let mut d = Plot3dData { kind, label: src.trim().to_string(), ..Default::default() };
+    if src.trim().is_empty() {
+        return d;
+    }
+    match plot3d_inner(ev, kind, src.trim(), &mut d) {
+        Ok(()) => {}
+        Err(e) => d.error = Some(e),
+    }
+    d
+}
+
+/// Splits `X, Y, Z` or `(X, Y, Z)` at top-level commas.
+pub fn split_top_commas(s: &str) -> Vec<String> {
+    let s = s.trim();
+    let inner = s.strip_prefix('(').and_then(|r| r.strip_suffix(')')).filter(|r| {
+        let mut depth = 0i32;
+        r.chars().all(|c| {
+            match c {
+                '(' | '[' => depth += 1,
+                ')' | ']' => depth -= 1,
+                _ => {}
+            }
+            depth >= 0
+        })
+    });
+    let s = inner.unwrap_or(s);
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut cur = String::new();
+    for c in s.chars() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(cur.trim().to_string());
+                cur.clear();
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(c);
+    }
+    out.push(cur.trim().to_string());
+    out
+}
+
+fn flat_numbers(v: Value) -> EResult<Vec<f64>> {
+    match v {
+        Value::Matrix(m) => Ok(m.data.iter().map(|n| n.v.re).collect()),
+        Value::Num(n) => Ok(vec![n.v.re]),
+        Value::Range(r) => Ok(r.values().map(|n| n.v.re).collect()),
+        other => Err(format!("ожидался вектор или матрица, найдено: {}", other.type_name())),
+    }
+}
+
+fn plot3d_inner(ev: &Evaluator, kind: Plot3dKind, src: &str, d: &mut Plot3dData) -> EResult<()> {
+    let sc = ev.top_scope();
+    if kind == Plot3dKind::Scatter {
+        let parts = split_top_commas(src);
+        let (x, y, z) = if parts.len() == 3 {
+            let get = |s: &str| -> EResult<Vec<f64>> {
+                let e = parse_expr(s).map_err(|e| format!("{s}: {}", e.msg))?;
+                flat_numbers(ev.eval_iterated(&e, &sc)?)
+            };
+            (get(&parts[0])?, get(&parts[1])?, get(&parts[2])?)
+        } else if parts.len() == 1 {
+            let e = parse_expr(&parts[0]).map_err(|e| e.msg)?;
+            match ev.eval_iterated(&e, &sc)? {
+                Value::Matrix(m) if m.cols == 3 => (
+                    (0..m.rows).map(|r| m.get(r, 0).v.re).collect(),
+                    (0..m.rows).map(|r| m.get(r, 1).v.re).collect(),
+                    (0..m.rows).map(|r| m.get(r, 2).v.re).collect(),
+                ),
+                _ => return Err("ожидались три вектора (X, Y, Z) или матрица с тремя столбцами".into()),
+            }
+        } else {
+            return Err("ожидались три вектора (X, Y, Z)".into());
+        };
+        if x.len() != y.len() || y.len() != z.len() {
+            return Err(format!("векторы разной длины: {}, {}, {}", x.len(), y.len(), z.len()));
+        }
+        d.pts = x.iter().zip(&y).zip(&z).map(|((a, b), c)| [*a, *b, *c]).collect();
+        return Ok(());
+    }
+    let e = parse_expr(src).map_err(|e| e.msg)?;
+    let mut names = Vec::new();
+    crate::eval::free_vars(&e, &mut Vec::new(), &mut names);
+    let mut undefined: Vec<String> = Vec::new();
+    for n in names {
+        if matches!(ev.lookup(&n, &sc), None | Some(Value::Range(_))) && !undefined.contains(&n) {
+            undefined.push(n);
+        }
+    }
+    let (a, b, n) = QUICKPLOT_3D;
+    let axis = || -> Vec<f64> { (0..n).map(|k| a + (b - a) * k as f64 / (n - 1) as f64).collect() };
+    let func_of = |f: &dyn Fn(f64, f64) -> EResult<Num>, d: &mut Plot3dData| {
+        d.xs = axis();
+        d.ys = axis();
+        let mut first_err = None;
+        for &x in &d.xs.clone() {
+            for &y in &d.ys.clone() {
+                match f(x, y) {
+                    Ok(v) if v.is_real() && v.v.re.is_finite() => d.z.push(v.v.re),
+                    Ok(_) => d.z.push(f64::NAN),
+                    Err(e) => {
+                        first_err.get_or_insert(e);
+                        d.z.push(f64::NAN);
+                    }
+                }
+            }
+        }
+        match first_err {
+            Some(e) if d.z.iter().all(|v| v.is_nan()) => Err(e),
+            _ => Ok(()),
+        }
+    };
+    if undefined.is_empty() {
+        // a matrix or a function name
+        if let Expr::Var(name) = &e {
+            if let Some(Value::Func(_)) = ev.lookup(name, &sc) {
+                let call = Expr::Call(name.clone(), vec![Expr::Var("\u{1}x".into()), Expr::Var("\u{1}y".into())]);
+                return func_of(
+                    &|x, y| ev.eval(&call, &sc.with("\u{1}x", Value::Num(Num::real(x))).with("\u{1}y", Value::Num(Num::real(y)))).and_then(|v| v.as_num()),
+                    d,
+                );
+            }
+        }
+        match ev.eval_iterated(&e, &sc)? {
+            Value::Matrix(m) => {
+                d.xs = (0..m.rows).map(|i| i as f64).collect();
+                d.ys = (0..m.cols).map(|j| j as f64).collect();
+                d.z = m.data.iter().map(|v| if v.is_real() { v.v.re } else { f64::NAN }).collect();
+                Ok(())
+            }
+            other => Err(format!("ожидалась матрица или функция двух переменных, найдено: {}", other.type_name())),
+        }
+    } else {
+        // expression with free variables: x and y (or the first two names)
+        let vx = if undefined.iter().any(|n| n == "x") { "x".to_string() } else { undefined[0].clone() };
+        let vy = if undefined.iter().any(|n| n == "y") && vx != "y" {
+            Some("y".to_string())
+        } else {
+            undefined.iter().find(|n| **n != vx).cloned()
+        };
+        func_of(
+            &|x, y| {
+                let mut s2 = sc.with(&vx, Value::Num(Num::real(x)));
+                if let Some(vy) = &vy {
+                    s2 = s2.with(vy, Value::Num(Num::real(y)));
+                }
+                ev.eval(&e, &s2).and_then(|v| v.as_num())
+            },
+            d,
+        )
     }
 }
