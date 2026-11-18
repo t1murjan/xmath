@@ -157,7 +157,8 @@ pub fn format_tick_with(v: f64, nf: &NumFormat) -> TickLabel {
         }
         let ms = format!("{:.*}", p, m);
         let ms = if nf.trailing_zeros { ms } else { trim_zeros(&ms) };
-        TickLabel { mant: format!("{sign}{ms}"), exp: Some(e) }
+        // `×10⁰` is never written: 400 stays `400`
+        TickLabel { mant: format!("{sign}{ms}"), exp: (e != 0).then_some(e) }
     };
     match nf.kind {
         NumKind::General => {
@@ -452,6 +453,18 @@ mod tests {
         nf.kind = NumKind::Engineering;
         assert_eq!(format_tick_with(0.0025, &nf).to_string(), "2.5×10⁻³");
         assert_eq!(format_tick_with(45000.0, &nf).to_string(), "45×10³");
+        // no `×10⁰` (scientific / engineering, with trailing zeros too)
+        assert_eq!(format_tick_with(400.0, &nf).to_string(), "400");
+        assert_eq!(format_tick_with(-4.0, &nf).to_string(), "−4");
+        nf.trailing_zeros = true;
+        nf.precision = 1;
+        assert_eq!(format_tick_with(400.0, &nf).to_string(), "400.0");
+        nf.kind = NumKind::Scientific;
+        assert_eq!(format_tick_with(4.0, &nf).to_string(), "4.0");
+        assert_eq!(format_tick_with(40.0, &nf).to_string(), "4.0×10¹");
+        nf.trailing_zeros = false;
+        nf.precision = 3;
+        nf.kind = NumKind::Engineering;
         nf.kind = NumKind::Fraction;
         assert_eq!(format_tick_with(0.75, &nf).to_string(), "3/4");
         assert_eq!(format_tick_with(-1.5, &nf).to_string(), "−3/2");
