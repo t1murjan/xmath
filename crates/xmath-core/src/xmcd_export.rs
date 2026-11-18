@@ -67,7 +67,15 @@ pub fn export_xmcd_with(ws: &Worksheet, opts: &ExportOptions) -> ExportResult {
          xmlns:ml=\"http://schemas.mathsoft.com/math30\" xmlns:u=\"http://schemas.mathsoft.com/units10\" \
          xmlns:p=\"http://schemas.mathsoft.com/provenance10\">\n",
     );
-    out.push_str("\t<pointReleaseData/>\n\t<metadata>\n\t\t<generator>xmath</generator>\n\t\t<userData>\n\t\t\t<title/>\n\t\t\t<description/>\n\t\t\t<author/>\n\t\t\t<company/>\n\t\t\t<keywords/>\n\t\t\t<revisedBy/>\n\t\t</userData>\n\t</metadata>\n");
+    out.push_str("\t<pointReleaseData/>\n\t<metadata>\n\t\t<generator>xmath</generator>\n\t\t<userData>\n\t\t\t<title/>\n\t\t\t<description/>\n\t\t\t<author/>\n\t\t\t<company/>\n\t\t\t<keywords/>\n\t\t\t<revisedBy/>\n\t\t</userData>\n");
+    // Mathcad's schema requires the document identity
+    let zero = "00000000-0000-0000-0000-000000000000";
+    let _ = writeln!(
+        out,
+        "\t\t<identityInfo>\n\t\t\t<revision>1</revision>\n\t\t\t<documentID>{}</documentID>\n\t\t\t<versionID>{}</versionID>\n\t\t\t<parentVersionID>{zero}</parentVersionID>\n\t\t\t<branchID>{zero}</branchID>\n\t\t</identityInfo>\n\t</metadata>",
+        guid(ws, 1),
+        guid(ws, 2)
+    );
     out.push_str(&xmath_comment("worksheet", &worksheet_json(ws)));
     x.settings(ws, &mut out);
     out.push_str("\t<regions>\n");
@@ -76,7 +84,11 @@ pub fn export_xmcd_with(ws: &Worksheet, opts: &ExportOptions) -> ExportResult {
         x.region(&ws.regions[i], &mut out);
     }
     out.push_str("\t</regions>\n");
-    if !x.items.is_empty() {
+    if x.items.is_empty() {
+        // Mathcad files always have binary content: a 1×1 picture keeps the element non-empty
+        x.items.push((ONE_PIXEL_PNG.to_string(), false));
+    }
+    {
         out.push_str("\t<binaryContent>\n");
         for (i, (b64, gz)) in x.items.iter().enumerate() {
             let _ = write!(out, "\t\t<item item-id=\"{}\"{}>", i + 1, if *gz { " content-encoding=\"gzip\"" } else { "" });
@@ -149,15 +161,24 @@ impl Exporter<'_> {
         out.push_str("\t\t\t<mathRendering equation-color=\"#000\">\n");
         out.push_str("\t\t\t\t<operators multiplication=\"narrow-dot\" derivative=\"derivative\" literal-subscript=\"large\" definition=\"colon-equal\" global-definition=\"triple-equal\" local-definition=\"left-arrow\" equality=\"bold-equal\" symbolic-evaluation=\"right-arrow\"/>\n");
         out.push_str("\t\t\t\t<mathStyles>\n");
-        for (n, f, w, s) in [
-            ("Variables", "Times New Roman", "normal", "normal"),
-            ("Constants", "Times New Roman", "normal", "normal"),
-            ("User 1", "Arial", "normal", "normal"),
-            ("Math Text Font", "Times New Roman", "normal", "normal"),
+        // the ten styles Mathcad 15 always writes (its schema requires all of them)
+        for (n, f, sz) in [
+            ("Variables", "Times New Roman", 10),
+            ("Constants", "Times New Roman", 10),
+            ("User 1", "Arial", 10),
+            ("User 2", "Courier New", 10),
+            ("User 3", "Arial", 10),
+            ("User 4", "Times New Roman", 10),
+            ("User 5", "Times New Roman", 10),
+            ("User 6", "Arial", 10),
+            ("User 7", "Times New Roman", 10),
+            ("Math Text Font", "Times New Roman", 14),
         ] {
-            let _ = writeln!(out, "\t\t\t\t\t<mathStyle name=\"{n}\" font-family=\"{f}\" font-charset=\"0\" font-size=\"10\" font-weight=\"{w}\" font-style=\"{s}\" underline=\"false\"/>");
+            let _ = writeln!(out, "\t\t\t\t\t<mathStyle name=\"{n}\" font-family=\"{f}\" font-charset=\"0\" font-size=\"{sz}\" font-weight=\"normal\" font-style=\"normal\" underline=\"false\"/>");
         }
         out.push_str("\t\t\t\t</mathStyles>\n");
+        out.push_str("\t\t\t\t<dimensionNames mass=\"mass\" length=\"length\" time=\"time\" current=\"current\" thermodynamic-temperature=\"temperature\" luminous-intensity=\"luminosity\" amount-of-substance=\"substance\" display=\"false\"/>\n");
+        out.push_str("\t\t\t\t<symbolics derivation-steps-style=\"vertical-insert\" show-comments=\"false\" evaluate-in-place=\"false\"/>\n");
         let f = &ws.format;
         let _ = writeln!(
             out,
@@ -188,14 +209,15 @@ impl Exporter<'_> {
         out.push_str("\t\t\t<colorModel background-color=\"#fff\" default-highlight-color=\"#ffff80\"/>\n\t\t\t<language math=\"ru\" UI=\"ru\"/>\n\t\t</presentation>\n");
         out.push_str("\t\t<calculation>\n\t\t\t<builtInVariables array-origin=\"0\" convergence-tolerance=\"0.001\" constraint-tolerance=\"0.001\" random-seed=\"1\" prn-precision=\"4\" prn-col-width=\"8\"/>\n\t\t\t<calculationBehavior automatic-recalculation=\"true\" matrix-strict-singularity-check=\"false\" optimize-expressions=\"false\" exact-boolean=\"true\" strings-use-origin=\"false\" zero-over-zero=\"error\">\n\t\t\t\t<compatibility multiple-assignment=\"MC12\" local-assignment=\"MC11\"/>\n\t\t\t</calculationBehavior>\n\t\t\t<units>\n\t\t\t\t<currentUnitSystem name=\"si\" customized=\"false\"/>\n\t\t\t</units>\n\t\t</calculation>\n");
         out.push_str("\t\t<editor view-annotations=\"false\" view-regions=\"false\">\n\t\t\t<ruler is-visible=\"false\" ruler-unit=\"in\"/>\n\t\t\t<grid granularity-x=\"6\" granularity-y=\"6\"/>\n\t\t</editor>\n");
-        out.push_str("\t\t<fileFormat image-type=\"image/png\" image-quality=\"75\" save-numeric-results=\"true\" exclude-large-results=\"true\" save-text-images=\"false\" screen-dpi=\"96\"/>\n\t</settings>\n");
+        out.push_str("\t\t<fileFormat image-type=\"image/png\" image-quality=\"75\" save-numeric-results=\"true\" exclude-large-results=\"true\" save-text-images=\"false\" screen-dpi=\"96\"/>\n");
+        out.push_str("\t\t<miscellaneous>\n\t\t\t<handbook handbook-region-tag-ub=\"1\" can-delete-original-handbook-regions=\"true\" can-delete-user-regions=\"true\" can-print=\"true\" can-copy=\"true\" can-save=\"true\" file-permission-mask=\"0\"/>\n\t\t</miscellaneous>\n\t</settings>\n");
     }
 
     fn region_open(&self, r: &Region, w: f32, h: f32, out: &mut String) {
         let (ax, ay) = (r.x + r.anchor[0], r.y + r.anchor[1]);
         let _ = writeln!(
             out,
-            "\t\t<region region-id=\"{}\" left=\"{}\" top=\"{}\" width=\"{}\" height=\"{}\" align-x=\"{}\" align-y=\"{}\" show-border=\"false\" show-highlight=\"false\" is-protected=\"false\" z-order=\"0\" background-color=\"inherit\" tag=\"\">",
+            "\t\t<region region-id=\"{}\" left=\"{}\" top=\"{}\" width=\"{}\" height=\"{}\" align-x=\"{}\" align-y=\"{}\" show-border=\"false\" show-highlight=\"false\" is-protected=\"true\" z-order=\"0\" background-color=\"inherit\" tag=\"\">",
             r.id,
             pt(r.x),
             pt(r.y),
@@ -473,14 +495,25 @@ impl Exporter<'_> {
                 ind(o, dd);
                 o.push_str("<ml:symEval style=\"default\" hide-keywords=\"false\" hide-lhs=\"false\">\n");
                 self.expr(expr, o, dd + 1)?;
+                // keywords as Mathcad writes them: <ml:command> with the keyword id, or a
+                // <ml:sequence> of the keyword and its arguments; chained keywords are stacked
                 for op in ops {
                     ind(o, dd + 1);
-                    let _ = writeln!(o, "<ml:symKeyword name=\"{}\">", esc(&op.name));
-                    for a in &op.args {
-                        self.expr(a, o, dd + 2)?;
+                    o.push_str("<ml:command>\n");
+                    if op.args.is_empty() {
+                        id(&op.name, o, dd + 2);
+                    } else {
+                        ind(o, dd + 2);
+                        o.push_str("<ml:sequence>\n");
+                        id(&op.name, o, dd + 3);
+                        for a in &op.args {
+                            self.expr(a, o, dd + 3)?;
+                        }
+                        ind(o, dd + 2);
+                        o.push_str("</ml:sequence>\n");
                     }
                     ind(o, dd + 1);
-                    o.push_str("</ml:symKeyword>\n");
+                    o.push_str("</ml:command>\n");
                 }
                 if let Some(r) = self.pending_sym.take() {
                     ind(o, dd + 1);
@@ -701,11 +734,10 @@ impl Exporter<'_> {
                 ind(o, d);
                 o.push_str("</ml:matrix>\n");
             }
+            // Mathcad: <ml:range> a c </ml:range>, with a step: <ml:range> <ml:sequence> a b </ml:sequence> c </ml:range>
             Expr::Range(a, b, c) => {
                 ind(o, d);
-                o.push_str("<ml:apply>\n");
-                ind(o, d + 1);
-                o.push_str("<ml:range/>\n");
+                o.push_str("<ml:range>\n");
                 match b {
                     Some(b) => {
                         ind(o, d + 1);
@@ -719,7 +751,7 @@ impl Exporter<'_> {
                 }
                 self.expr(c, o, d + 1)?;
                 ind(o, d);
-                o.push_str("</ml:apply>\n");
+                o.push_str("</ml:range>\n");
             }
             Expr::Abs(a) => self.apply("ml:absval", &[a], o, d)?,
             Expr::Program(stmts) => {
@@ -796,7 +828,8 @@ impl Exporter<'_> {
                 ind(o, d);
                 o.push_str("<ml:apply>\n");
                 ind(o, d + 1);
-                let _ = writeln!(o, "<ml:{name}/>");
+                let method = if matches!(name, "Maximize" | "Minimize") { "conjugate" } else { "levenberg" };
+                let _ = writeln!(o, "<ml:{name} auto-method=\"true\" method=\"{method}\" derivative-estimation=\"central\" variable-estimation=\"tangent\" linear-check=\"false\" multistart=\"false\" evolutionary=\"false\"/>");
                 self.args(args, o, d + 1)?;
                 ind(o, d);
                 o.push_str("</ml:apply>\n");
@@ -1121,3 +1154,27 @@ fn png_size(png: &[u8]) -> Option<(u32, u32)> {
     let be = |i: usize| u32::from_be_bytes([png[i], png[i + 1], png[i + 2], png[i + 3]]);
     Some((be(16), be(20)))
 }
+
+/// A transparent 1×1 PNG (Mathcad files always carry binary content).
+const ONE_PIXEL_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+/// A GUID for Mathcad's `identityInfo`, different for every save.
+fn guid(ws: &Worksheet, salt: u64) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0).hash(&mut h);
+    salt.hash(&mut h);
+    ws.regions.len().hash(&mut h);
+    let a = h.finish();
+    a.rotate_left(17).hash(&mut h);
+    let b = h.finish();
+    format!(
+        "{:08X}-{:04X}-4{:03X}-{:04X}-{:012X}",
+        a >> 32,
+        (a >> 16) & 0xffff,
+        a & 0xfff,
+        0x8000 | ((b >> 48) & 0x3fff),
+        b & 0xffff_ffff_ffff
+    )
+}
+

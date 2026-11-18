@@ -533,6 +533,26 @@ fn conv_sym(cx: &mut Cx, n: Node) -> R<(Expr, Vec<SymOp>)> {
         if name == "symResult" || name == "placeholder" {
             continue;
         }
+        if name == "command" {
+            // Mathcad: <command> <id>kw</id> </command> or <command> <sequence> <id>kw</id> args… </sequence> </command>
+            for c in kids(k) {
+                let parts = if lname(c) == "sequence" { kids(c) } else { vec![c] };
+                let Some((head, rest)) = parts.split_first() else { continue };
+                let kw = head.text().map(|t| t.trim().to_string()).unwrap_or_default();
+                if kw.is_empty() {
+                    continue;
+                }
+                let mut args = Vec::new();
+                for a in rest {
+                    match conv(cx, *a) {
+                        Ok(e) => args.push(e),
+                        Err(e) => cx.warn(format!("аргумент ключевого слова отброшен ({e})")),
+                    }
+                }
+                ops.push(SymOp { name: kw, args });
+            }
+            continue;
+        }
         if name.to_lowercase().contains("keyword") || name == "modifier" {
             // keyword (simplify, solve, ...) with optional arguments
             let kw = k
