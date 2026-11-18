@@ -264,6 +264,19 @@ impl App {
         }
         self.hits.insert(id, hits.clone());
         let region_rect = Rect::from_min_size(pos, Vec2::new(lay.w + 4.0, lay.h() + 6.0));
+        // keep the evaluation anchor (baseline) current while editing: a tall formula
+        // (radical, fraction) must not be evaluated before definitions to its left
+        let anchor = (lay.asc + 3.0) / self.zoom;
+        let mut reorder = false;
+        if let Some(r) = self.ws.regions.iter_mut().find(|r| r.id == id) {
+            if r.anchor[0] == 0.0 && (r.anchor[1] - anchor).abs() > 0.25 {
+                r.anchor = [0.0, anchor];
+                reorder = true;
+            }
+        }
+        if reorder {
+            self.dirty = true;
+        }
         let unit_h = ctx.fonts(|f| f.layout_no_wrap("x".into(), FontId::proportional(100.0), Color32::BLACK).size().y) / 100.0;
 
         // ---- interaction

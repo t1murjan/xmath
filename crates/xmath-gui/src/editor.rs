@@ -1887,6 +1887,39 @@ mod tests {
         assert_eq!(e.source(), "a == b");
     }
 
+    /// Evaluates `a := 3` followed by the typed region; returns its error text, if any.
+    fn eval_error(keys: &str) -> (String, Option<String>) {
+        let e = t(keys);
+        let source = e.source();
+        let mut ws = xmath_core::Worksheet::default();
+        ws.regions.push(xmath_core::Region::new(1, 0.0, 0.0, xmath_core::RegionKind::Math { source: "a := 3".into() }));
+        ws.regions.push(xmath_core::Region::new(2, 0.0, 100.0, xmath_core::RegionKind::Math { source: source.clone() }));
+        let out = xmath_core::evaluate_worksheet(&ws);
+        (source, out.get(&2).and_then(|o| o.error()))
+    }
+
+    #[test]
+    fn results_after_equals_evaluate() {
+        for keys in [
+            "\\a^2+16=",
+            "a*2=",
+            "\\a+1=",
+            "nthroot(a+5,3)=",
+            "|a-7|=",
+            "|a-7|+1=",
+            "\\a^2+16=kN",
+        ] {
+            let (src, err) = eval_error(keys);
+            // unit `kN` is a unit mismatch for plain numbers; only parse errors matter here
+            assert!(xmath_core::parse_statement(&src).is_ok(), "{keys} -> {src}");
+            if !keys.ends_with("kN") {
+                assert!(err.is_none(), "{keys} -> {src}: {err:?}");
+            }
+        }
+        let (src, _) = eval_error("\\a^2+16=");
+        assert_eq!(src, "sqrt(a^(2 + 16)) =");
+    }
+
     #[test]
     fn matrix_leaf_is_kept() {
         let e = Ed::from_source("B := [1, 2; 3, 4]*x").unwrap();
