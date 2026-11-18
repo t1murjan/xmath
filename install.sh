@@ -11,7 +11,8 @@ FROM_LOCAL=0
 ASSUME_YES=0
 FORCE=0
 PURGE=0
-WITH_SKILL=0
+WITH_SKILL=1
+WITH_MCP=1
 
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 SRC_DIR="$DATA_HOME/xmath/src"
@@ -44,7 +45,9 @@ xmath — установщик (свободная альтернатива Math
                    по умолчанию: https://github.com/t1murjan/xmath.git)
   --prefix <dir>   каталог установки (по умолчанию: ~/.local)
   --from-local     собрать из каталога со скриптом, не клонируя
-  --with-skill     установить AI-навык в ~/.claude/skills/xmath
+  --no-skill       не устанавливать AI-навыки (по умолчанию ставятся в
+                   ~/.claude/skills и, если есть Codex, в ~/.codex/skills)
+  --no-mcp         не подключать MCP-сервер к Claude Code / Codex
   --force          пересобрать, даже если версия не изменилась
   --purge          при uninstall: удалить и каталог с исходниками
   -y, --yes        не задавать вопросов
@@ -60,6 +63,8 @@ while [ $# -gt 0 ]; do
     --prefix) [ $# -ge 2 ] || die "--prefix требует значение"; PREFIX="$2"; shift ;;
     --from-local) FROM_LOCAL=1 ;;
     --with-skill) WITH_SKILL=1 ;;
+    --no-skill) WITH_SKILL=0 ;;
+    --no-mcp) WITH_MCP=0 ;;
     --force) FORCE=1 ;;
     --purge) PURGE=1 ;;
     -y|--yes) ASSUME_YES=1 ;;
@@ -73,7 +78,10 @@ BIN_DIR="$PREFIX/bin"
 APP_DIR="$DATA_HOME/applications"
 ICON_DIR="$DATA_HOME/icons/hicolor/scalable/apps"
 MIME_DIR="$DATA_HOME/mime"
-SKILL_DIR="$HOME/.claude/skills/xmath"
+# каталоги навыков AI-агентов (формат SKILL.md): Claude Code всегда, Codex — если установлен
+SKILL_ROOTS=("$HOME/.claude/skills")
+[ -d "$HOME/.codex" ] && SKILL_ROOTS+=("$HOME/.codex/skills")
+SKILLS_FILE="$DATA_HOME/xmath/installed-skills"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -107,6 +115,67 @@ refresh_caches() {
   if have gtk-update-icon-cache; then gtk-update-icon-cache -q -t -f "$DATA_HOME/icons/hicolor" >/dev/null 2>&1 || true; fi
 }
 
+# ---- AI-навыки и MCP ----
+install_skills() {
+  local dir name root n=0
+  remove_skills >/dev/null
+  : > "$SKILLS_FILE"
+  for dir in "$SRC_DIR"/skills/*/; do
+    [ -f "$dir/SKILL.md" ] || continue
+    name="$(basename "$dir")"
+    for root in "${SKILL_ROOTS[@]}"; do
+      mkdir -p "$root"
+      rm -rf "${root:?}/$name"
+      cp -r "$dir" "$root/$name"
+      echo "$root/$name" >> "$SKILLS_FILE"
+      n=$((n + 1))
+    done
+    info "AI-навык «$name» установлен: ${SKILL_ROOTS[*]}"
+  done
+  [ "$n" -gt 0 ] || warn "в исходниках нет навыков (skills/*/SKILL.md)"
+}
+
+remove_skills() {
+  local d
+  [ -f "$SKILLS_FILE" ] || return 0
+  while IFS= read -r d; do
+    case "$d" in
+      */skills/*) [ -d "$d" ] && rm -rf "$d" && info "удалён AI-навык $d" ;;
+    esac
+  done < "$SKILLS_FILE"
+  rm -f "$SKILLS_FILE"
+}
+
+# MCP-сервер в Claude Code / Codex (если их CLI установлены); повторный запуск ничего не дублирует
+register_mcp() {
+  local mcp="$BIN_DIR/xmath-mcp"
+  if have claude; then
+    claude mcp remove --scope user xmath >/dev/null 2>&1 || true
+    if claude mcp add --scope user xmath -- "$mcp" >/dev/null 2>&1; then
+      info "MCP-сервер подключён к Claude Code (claude mcp list)"
+    else
+      warn "не удалось подключить MCP к Claude Code; вручную: claude mcp add --scope user xmath -- $mcp"
+    fi
+  fi
+  if have codex; then
+    codex mcp remove xmath >/dev/null 2>&1 || true
+    if codex mcp add xmath -- "$mcp" >/dev/null 2>&1; then
+      info "MCP-сервер подключён к Codex"
+    else
+      warn "не удалось подключить MCP к Codex; вручную: codex mcp add xmath -- $mcp"
+    fi
+  fi
+  if ! have claude && ! have codex; then
+    info "Подключение MCP-сервера к ИИ-клиенту: команда $mcp (stdio), см. docs/mcp.md"
+  fi
+}
+
+remove_mcp() {
+  have claude && claude mcp remove --scope user xmath >/dev/null 2>&1 && info "MCP-сервер отключён от Claude Code"
+  have codex && codex mcp remove xmath >/dev/null 2>&1 && info "MCP-сервер отключён от Codex"
+  return 0
+}
+
 do_uninstall() {
   info "Удаление xmath"
   local b
@@ -119,9 +188,8 @@ do_uninstall() {
   rm -f "$APP_DIR/xmath.desktop" "$ICON_DIR/xmath.svg" "$MIME_DIR/packages/xmath.xml"
   rm -f "$VERSION_FILE"
   refresh_caches
-  if [ -d "$SKILL_DIR" ]; then
-    warn "AI-навык оставлен: $SKILL_DIR (удалите вручную: rm -rf $SKILL_DIR)"
-  fi
+  remove_skills
+  remove_mcp
   if [ "$PURGE" -eq 1 ]; then
     rm -rf "$DATA_HOME/xmath"
     info "удалён каталог $DATA_HOME/xmath"
@@ -275,20 +343,18 @@ fi
 mkdir -p "$(dirname "$VERSION_FILE")"
 echo "$NEW_COMMIT" > "$VERSION_FILE"
 
-# ---- AI-навык и MCP ----
-if [ -d "$SRC_DIR/skills/xmath" ]; then
-  if [ "$WITH_SKILL" -eq 1 ]; then
-    mkdir -p "$(dirname "$SKILL_DIR")"
-    rm -rf "$SKILL_DIR"
-    cp -r "$SRC_DIR/skills/xmath" "$SKILL_DIR"
-    info "AI-навык установлен: $SKILL_DIR"
-  else
-    info "AI-навык не установлен. Чтобы поставить: install.sh --with-skill"
-  fi
+# ---- AI-навыки и MCP ----
+if [ "$WITH_SKILL" -eq 1 ]; then
+  install_skills
+else
+  info "AI-навыки не устанавливались (--no-skill)"
 fi
 if [ "$has_mcp" -eq 1 ]; then
-  info "Подключение MCP-сервера к Claude Code:"
-  echo "    claude mcp add xmath -- $BIN_DIR/xmath-mcp"
+  if [ "$WITH_MCP" -eq 1 ]; then
+    register_mcp
+  else
+    info "MCP не подключался (--no-mcp). Вручную: claude mcp add --scope user xmath -- $BIN_DIR/xmath-mcp"
+  fi
 fi
 
 # ---- PATH ----

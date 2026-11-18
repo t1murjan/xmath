@@ -69,8 +69,13 @@ curl -fsSL https://raw.githubusercontent.com/t1murjan/xmath/main/install.sh | ba
 
 Или, если репозиторий уже склонирован: `./install.sh [install|update|uninstall]`.
 Полезные параметры: `--branch <имя>`, `--repo <url>`, `--prefix <каталог>` (по умолчанию `~/.local`),
-`--from-local` (сборка из текущего каталога), `--with-skill`, `--force`, `--purge`, `-y`, `-h`.
+`--from-local` (сборка из текущего каталога), `--no-skill`, `--no-mcp`, `--force`, `--purge`, `-y`, `-h`.
 Если `~/.local/bin` нет в `PATH`, скрипт подскажет строку для `~/.bashrc`.
+
+Установка (и обновление) заодно настраивает ИИ-ассистентов: все навыки из `skills/` ставятся в
+`~/.claude/skills/` (и в `~/.codex/skills/`, если установлен Codex), а MCP-сервер `xmath-mcp`
+подключается к Claude Code и Codex, если их команды `claude` / `codex` есть в системе.
+Отключить: `--no-skill`, `--no-mcp`. `uninstall` убирает и навыки, и подключение MCP.
 
 Для графического приложения на Linux нужны обычные библиотеки рабочего стола (`libxkbcommon-x11`, `libGL`,
 поддержка Wayland или X11) — на настольных дистрибутивах они уже установлены. На сервере без графики
@@ -290,9 +295,10 @@ xmath сделан так, чтобы им могла пользоваться �
 
 Подключение:
 
+`install.sh` делает это сам (навыки и `claude mcp add`). Вручную:
+
 ```bash
-claude mcp add xmath -- ~/.local/bin/xmath-mcp      # Claude Code
-./install.sh --with-skill                           # установить навык в ~/.claude/skills/xmath
+claude mcp add --scope user xmath -- ~/.local/bin/xmath-mcp   # Claude Code
 ```
 
 Claude Desktop, Cursor и другие MCP-клиенты подключаются через `command: "xmath-mcp"` —
