@@ -51,8 +51,6 @@ fn feed_keys(ctx: &Context, ed: &mut Ed) -> Option<bool> {
                         Key::Quote => ed.on_error(),
                         Key::Pipe => ed.return_stmt(),
                         Key::Backslash if m.shift => ed.return_stmt(),
-                        Key::Period if m.shift => ed.add_keyword(None),
-                        Key::Period => ed.symbolic(),
                         Key::Z if m.shift => ed.type_char('∞'),
                         Key::Z => {
                             ed.undo();
@@ -255,16 +253,6 @@ impl App {
                 editor::Form::Define { .. } if ed.show => Some(unit),
                 _ => None,
             };
-            if let editor::Form::Sym { define } = ed.form {
-                let base = ed.base_slots();
-                let lhs = if define.is_some() { Some((&ed.slots[0], define.unwrap_or(false))) } else { None };
-                if let Some(Output::Symbolic { result, .. }) = out.map(|o| &o.output) {
-                    ts.sym = Some(result.clone());
-                }
-                let kws: Vec<&Expr> = ed.slots[base..].iter().collect();
-                let body = &ed.slots[base - 1];
-                return ts.statement_sym_ed(lhs, body, &kws, result, fs);
-            }
             ts.statement_ed(lhs, body, shown, result, fs)
         });
         let origin = pos + Vec2::new(2.0, 3.0 + lay.asc);
