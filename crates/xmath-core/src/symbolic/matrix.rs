@@ -1,6 +1,6 @@
 //! Symbolic matrices: sums, products, powers, transpose, determinant, inverse.
 
-use super::algebra::{cancel, expand, simplify};
+use super::algebra::{cancel, expand};
 use super::sx::*;
 use num_traits::Signed;
 

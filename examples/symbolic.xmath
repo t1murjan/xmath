@@ -1,0 +1,486 @@
+{
+ "version": 1,
+ "format": {
+  "precision": 3,
+  "exp_threshold": 3,
+  "zero_threshold": 15
+ },
+ "regions": [
+  {
+   "x": 24,
+   "y": 16,
+   "type": "text",
+   "text": "Символьные вычисления",
+   "width": 640.0,
+   "style": {
+    "size": 18.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 1
+  },
+  {
+   "x": 24,
+   "y": 52,
+   "type": "text",
+   "text": "Стрелка -> (Ctrl+.) вычисляет выражение символьно, как в Mathcad. После стрелки можно указать ключевое слово: simplify, expand, factor, solve, substitute, float, collect, coeffs, series, parfrac, assume. Ключевые слова можно соединять цепочкой: expr -> expand -> factor.",
+   "width": 640.0,
+   "style": {
+    "size": 10.0,
+    "bold": false,
+    "italic": false,
+    "underline": false
+   },
+   "id": 2
+  },
+  {
+   "x": 24,
+   "y": 82,
+   "type": "text",
+   "text": "Определения подставляются в символьные выражения",
+   "width": 640.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 3
+  },
+  {
+   "x": 24,
+   "y": 118,
+   "type": "math",
+   "source": "p := 3",
+   "id": 4
+  },
+  {
+   "x": 354,
+   "y": 118,
+   "type": "math",
+   "source": "q := p + 1",
+   "id": 5
+  },
+  {
+   "x": 24,
+   "y": 162,
+   "type": "math",
+   "source": "x^2 + p*x + q ->",
+   "id": 6
+  },
+  {
+   "x": 354,
+   "y": 162,
+   "type": "math",
+   "source": "(x + p)^2 -> expand",
+   "id": 7
+  },
+  {
+   "x": 24,
+   "y": 206,
+   "type": "text",
+   "text": "Упрощение, раскрытие скобок, разложение на множители",
+   "width": 640.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 8
+  },
+  {
+   "x": 24,
+   "y": 242,
+   "type": "math",
+   "source": "(x^2 - 1)/(x - 1) -> simplify",
+   "id": 9
+  },
+  {
+   "x": 354,
+   "y": 242,
+   "type": "math",
+   "source": "sin(x)^2 + cos(x)^2 -> simplify",
+   "id": 10
+  },
+  {
+   "x": 24,
+   "y": 286,
+   "type": "math",
+   "source": "(x + y)^3 -> expand",
+   "id": 11
+  },
+  {
+   "x": 354,
+   "y": 286,
+   "type": "math",
+   "source": "x^4 - 1 -> factor",
+   "id": 12
+  },
+  {
+   "x": 24,
+   "y": 330,
+   "type": "math",
+   "source": "x^6 - 1 -> factor",
+   "id": 13
+  },
+  {
+   "x": 354,
+   "y": 330,
+   "type": "math",
+   "source": "x^2 - 2*x*y + y^2 -> factor",
+   "id": 14
+  },
+  {
+   "x": 24,
+   "y": 374,
+   "type": "math",
+   "source": "(x + 1)^2 - (x - 1)^2 -> expand -> factor",
+   "id": 15
+  },
+  {
+   "x": 24,
+   "y": 418,
+   "type": "text",
+   "text": "Решение уравнений и систем",
+   "width": 640.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 16
+  },
+  {
+   "x": 24,
+   "y": 454,
+   "type": "math",
+   "source": "x^2 - 5*x + 6 = 0 -> solve, x",
+   "id": 17
+  },
+  {
+   "x": 354,
+   "y": 454,
+   "type": "math",
+   "source": "x^2 + 2*x + 5 = 0 -> solve, x",
+   "id": 18
+  },
+  {
+   "x": 24,
+   "y": 498,
+   "type": "math",
+   "source": "a*x^2 + b*x + c = 0 -> solve, x",
+   "id": 19
+  },
+  {
+   "x": 354,
+   "y": 498,
+   "type": "math",
+   "source": "exp(x) = 2 -> solve, x",
+   "id": 20
+  },
+  {
+   "x": 24,
+   "y": 542,
+   "type": "math",
+   "source": "x^3 - 6*x^2 + 11*x - 6 = 0 -> solve, x",
+   "id": 21
+  },
+  {
+   "x": 354,
+   "y": 542,
+   "type": "math",
+   "source": "x^4 - 10*x^2 + 1 = 0 -> solve, x",
+   "id": 22
+  },
+  {
+   "x": 24,
+   "y": 594,
+   "type": "math",
+   "source": "[x + y = 3; x - y = 1] -> solve, [x; y]",
+   "id": 23
+  },
+  {
+   "x": 354,
+   "y": 594,
+   "type": "math",
+   "source": "[x^2 + y^2 = 25; x - y = 1] -> solve, [x; y]",
+   "id": 24
+  },
+  {
+   "x": 24,
+   "y": 646,
+   "type": "math",
+   "source": "cos(x) = x -> solve, x",
+   "id": 25
+  },
+  {
+   "x": 24,
+   "y": 690,
+   "type": "text",
+   "text": "Производные и интегралы",
+   "width": 640.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 26
+  },
+  {
+   "x": 24,
+   "y": 726,
+   "type": "math",
+   "source": "diff(x^3 + sin(x), x) ->",
+   "id": 27
+  },
+  {
+   "x": 354,
+   "y": 726,
+   "type": "math",
+   "source": "diff(exp(x^2), x) ->",
+   "id": 28
+  },
+  {
+   "x": 24,
+   "y": 770,
+   "type": "math",
+   "source": "diff(x^x, x) ->",
+   "id": 29
+  },
+  {
+   "x": 354,
+   "y": 770,
+   "type": "math",
+   "source": "diff(sin(x)*cos(x), x, 2) ->",
+   "id": 30
+  },
+  {
+   "x": 24,
+   "y": 814,
+   "type": "math",
+   "source": "integrate(x^2, x) ->",
+   "id": 31
+  },
+  {
+   "x": 354,
+   "y": 814,
+   "type": "math",
+   "source": "integrate(x*exp(x), x) ->",
+   "id": 32
+  },
+  {
+   "x": 24,
+   "y": 858,
+   "type": "math",
+   "source": "integrate(1/(x^2 + 4), x) ->",
+   "id": 33
+  },
+  {
+   "x": 354,
+   "y": 858,
+   "type": "math",
+   "source": "integrate(1/(x^3 - x), x) ->",
+   "id": 34
+  },
+  {
+   "x": 24,
+   "y": 902,
+   "type": "math",
+   "source": "integrate(sin(x), x, 0, pi) ->",
+   "id": 35
+  },
+  {
+   "x": 354,
+   "y": 902,
+   "type": "math",
+   "source": "integrate(exp(-x), x, 0, inf) ->",
+   "id": 36
+  },
+  {
+   "x": 24,
+   "y": 946,
+   "type": "text",
+   "text": "Пределы, ряды, суммы",
+   "width": 640.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 37
+  },
+  {
+   "x": 24,
+   "y": 982,
+   "type": "math",
+   "source": "lim(sin(x)/x, x, 0) ->",
+   "id": 38
+  },
+  {
+   "x": 354,
+   "y": 982,
+   "type": "math",
+   "source": "lim((1 + 1/x)^x, x, inf) ->",
+   "id": 39
+  },
+  {
+   "x": 24,
+   "y": 1026,
+   "type": "math",
+   "source": "sin(x) -> series, x, 6",
+   "id": 40
+  },
+  {
+   "x": 354,
+   "y": 1026,
+   "type": "math",
+   "source": "exp(x) -> series, x, 5",
+   "id": 41
+  },
+  {
+   "x": 24,
+   "y": 1070,
+   "type": "math",
+   "source": "sum(k, 1, n, k^2) ->",
+   "id": 42
+  },
+  {
+   "x": 354,
+   "y": 1070,
+   "type": "math",
+   "source": "sum(k, 1, 10, k^2) ->",
+   "id": 43
+  },
+  {
+   "x": 24,
+   "y": 1114,
+   "type": "text",
+   "text": "Подстановка, числа с плавающей точкой, коэффициенты, простые дроби",
+   "width": 640.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 44
+  },
+  {
+   "x": 24,
+   "y": 1150,
+   "type": "math",
+   "source": "x^2 + y -> substitute, x = a + b",
+   "id": 45
+  },
+  {
+   "x": 354,
+   "y": 1150,
+   "type": "math",
+   "source": "pi -> float, 10",
+   "id": 46
+  },
+  {
+   "x": 24,
+   "y": 1194,
+   "type": "math",
+   "source": "a*x^2 + b*x + c -> coeffs, x",
+   "id": 47
+  },
+  {
+   "x": 354,
+   "y": 1194,
+   "type": "math",
+   "source": "a*x + b*x + c -> collect, x",
+   "id": 48
+  },
+  {
+   "x": 24,
+   "y": 1238,
+   "type": "math",
+   "source": "(x^2 + 1)/(x*(x - 1)) -> parfrac, x",
+   "id": 49
+  },
+  {
+   "x": 354,
+   "y": 1238,
+   "type": "math",
+   "source": "sqrt(x^2) -> assume, x > 0",
+   "id": 50
+  },
+  {
+   "x": 24,
+   "y": 1282,
+   "type": "text",
+   "text": "Матрицы",
+   "width": 640.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 51
+  },
+  {
+   "x": 24,
+   "y": 1318,
+   "type": "math",
+   "source": "[a, b; c, d]^-1 ->",
+   "id": 52
+  },
+  {
+   "x": 354,
+   "y": 1318,
+   "type": "math",
+   "source": "det([a, b; c, d]) ->",
+   "id": 53
+  },
+  {
+   "x": 24,
+   "y": 1374,
+   "type": "math",
+   "source": "transpose([1, 2; 3, 4]) ->",
+   "id": 54
+  },
+  {
+   "x": 354,
+   "y": 1374,
+   "type": "math",
+   "source": "[1, 2; 3, 4]^-1 ->",
+   "id": 55
+  },
+  {
+   "x": 24,
+   "y": 1430,
+   "type": "text",
+   "text": "Единицы остаются символами",
+   "width": 640.0,
+   "style": {
+    "size": 12.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 56
+  },
+  {
+   "x": 24,
+   "y": 1466,
+   "type": "math",
+   "source": "5*m + 3*m ->",
+   "id": 57
+  },
+  {
+   "x": 354,
+   "y": 1466,
+   "type": "math",
+   "source": "2*kg*9.81*m/s^2 ->",
+   "id": 58
+  }
+ ]
+}

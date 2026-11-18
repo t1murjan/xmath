@@ -560,7 +560,11 @@ impl Worksheet {
             Outcome::Done(o) => {
                 if let Some(s) = snap {
                     let sc = ev.top_scope();
-                    *s = ev.eval_iterated(&o.result, &sc).ok().and_then(|v| Snapshot::of(&v));
+                    *s = ev
+                        .eval_iterated(&o.result, &sc)
+                        .ok()
+                        .and_then(|v| Snapshot::of(&v))
+                        .or_else(|| ev.eval_iterated(expr, &sc).ok().and_then(|v| Snapshot::of(&v)));
                 }
                 Ok(Output::Symbolic { result: o.result, note: o.note })
             }

@@ -661,7 +661,7 @@ pub fn factor_int(n: &BigInt) -> Vec<(BigInt, u32)> {
     if n <= BigInt::one() {
         return out;
     }
-    let mut push = |p: BigInt, out: &mut Vec<(BigInt, u32)>| {
+    let push = |p: BigInt, out: &mut Vec<(BigInt, u32)>| {
         if let Some(l) = out.last_mut() {
             if l.0 == p {
                 l.1 += 1;

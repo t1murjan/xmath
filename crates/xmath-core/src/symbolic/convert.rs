@@ -7,7 +7,7 @@ use super::Ctx;
 use crate::ast::{BinOp, Expr, UnOp};
 use crate::value::Value;
 use num_bigint::BigInt;
-use num_traits::{One, Signed, ToPrimitive, Zero};
+use num_traits::{One, Signed, ToPrimitive};
 use std::collections::BTreeMap;
 
 pub enum ConvErr {
@@ -489,7 +489,7 @@ fn exps_of(t: &Sx) -> (BTreeMap<String, f64>, bool) {
             _ => nonconst = true,
         }
     }
-    (m, nonconst)
+    (m, nonconst && !t.is_const())
 }
 
 fn term_order(a: &Sx, b: &Sx) -> std::cmp::Ordering {
@@ -671,7 +671,10 @@ fn mul_expr(fs: &[Sx]) -> Expr {
                 _ => (1, String::new(), 0),
             },
             Sx::Im => (3, String::new(), 0),
-            Sx::Add(_) => (2, String::new(), 0),
+            Sx::Add(t) => {
+                let c = t.iter().find_map(|x| if let Sx::Num(r) = x { r.to_integer().to_i64() } else { None }).unwrap_or(0);
+                (2, String::new(), f.size() as i64 * 1_000_000 + c.abs() * 2 + i64::from(c > 0))
+            }
             _ => (1, String::new(), 0),
         }
     };

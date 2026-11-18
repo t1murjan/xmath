@@ -670,7 +670,7 @@ pub fn factor_poly(e: &Sx) -> Option<(Rat, Vec<(Sx, usize)>)> {
     }
     let d = reduced.keys().flat_map(|m| m.iter().copied()).max().unwrap_or(1) + 1;
     let p = kron_encode(&reduced, d);
-    let (c, fs) = poly::factor_q(&p);
+    let (_c, fs) = poly::factor_q(&p);
     if fs.len() <= 1 && fs.first().map_or(true, |(_, m)| *m == 1) {
         factors.push((mp_to_sx(&reduced, &vars), 1));
         return Some((content, factors));

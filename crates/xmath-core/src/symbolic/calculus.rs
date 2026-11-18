@@ -1168,7 +1168,9 @@ pub fn series(e: &Sx, x: &Sx, a: &Sx, n: usize) -> Option<Sx> {
                 Some(v) => {
                     let c = simplify(&div(v, Sx::Num(Rat::from_integer(fact.clone()))));
                     if !c.is_zero() {
-                        terms.push(mul(c, shift(k)));
+                        if (k as i64) - (m as i64) < n as i64 {
+                            terms.push(mul(c, pow(sub(x.clone(), a.clone()), int(k as i64 - m as i64))));
+                        }
                     }
                 }
                 None => {
@@ -1178,16 +1180,13 @@ pub fn series(e: &Sx, x: &Sx, a: &Sx, n: usize) -> Option<Sx> {
             }
         }
         if ok {
-            let s = sum(terms);
-            let s = if m == 0 { s } else { mul(s, pow(sub(x.clone(), a.clone()), int(-(m as i64)))) };
-            // keep only powers below n (relative to the original expansion)
-            let ex = expand(&s);
-            return Some(trunc_series(&ex, x, a, n, m));
+            return Some(sum(terms));
         }
     }
     None
 }
 
+#[allow(dead_code)]
 fn trunc_series(e: &Sx, x: &Sx, a: &Sx, n: usize, _m: usize) -> Sx {
     // terms of order (x-a)^k with k < n
     let shifted = if a.is_zero() { e.clone() } else { e.clone() };
@@ -1297,6 +1296,10 @@ pub fn sum_closed(body: &Sx, k: &Sx, lo: &Sx, hi: &Sx) -> Option<Sx> {
     }
     // geometric: c * r^k
     let (c, rest) = split_ind(body, k);
+    let rest = match &rest {
+        Sx::Pow(r, e) if **e == neg(k.clone()) => pow(pow((**r).clone(), int(-1)), k.clone()),
+        other => other.clone(),
+    };
     if let Sx::Pow(r, e) = &rest {
         if !r.depends(k) && **e == *k {
             if hi.has_sym("∞") {
