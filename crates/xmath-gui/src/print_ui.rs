@@ -247,8 +247,7 @@ impl App {
                         painter.rect_filled(page, 0.0, Color32::WHITE);
                         let m = sheet.setup.margins;
                         let origin = page.min + Vec2::new(m[0], m[1]) * MM_TO_PX * z;
-                        let (y0, y1) = sheet.page_range(pv.page);
-                        let clip = Rect::from_min_size(Pos2::new(page.left(), origin.y), Vec2::new(page.width(), (y1 - y0).min(sheet.page_h())));
+                        let clip = sheet.page_clip(pv.page, origin, page.left(), page.width());
                         sheet.paint_page(&painter.with_clip_rect(clip.intersect(page)), pv.page, origin);
                         // the margins
                         let faint = Stroke::new(1.0_f32, Color32::from_gray(225));
@@ -287,8 +286,7 @@ impl App {
                         ui.end_row();
                     }
                 });
-                let (w, h) = d.paper_mm();
-                let _ = (w, h);
+                ui.checkbox(&mut d.within_margins, "Печатать только в пределах полей");
                 let (pw, ph) = d.printable_px();
                 ui.label(RichText::new(format!("Область печати: {pw:.0} × {ph:.0} пикселей рабочего листа")).weak());
                 ui.horizontal(|ui| {

@@ -91,13 +91,16 @@ pub struct PageSetup {
     pub landscape: bool,
     /// Margins in millimetres: left, top, right, bottom.
     pub margins: [f32; 4],
+    /// Cut off what lies right of the printable width instead of printing it on extra pages
+    /// to the right (Mathcad's «print within margins»).
+    pub within_margins: bool,
 }
 
 impl Default for PageSetup {
     fn default() -> Self {
         // the printable area of A4 is then about 756 x 1039 worksheet pixels,
         // the size of the page the canvas has always shown
-        PageSetup { paper: Paper::A4, landscape: false, margins: [5.0, 11.0, 5.0, 11.0] }
+        PageSetup { paper: Paper::A4, landscape: false, margins: [5.0, 11.0, 5.0, 11.0], within_margins: false }
     }
 }
 

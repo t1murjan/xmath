@@ -66,13 +66,24 @@ pub struct Placed {
     pub item: Item,
 }
 
+/// One page of the sheet: its rows (device pixels) and the left edge of its column.
+#[derive(Clone, Copy, Debug)]
+pub struct PageCell {
+    pub y0: f32,
+    pub y1: f32,
+    pub x0: f32,
+    pub x1: f32,
+}
+
 pub struct Sheet {
     pub zoom: f32,
     pub setup: PageSetup,
     pub has_bold: bool,
     pub items: Vec<Placed>,
     /// Start of every page on the sheet (device pixels); one more entry marks the end.
-    pub breaks: Vec<f32>,
+    pub pages: Vec<PageCell>,
+    /// Number of page columns.
+    pub cols: usize,
 }
 
 /// The font family of a text region.
@@ -280,7 +291,7 @@ impl Sheet {
                 }
             }
         }
-        let mut sheet = Sheet { zoom, setup, has_bold, items, breaks: Vec::new() };
+        let mut sheet = Sheet { zoom, setup, has_bold, items, pages: Vec::new(), cols: 1 };
         sheet.paginate();
         sheet
     }
@@ -294,61 +305,118 @@ impl Sheet {
         self.setup.printable_px().0 * self.zoom
     }
 
-    /// Decides where the pages begin. A page is at most one printable height; a region cut by
-    /// a page break (and small enough for a page) moves to the next page.
+    /// Decides where the pages begin. Rows: a page is at most one printable height; a region
+    /// cut by a break moves to the next page only if the page keeps at least a third of its
+    /// height (otherwise it is cut and continues on the next page). Columns: content right of
+    /// the printable width goes to extra pages to the right, as in Mathcad (unless the setup
+    /// says to print within the margins). Pages without any content are dropped; pages are
+    /// numbered row by row.
     fn paginate(&mut self) {
         let ph = self.page_h();
+        let pw = self.page_w();
         let bottom = self.items.iter().map(|i| i.rect.bottom()).fold(0.0f32, f32::max);
-        let mut starts = vec![0.0f32];
+        let right = self.items.iter().map(|i| i.rect.right()).fold(0.0f32, f32::max);
+        let mut rows: Vec<(f32, f32)> = Vec::new();
         let mut start = 0.0f32;
         let mut guard = 0;
-        while start + ph < bottom - 0.5 && guard < 10_000 {
+        loop {
             guard += 1;
-            let mut limit = start + ph;
-            // pull the break up above regions that it would cut
-            loop {
-                let cut = self
-                    .items
-                    .iter()
-                    .filter(|i| i.rect.top() > start + 0.5 && i.rect.top() < limit - 0.5 && i.rect.bottom() > limit + 0.5 && i.rect.height() <= ph)
-                    .map(|i| i.rect.top())
-                    .fold(f32::INFINITY, f32::min);
-                if cut.is_finite() && cut < limit {
-                    limit = cut;
-                } else {
-                    break;
+            let full = start + ph;
+            let mut limit = full;
+            if full < bottom - 0.5 && guard < 10_000 {
+                // the break goes to the full height or to the top of a region (at least a third
+                // of a page down), whichever cuts the fewest regions; ties: the lower break
+                let cuts = |l: f32| self.items.iter().filter(|i| i.rect.top() < l - 0.5 && i.rect.bottom() > l + 0.5).count();
+                let mut best = cuts(full);
+                let mut cands: Vec<f32> = self.items.iter().map(|i| i.rect.top()).filter(|t| *t >= start + ph / 3.0 && *t < full - 0.5).collect();
+                cands.sort_by(|a, b| b.total_cmp(a));
+                cands.dedup();
+                for c in cands {
+                    let n = cuts(c);
+                    if n < best {
+                        best = n;
+                        limit = c;
+                    }
                 }
             }
-            starts.push(limit);
+            rows.push((start, limit));
+            if full >= bottom - 0.5 || guard >= 10_000 {
+                break;
+            }
             start = limit;
         }
-        self.breaks = starts;
+        // column starts: fixed steps of the printable width (a region on a boundary continues
+        // on the next page, as in Mathcad)
+        let mut col_starts = vec![0.0f32];
+        if !self.setup.within_margins {
+            let mut cx = 0.0f32;
+            let mut g = 0;
+            // content may reach into the right margin without needing another page
+            let tol = self.setup.margins[2] * MM_TO_PX * self.zoom + 12.0;
+            while cx + pw + tol < right - 0.5 && g < 10_000 {
+                g += 1;
+                cx += pw;
+                col_starts.push(cx);
+            }
+        }
+        let ncols = col_starts.len();
+        let mut pages = Vec::new();
+        for &(y0, y1) in &rows {
+            for (c, &x0) in col_starts.iter().enumerate() {
+                let x1 = col_starts.get(c + 1).copied().unwrap_or(f32::INFINITY).min(x0 + pw);
+                let any = self.items.iter().any(|i| i.rect.bottom() > y0 && i.rect.top() < y1 && (ncols == 1 || (i.rect.right() > x0 + 12.0 && i.rect.left() < x1 - 12.0)));
+                if any {
+                    pages.push(PageCell { y0, y1, x0, x1 });
+                }
+            }
+        }
+        if pages.is_empty() {
+            pages.push(PageCell { y0: 0.0, y1: ph, x0: 0.0, x1: pw });
+        }
+        self.cols = ncols;
+        self.pages = pages;
     }
 
     pub fn page_count(&self) -> usize {
-        self.breaks.len().max(1)
+        self.pages.len().max(1)
     }
 
-    /// Vertical extent of page `k` on the sheet (device pixels): from its start to the start
-    /// of the next page, at most one printable height.
+    /// Vertical extent of page `k` on the sheet (device pixels).
     pub fn page_range(&self, k: usize) -> (f32, f32) {
-        let k = k.min(self.breaks.len() - 1);
-        let y0 = self.breaks[k];
-        let full = y0 + self.page_h();
-        (y0, self.breaks.get(k + 1).copied().unwrap_or(full).min(full))
+        let c = &self.pages[k.min(self.pages.len() - 1)];
+        (c.y0, c.y1)
+    }
+
+    fn page_x(&self, k: usize) -> f32 {
+        self.pages[k.min(self.pages.len() - 1)].x0
+    }
+
+    /// The area of page `k` that may be drawn on, in page coordinates when the printable area
+    /// starts at `origin`; `paper_w` is the paper width in the same unit. Content reaching into
+    /// the side margins is kept only when the sheet is a single page column.
+    pub fn page_clip(&self, k: usize, origin: Pos2, page_left: f32, paper_w: f32) -> Rect {
+        let (y0, y1) = self.page_range(k);
+        let h = (y1 - y0).min(self.page_h());
+        if self.cols == 1 && !self.setup.within_margins {
+            Rect::from_min_size(Pos2::new(page_left, origin.y), Vec2::new(paper_w, h))
+        } else {
+            Rect::from_min_size(origin, Vec2::new(self.page_w(), h))
+        }
     }
 
     /// Items that appear on page `k` (those of a taller region continue on the next page).
     fn on_page(&self, k: usize) -> impl Iterator<Item = &Placed> {
         let (y0, end) = self.page_range(k);
-        self.items.iter().filter(move |i| i.rect.bottom() > y0 && i.rect.top() < end)
+        let (x0, x1) = (self.page_x(k), self.pages[k.min(self.pages.len() - 1)].x1);
+        let cols = self.cols;
+        self.items.iter().filter(move |i| i.rect.bottom() > y0 && i.rect.top() < end && (cols == 1 || (i.rect.right() > x0 && i.rect.left() < x1)))
     }
 
     /// Paints page `k`; `origin` is where the top-left corner of the printable area goes and
     /// the painter's clip rectangle should already limit drawing to that area.
     pub fn paint_page(&self, painter: &Painter, k: usize, origin: Pos2) {
         let (y0, _) = self.page_range(k);
-        let o = origin - Vec2::new(0.0, y0);
+        let o = origin - Vec2::new(self.page_x(k), y0);
         for p in self.on_page(k) {
             let pos = p.rect.min + o.to_vec2();
             match &p.item {
@@ -382,7 +450,7 @@ impl Sheet {
     /// `origin` as in [`Sheet::paint_page`].
     pub fn page_images(&self, k: usize, origin: Pos2) -> Vec<([f32; 4], Arc<Bitmap>)> {
         let (y0, _) = self.page_range(k);
-        let o = origin - Vec2::new(0.0, y0);
+        let o = origin - Vec2::new(self.page_x(k), y0);
         self.on_page(k)
             .filter_map(|p| match &p.item {
                 Item::Image { bitmap, .. } if bitmap.width > 0 => {
@@ -450,7 +518,6 @@ pub fn export_pdf(ws: &Worksheet, outputs: &HashMap<u64, RegionOutput>, opts: &P
     let (pw_mm, ph_mm) = setup.paper_mm();
     let (paper_w, paper_h) = (pw_mm * MM_TO_PX, ph_mm * MM_TO_PX);
     let (ml, mt) = (setup.margins[0] * MM_TO_PX, setup.margins[1] * MM_TO_PX);
-    let (_, ch) = setup.printable_px();
 
     let mut doc = PdfDoc::new(defs, &opts.title);
     let mut sheet: Option<Sheet> = None;
@@ -461,16 +528,14 @@ pub fn export_pdf(ws: &Worksheet, outputs: &HashMap<u64, RegionOutput>, opts: &P
     for k in 0..sheet.page_count() {
         let out = ctx.run(Default::default(), |ctx| {
             let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new(("print-page", k))));
-            let (y0, y1) = sheet.page_range(k);
-            // regions may reach into the side margins; only the paper edge cuts them off
-            let clip = Rect::from_min_size(Pos2::new(0.0, mt), Vec2::new(paper_w, (y1 - y0).min(ch)));
+            let clip = sheet.page_clip(k, Pos2::new(ml, mt), 0.0, paper_w);
             sheet.paint_page(&painter.with_clip_rect(clip), k, Pos2::new(ml, mt));
         });
         let mut page = doc.page(paper_w, paper_h);
         use canvas::Canvas;
         canvas::paint_shapes(&out.shapes, &mut page, Vec2::ZERO, has_bold);
-        let (y0, y1) = sheet.page_range(k);
-        page.clip(Some([0.0, mt, paper_w, mt + (y1 - y0).min(ch)]));
+        let c = sheet.page_clip(k, Pos2::new(ml, mt), 0.0, paper_w);
+        page.clip(Some([c.min.x, c.min.y, c.max.x, c.max.y]));
         for (r, bm) in sheet.page_images(k, Pos2::new(ml, mt)) {
             page.image(r, &bm);
         }
@@ -536,6 +601,45 @@ mod tests {
         let ws = Worksheet::from_lines(lines);
         let out = xmath_core::evaluate_worksheet(&ws);
         export_pdf(&ws, &out, &PdfOptions { title: "test".into() })
+    }
+
+
+    fn blank(rect: Rect) -> Placed {
+        Placed { rect, item: Item::Image { bitmap: Arc::new(Bitmap { width: 0, height: 0, rgba: Vec::new() }), texture: None } }
+    }
+
+    fn sheet_of(items: Vec<Placed>) -> Sheet {
+        let mut s = Sheet { zoom: 1.0, setup: PageSetup::default(), has_bold: true, items, pages: Vec::new(), cols: 1 };
+        s.paginate();
+        s
+    }
+
+    #[test]
+    fn dense_regions_near_a_break_do_not_make_strips() {
+        let ph = PageSetup::default().printable_px().1;
+        // many overlapping regions stacked right above and across the first break
+        let mut items = Vec::new();
+        for i in 0..40 {
+            let top = 20.0 + i as f32 * 5.0 + ph * 0.55;
+            items.push(blank(Rect::from_min_size(Pos2::new(10.0, top), Vec2::new(100.0, 400.0))));
+        }
+        items.push(blank(Rect::from_min_size(Pos2::new(10.0, 5.0), Vec2::new(100.0, 20.0))));
+        let s = sheet_of(items);
+        let n = s.page_count();
+        for k in 0..n - 1 {
+            let (a, b) = s.page_range(k);
+            assert!(b - a >= ph / 3.0 - 0.5, "page {k} is a strip: {}", b - a);
+        }
+    }
+
+    #[test]
+    fn wide_content_goes_to_pages_on_the_right() {
+        let pw = PageSetup::default().printable_px().0;
+        let items = vec![blank(Rect::from_min_size(Pos2::new(10.0, 10.0), Vec2::new(50.0, 20.0))), blank(Rect::from_min_size(Pos2::new(pw + 20.0, 10.0), Vec2::new(50.0, 20.0)))];
+        assert_eq!(sheet_of(items).page_count(), 2);
+        let mut s = Sheet { zoom: 1.0, setup: PageSetup { within_margins: true, ..PageSetup::default() }, has_bold: true, items: vec![blank(Rect::from_min_size(Pos2::new(pw + 20.0, 10.0), Vec2::new(50.0, 20.0)))], pages: Vec::new(), cols: 1 };
+        s.paginate();
+        assert_eq!(s.page_count(), 1);
     }
 
     #[test]
