@@ -4,11 +4,11 @@
 use crate::mathview::{Lay, Node, Ts, RED};
 use crate::palettes::{self, Act, Palette};
 use crate::plot;
-use egui::text::{CCursor, CCursorRange, LayoutJob, TextFormat};
+use egui::text::{CCursor, CCursorRange};
 use egui::text_edit::TextEditState;
 use egui::scroll_area::ScrollBarVisibility;
 use egui::{
-    Align, Align2, Color32, Context, CursorIcon, Event, FontFamily, FontId, Id, Key, KeyboardShortcut, Layout,
+    Align, Align2, Color32, Context, CursorIcon, Event, FontId, Id, Key, KeyboardShortcut, Layout,
     Modifiers, Pos2, Rect, RichText, ScrollArea, Sense, Shape, Stroke, TextEdit, Ui, Vec2,
 };
 use std::collections::{HashMap, HashSet};
@@ -2103,22 +2103,7 @@ impl App {
     // Worksheet canvas
 
     fn text_galley(&self, ctx: &Context, text: &str, style: &xmath_core::worksheet::TextStyle, wrap: f32) -> std::sync::Arc<egui::Galley> {
-        let size = px(style.size, self.zoom);
-        let family = if style.bold && self.has_bold_font { FontFamily::Name("bold".into()) } else { FontFamily::Proportional };
-        let mut job = LayoutJob::default();
-        job.wrap.max_width = wrap;
-        job.append(
-            if text.is_empty() { " " } else { text },
-            0.0,
-            TextFormat {
-                font_id: FontId::new(size, family),
-                color: Color32::BLACK,
-                italics: style.italic,
-                underline: if style.underline { Stroke::new(1.0_f32, Color32::BLACK) } else { Stroke::NONE },
-                ..Default::default()
-            },
-        );
-        ctx.fonts(|f| f.layout_job(job))
+        crate::print::text_galley(ctx, text, style, wrap, self.zoom, self.has_bold_font)
     }
 
     fn math_layout(&self, ctx: &Context, id: u64, source: &str) -> (Lay, Option<String>) {
@@ -2313,10 +2298,10 @@ impl App {
                         }
                     }
                     RegionKind::Text { text, style, width, lock_width } => {
-                        let wrap = if *lock_width { (*width * z).max(20.0) } else { (page_w * z - (pos.x - origin.x)).max(120.0 * z) };
+                        let wrap = if *lock_width { crate::print::locked_wrap(*width, z) } else { (page_w * z - (pos.x - origin.x)).max(120.0 * z) };
                         if editing {
                             let mut t = text.clone();
-                            let family = if style.bold && self.has_bold_font { FontFamily::Name("bold".into()) } else { FontFamily::Proportional };
+                            let family = crate::print::text_family(style, self.has_bold_font);
                             let g = self.text_galley(&ctx, &t, style, wrap);
                             let r = Rect::from_min_size(pos, Vec2::new(wrap.min(g.size().x + fs * 4.0).max(fs * 8.0), g.size().y + 6.0));
                             let resp = ui.put(
@@ -2349,7 +2334,7 @@ impl App {
                             region_rect = Rect::from_min_size(pos, g.size() + Vec2::splat(4.0));
                             let at = pos + Vec2::splat(2.0);
                             painter.galley(at, g.clone(), Color32::BLACK);
-                            if style.bold && !self.has_bold_font {
+                            if style.bold && !self.has_bold_font && style.font == xmath_core::worksheet::TextFont::Sans {
                                 painter.galley(at + Vec2::X * 0.7, g, Color32::BLACK);
                             }
                         }

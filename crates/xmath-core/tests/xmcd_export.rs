@@ -135,7 +135,7 @@ fn text_picture_and_reference_roundtrip() {
         1,
         30.0,
         20.0,
-        RegionKind::Text { text: "Заголовок\nвторая строка & <теги>".into(), width: 300.0, style: TextStyle { size: 14.0, bold: true, italic: true, underline: false }, lock_width: true },
+        RegionKind::Text { text: "Заголовок\nвторая строка & <теги>".into(), width: 300.0, style: TextStyle { size: 14.0, bold: true, italic: true, underline: false, ..Default::default() }, lock_width: true },
     ));
     ws.regions.push(Region::new(2, 40.0, 100.0, RegionKind::Reference { href: "lib/other.xmcd".into() }));
     // a 1x1 PNG

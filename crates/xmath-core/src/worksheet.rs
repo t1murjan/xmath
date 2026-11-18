@@ -539,11 +539,39 @@ pub struct TextStyle {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
+    /// Typeface class (Arial, Times New Roman or Courier New and their look-alikes).
+    pub font: TextFont,
+}
+
+/// Typeface class of a text region.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TextFont {
+    /// Arial and anything unknown.
+    #[default]
+    Sans,
+    /// Times New Roman, Cambria, Georgia.
+    Serif,
+    /// Courier New.
+    Mono,
+}
+
+impl TextFont {
+    /// The class of a font family name.
+    pub fn from_family(name: &str) -> TextFont {
+        let n = name.to_lowercase();
+        if n.contains("courier") || n.contains("consolas") || n.contains("mono") {
+            TextFont::Mono
+        } else if n.contains("times") || n.contains("cambria") || n.contains("georgia") || n.contains("serif") && !n.contains("sans") {
+            TextFont::Serif
+        } else {
+            TextFont::Sans
+        }
+    }
 }
 
 impl Default for TextStyle {
     fn default() -> Self {
-        TextStyle { size: 10.0, bold: false, italic: false, underline: false }
+        TextStyle { size: 10.0, bold: false, italic: false, underline: false, font: TextFont::Sans }
     }
 }
 

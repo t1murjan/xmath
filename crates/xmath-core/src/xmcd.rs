@@ -7,7 +7,7 @@
 use crate::ast::{BinOp, Expr, PStmt, Stmt, Target, UnOp};
 use crate::parser::{parse_expr, parse_statement};
 use crate::units::{self, Dim};
-use crate::worksheet::{Paper, Region, RegionKind, TextStyle, Worksheet};
+use crate::worksheet::{Paper, Region, RegionKind, TextFont, TextStyle, Worksheet};
 use base64::Engine;
 use roxmltree::{Document, Node};
 use std::collections::{HashMap, HashSet};
@@ -946,7 +946,11 @@ struct Stats {
     bold: usize,
     italic: usize,
     underline: usize,
-    size: Option<f32>,
+    /// Non-blank characters per font size (pt, in tenths) and per typeface class.
+    sizes: Vec<(f32, usize)>,
+    fonts: [usize; 3],
+    /// Size and class of the first run, for an empty region.
+    first: Option<(f32, TextFont)>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -954,6 +958,16 @@ struct Fmt {
     bold: bool,
     italic: bool,
     underline: bool,
+    size: Option<f32>,
+    font: Option<TextFont>,
+}
+
+fn font_index(f: TextFont) -> usize {
+    match f {
+        TextFont::Sans => 0,
+        TextFont::Serif => 1,
+        TextFont::Mono => 2,
+    }
 }
 
 /// Paragraph styles (`textStyle name=… / inlineAttr`) of the worksheet settings.
@@ -966,6 +980,7 @@ fn read_text_styles(cx: &mut Cx, settings: Node) {
             bold: ia.attribute("font-weight").map_or(false, |w| w == "bold" || w == "700"),
             italic: ia.attribute("font-style") == Some("italic"),
             underline: is_true(ia.attribute("underline")),
+            font: ia.attribute("font-family").map_or(TextFont::Sans, TextFont::from_family),
         };
         cx.styles.insert(name.to_string(), st);
     }
@@ -984,9 +999,9 @@ fn convert_text(cx: &mut Cx, node: Node, w: Option<f32>) -> RegionKind {
             let base = p.attribute("style").and_then(|n| cx.styles.get(n)).cloned();
             let mut fmt = Fmt::default();
             if let Some(b) = &base {
-                fmt = Fmt { bold: b.bold, italic: b.italic, underline: b.underline };
-                if i == 0 && b.size != 10.0 {
-                    st.size = Some(b.size);
+                fmt = Fmt { bold: b.bold, italic: b.italic, underline: b.underline, size: Some(b.size), font: Some(b.font) };
+                if i == 0 {
+                    st.first = Some((b.size, b.font));
                 }
             }
             let mut s = String::new();
@@ -998,14 +1013,36 @@ fn convert_text(cx: &mut Cx, node: Node, w: Option<f32>) -> RegionKind {
     let all = st.total > 0;
     // a region has one style: take what applies to most of the text
     let major = |n: usize| all && n * 2 > st.total;
+    // the size and the typeface of most of the characters
+    let size = st
+        .sizes
+        .iter()
+        .max_by_key(|s| s.1)
+        .map(|s| s.0)
+        .or(st.first.map(|f| f.0))
+        .unwrap_or(10.0);
+    let font = if st.fonts.iter().sum::<usize>() == 0 {
+        st.first.map_or(TextFont::Sans, |f| f.1)
+    } else {
+        // first maximum wins: Sans, Serif, Mono
+        let mut best = 0;
+        for k in 1..3 {
+            if st.fonts[k] > st.fonts[best] {
+                best = k;
+            }
+        }
+        [TextFont::Sans, TextFont::Serif, TextFont::Mono][best]
+    };
     let style = TextStyle {
-        size: st.size.map_or(10.0, |s| s.clamp(4.0, 72.0)),
+        size: size.clamp(4.0, 72.0),
         bold: major(st.bold),
         italic: major(st.italic),
         underline: major(st.underline),
+        font,
     };
-    let lock = is_true(node.attribute("lock-width"));
-    text_kind(text, w, style, lock)
+    // Mathcad always wraps a text region at its stored width ("lock-width" only stops it from
+    // being resized automatically), so the width is authoritative.
+    text_kind(text, w, style, true)
 }
 
 /// Collapses XML pretty-printing whitespace but keeps explicit line breaks.
@@ -1051,6 +1088,14 @@ fn inline(cx: &mut Cx, n: Node, out: &mut String, fmt: Fmt, st: &mut Stats) {
             if fmt.underline {
                 st.underline += chars;
             }
+            if chars > 0 {
+                let sz = fmt.size.unwrap_or(10.0);
+                match st.sizes.iter_mut().find(|e| (e.0 - sz).abs() < 0.05) {
+                    Some(e) => e.1 += chars,
+                    None => st.sizes.push((sz, chars)),
+                }
+                st.fonts[font_index(fmt.font.unwrap_or_default())] += chars;
+            }
             // Pretty-printing newlines inside a paragraph are not line breaks.
             out.push_str(&t.replace('\n', " "));
             continue;
@@ -1089,8 +1134,13 @@ fn inline(cx: &mut Cx, n: Node, out: &mut String, fmt: Fmt, st: &mut Stats) {
                 f.underline = is_true(Some(u));
             }
         }
-        if st.size.is_none() {
-            st.size = num_attr(c, "font-size").or_else(|| num_attr(c, "size"));
+        if matches!(name, "f" | "inlineAttr") {
+            if let Some(sz) = num_attr(c, "font-size").or_else(|| num_attr(c, "size")) {
+                f.size = Some(sz.clamp(4.0, 72.0));
+            }
+            if let Some(fam) = c.attribute("font-family").or_else(|| c.attribute("family")) {
+                f.font = Some(TextFont::from_family(fam));
+            }
         }
         match name {
             "br" => out.push('\n'),

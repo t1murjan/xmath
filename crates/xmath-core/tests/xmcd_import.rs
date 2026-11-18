@@ -172,3 +172,36 @@ fn json_roundtrip() {
     let (ws, _) = load("units.xmcd");
     assert_eq!(Worksheet::from_json(&ws.to_json()).unwrap(), ws);
 }
+
+#[test]
+fn text_region_size_font_and_width() {
+    use xmath_core::worksheet::TextFont;
+    let xml = r#"<?xml version="1.0"?>
+<worksheet xmlns="http://schemas.mathsoft.com/worksheet30" xmlns:ml="http://schemas.mathsoft.com/math30">
+<settings><presentation><textStyles>
+<textStyle name="Normal"><inlineAttr font-family="Times New Roman" font-size="12" font-weight="normal" font-style="normal" underline="false"/></textStyle>
+</textStyles></presentation></settings>
+<regions>
+<region region-id="1" left="30" top="6" width="150" height="30">
+<text use-page-width="false" push-down="false" lock-width="false"><p style="Normal">Первая строка</p></text>
+</region>
+<region region-id="2" left="30" top="60" width="90" height="20">
+<text use-page-width="false" push-down="false" lock-width="false"><p style="Normal"><f family="Arial" size="16">Заголовок</f></p></text>
+</region>
+</regions>
+</worksheet>"#;
+    let ws = import_xmcd(xml).unwrap().worksheet;
+    let get = |id: u64| match &ws.regions.iter().find(|r| r.id == id).unwrap().kind {
+        RegionKind::Text { style, width, lock_width, .. } => (style.clone(), *width, *lock_width),
+        _ => panic!("not text"),
+    };
+    let (st, w, lock) = get(1);
+    assert_eq!(st.size, 12.0);
+    assert_eq!(st.font, TextFont::Serif);
+    assert!((w - 200.0).abs() < 0.01, "{w}");
+    assert!(lock, "the stored width must be kept");
+    let (st, w, _) = get(2);
+    assert_eq!(st.size, 16.0, "inline size beats the style");
+    assert_eq!(st.font, TextFont::Sans);
+    assert!((w - 120.0).abs() < 0.01, "{w}");
+}

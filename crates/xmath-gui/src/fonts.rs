@@ -31,6 +31,64 @@ const BOLD_FONTS: &[&str] = &[
     "/usr/share/fonts/TTF/LiberationSans-Bold.ttf",
 ];
 
+/// Times New Roman or Liberation Serif.
+const SERIF_FONTS: &[&str] = &[
+    "C:\\Windows\\Fonts\\times.ttf",
+    "/System/Library/Fonts/Supplemental/Times New Roman.ttf",
+    "/Library/Fonts/Times New Roman.ttf",
+    "/usr/share/fonts/truetype/msttcorefonts/Times_New_Roman.ttf",
+    "/usr/share/fonts/truetype/msttcorefonts/times.ttf",
+    "/usr/share/fonts/TTF/times.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSerif-Regular.ttf",
+    "/usr/share/fonts/liberation-serif/LiberationSerif-Regular.ttf",
+    "/usr/share/fonts/liberation-serif-fonts/LiberationSerif-Regular.ttf",
+    "/usr/share/fonts/TTF/LiberationSerif-Regular.ttf",
+];
+
+const SERIF_BOLD_FONTS: &[&str] = &[
+    "C:\\Windows\\Fonts\\timesbd.ttf",
+    "/System/Library/Fonts/Supplemental/Times New Roman Bold.ttf",
+    "/Library/Fonts/Times New Roman Bold.ttf",
+    "/usr/share/fonts/truetype/msttcorefonts/Times_New_Roman_Bold.ttf",
+    "/usr/share/fonts/truetype/msttcorefonts/timesbd.ttf",
+    "/usr/share/fonts/TTF/timesbd.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSerif-Bold.ttf",
+    "/usr/share/fonts/liberation-serif/LiberationSerif-Bold.ttf",
+    "/usr/share/fonts/liberation-serif-fonts/LiberationSerif-Bold.ttf",
+    "/usr/share/fonts/TTF/LiberationSerif-Bold.ttf",
+];
+
+/// Courier New or Liberation Mono.
+const MONO_FONTS: &[&str] = &[
+    "C:\\Windows\\Fonts\\cour.ttf",
+    "/System/Library/Fonts/Supplemental/Courier New.ttf",
+    "/Library/Fonts/Courier New.ttf",
+    "/usr/share/fonts/truetype/msttcorefonts/Courier_New.ttf",
+    "/usr/share/fonts/truetype/msttcorefonts/cour.ttf",
+    "/usr/share/fonts/TTF/cour.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/liberation-mono/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/liberation-mono-fonts/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/TTF/LiberationMono-Regular.ttf",
+];
+
+const MONO_BOLD_FONTS: &[&str] = &[
+    "C:\\Windows\\Fonts\\courbd.ttf",
+    "/System/Library/Fonts/Supplemental/Courier New Bold.ttf",
+    "/Library/Fonts/Courier New Bold.ttf",
+    "/usr/share/fonts/truetype/msttcorefonts/Courier_New_Bold.ttf",
+    "/usr/share/fonts/truetype/msttcorefonts/courbd.ttf",
+    "/usr/share/fonts/TTF/courbd.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationMono-Bold.ttf",
+    "/usr/share/fonts/liberation-mono/LiberationMono-Bold.ttf",
+    "/usr/share/fonts/liberation-mono-fonts/LiberationMono-Bold.ttf",
+    "/usr/share/fonts/TTF/LiberationMono-Bold.ttf",
+];
+
 /// Wide Unicode coverage for math symbols (∫, Σ, ■, Greek, arrows).
 const SYMBOL_FONTS: &[&str] = &[
     "C:\\Windows\\Fonts\\seguisym.ttf",
@@ -68,6 +126,18 @@ pub fn definitions() -> (egui::FontDefinitions, bool) {
         fam.extend(fallback);
         fonts.families.insert(egui::FontFamily::Name("bold".into()), fam);
         has_bold = true;
+    }
+    // Times New Roman and Courier New classes of text regions (always defined; without the face
+    // they fall back to the Arial chain)
+    let chain = fonts.families.get(&egui::FontFamily::Proportional).cloned().unwrap_or_default();
+    for (name, paths) in [("serif", SERIF_FONTS), ("serif-bold", SERIF_BOLD_FONTS), ("mono", MONO_FONTS), ("mono-bold", MONO_BOLD_FONTS)] {
+        let mut fam = Vec::new();
+        if let Some(data) = first_font(paths) {
+            fonts.font_data.insert(name.into(), Arc::new(egui::FontData::from_owned(data)));
+            fam.push(name.to_string());
+        }
+        fam.extend(chain.iter().cloned());
+        fonts.families.insert(egui::FontFamily::Name(name.into()), fam);
     }
     (fonts, has_bold)
 }

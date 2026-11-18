@@ -75,10 +75,21 @@ pub struct Sheet {
     pub breaks: Vec<f32>,
 }
 
+/// The font family of a text region.
+pub fn text_family(style: &xmath_core::worksheet::TextStyle, has_bold: bool) -> FontFamily {
+    use xmath_core::worksheet::TextFont;
+    let (plain, bold) = match style.font {
+        TextFont::Sans => return if style.bold && has_bold { FontFamily::Name("bold".into()) } else { FontFamily::Proportional },
+        TextFont::Serif => ("serif", "serif-bold"),
+        TextFont::Mono => ("mono", "mono-bold"),
+    };
+    FontFamily::Name((if style.bold { bold } else { plain }).into())
+}
+
 /// Wrapped text of a text region.
 pub fn text_galley(ctx: &Context, text: &str, style: &xmath_core::worksheet::TextStyle, wrap: f32, zoom: f32, has_bold: bool) -> Arc<egui::Galley> {
     let size = px(style.size, zoom);
-    let family = if style.bold && has_bold { FontFamily::Name("bold".into()) } else { FontFamily::Proportional };
+    let family = text_family(style, has_bold);
     let mut job = LayoutJob::default();
     job.wrap.max_width = wrap;
     job.append(
@@ -89,11 +100,23 @@ pub fn text_galley(ctx: &Context, text: &str, style: &xmath_core::worksheet::Tex
             color: Color32::BLACK,
             italics: style.italic,
             underline: if style.underline { Stroke::new(1.0_f32, Color32::BLACK) } else { Stroke::NONE },
+            line_height: Some(size * TEXT_LINE),
             ..Default::default()
         },
     );
     ctx.fonts(|f| f.layout_job(job))
 }
+
+/// Wrap width of a text region of a fixed width. Mathcad measures glyphs at whole device pixels
+/// (a 10 pt font is drawn at 13 px, not 13.33) so its text is a few percent narrower than ours;
+/// a little slack keeps our lines from breaking where Mathcad's do not (which would make the
+/// region taller and run into the one below).
+pub fn locked_wrap(width: f32, zoom: f32) -> f32 {
+    ((width * 1.08 + 8.0) * zoom).max(20.0)
+}
+
+/// Mathcad's line pitch of text: 1.2 times the font size.
+pub const TEXT_LINE: f32 = 1.2;
 
 /// The grey box shown for a reference region: its galley and size.
 pub fn reference_layout(ctx: &Context, href: &str, zoom: f32) -> (Arc<egui::Galley>, Vec2) {
@@ -183,10 +206,10 @@ impl Sheet {
                     items.push(Placed { rect, item: Item::Math { lay } });
                 }
                 RegionKind::Text { text, style, width, lock_width } => {
-                    let wrap = if *lock_width { (*width * zoom).max(20.0) } else { (page_w * zoom - pos.x).max(120.0 * zoom) };
+                    let wrap = if *lock_width { locked_wrap(*width, zoom) } else { (page_w * zoom - pos.x).max(120.0 * zoom) };
                     let galley = text_galley(ctx, text, style, wrap, zoom, has_bold);
                     let rect = Rect::from_min_size(pos, galley.size() + Vec2::splat(4.0));
-                    items.push(Placed { rect, item: Item::Text { galley, fake_bold: style.bold && !has_bold } });
+                    items.push(Placed { rect, item: Item::Text { galley, fake_bold: style.bold && !has_bold && style.font == xmath_core::worksheet::TextFont::Sans } });
                 }
                 RegionKind::Image { png_base64, width, height } => {
                     let rect = Rect::from_min_size(pos, Vec2::new(width * zoom, height * zoom));

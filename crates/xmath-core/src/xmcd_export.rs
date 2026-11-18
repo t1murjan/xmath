@@ -261,7 +261,12 @@ impl Exporter {
             if style.bold {
                 s = format!("<b>{s}</b>");
             }
-            let _ = write!(out, "<f size=\"{}\">{s}</f>", style.size);
+            let family = match style.font {
+                crate::worksheet::TextFont::Sans => "Arial",
+                crate::worksheet::TextFont::Serif => "Times New Roman",
+                crate::worksheet::TextFont::Mono => "Courier New",
+            };
+            let _ = write!(out, "<f family=\"{family}\" size=\"{}\">{s}</f>", style.size);
             out.push_str("</p>\n");
         }
         out.push_str("\t\t\t</text>\n\t\t</region>\n");
