@@ -1,12 +1,16 @@
 //! `xmath-cli file.xmath` (JSON worksheet), `file.xmcd` (Mathcad 15) or
 //! `file.txt` (one math region per line) prints every region with its result.
-//! `--convert out.xmath` additionally saves the loaded worksheet as JSON.
+//! `--convert out.xmath` additionally saves the loaded worksheet as JSON,
+//! `--pdf out.pdf` renders it to PDF (pages of the worksheet's page setup) and
+//! `--export-xmcd out.xmcd` saves it as a Mathcad 15 worksheet.
+//! Relative file names in the worksheet (`READPRN`, `WRITEPRN`, references) refer to the
+//! directory of the worksheet file.
 //! `--check a.xmcd [b.xmcd ...] [-v]` compares the results with the ones Mathcad
 //! saved in the files and prints a summary (a per-region list with `-v`, or for a
 //! single file).
 
 use std::process::ExitCode;
-use xmath_core::{evaluate_worksheet, Output, RegionKind, Worksheet};
+use xmath_core::{evaluate_worksheet_in, Output, RegionKind, Worksheet};
 
 fn check_main(files: Vec<String>, verbose: bool, no_anchors: bool) -> ExitCode {
     use xmath_core::xmcd_check::{check_import, top_causes, CheckReport, Verdict};
@@ -67,6 +71,8 @@ fn check_main(files: Vec<String>, verbose: bool, no_anchors: bool) -> ExitCode {
 fn main() -> ExitCode {
     let mut path: Option<String> = None;
     let mut convert: Option<String> = None;
+    let mut pdf: Option<String> = None;
+    let mut xmcd_out: Option<String> = None;
     let mut args = std::env::args().skip(1);
     if std::env::args().nth(1).as_deref() == Some("--check") {
         let rest: Vec<String> = std::env::args().skip(2).collect();
@@ -86,12 +92,23 @@ fn main() -> ExitCode {
                 eprintln!("--convert needs an output file");
                 return ExitCode::from(2);
             }
+        } else if a == "--pdf" || a == "--export-xmcd" {
+            let v = args.next();
+            if v.is_none() {
+                eprintln!("{a} needs an output file");
+                return ExitCode::from(2);
+            }
+            if a == "--pdf" {
+                pdf = v;
+            } else {
+                xmcd_out = v;
+            }
         } else if path.is_none() {
             path = Some(a);
         }
     }
     let Some(path) = path else {
-        eprintln!("usage: xmath-cli <worksheet.xmath | worksheet.xmcd | lines.txt> [--convert out.xmath] | --check <file.xmcd>... [-v]");
+        eprintln!("usage: xmath-cli <worksheet.xmath | worksheet.xmcd | lines.txt> [--convert out.xmath] [--pdf out.pdf] [--export-xmcd out.xmcd] | --check <file.xmcd>... [-v]");
         return ExitCode::from(2);
     };
     let bytes = match std::fs::read(&path) {
@@ -134,7 +151,26 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     }
-    let outputs = evaluate_worksheet(&ws);
+    if let Some(out) = &xmcd_out {
+        let r = xmath_core::xmcd_export::export_xmcd(&ws);
+        for w in &r.warnings {
+            eprintln!("warning: {w}");
+        }
+        if let Err(e) = std::fs::write(out, r.xml) {
+            eprintln!("cannot write {out}: {e}");
+            return ExitCode::from(2);
+        }
+    }
+    let dir = std::path::Path::new(&path).parent().filter(|p| !p.as_os_str().is_empty()).map_or_else(|| std::path::PathBuf::from("."), |p| p.to_path_buf());
+    let outputs = evaluate_worksheet_in(&ws, &dir);
+    if let Some(out) = &pdf {
+        let title = std::path::Path::new(&path).file_stem().map_or_else(|| "xmath".to_string(), |s| s.to_string_lossy().into_owned());
+        let bytes = xmath_gui::print::export_pdf(&ws, &outputs, &xmath_gui::print::PdfOptions { title });
+        if let Err(e) = std::fs::write(out, bytes) {
+            eprintln!("cannot write {out}: {e}");
+            return ExitCode::from(2);
+        }
+    }
     let mut errors = 0;
     for i in ws.evaluation_order() {
         let r = &ws.regions[i];
@@ -165,6 +201,7 @@ fn main() -> ExitCode {
                 }
             }
             RegionKind::Image { width, height, .. } => println!("[изображение {}×{}]", width.round(), height.round()),
+            RegionKind::Reference { href } => println!("[ссылка: {href}]"),
             RegionKind::Plot { x, y, .. } => {
                 let n = match &out.output {
                     Output::Plot(p) => p.series.len(),

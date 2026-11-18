@@ -3,6 +3,7 @@
 
 use crate::ast::{Expr, Stmt, Target};
 use crate::eval::{Evaluator, Scope};
+use crate::fileio::EvalEnv;
 use crate::format::{FormatOptions, ResultView};
 use crate::solve;
 use crate::parser::{parse_expr, parse_statement, ParseError};
@@ -18,7 +19,90 @@ pub struct Worksheet {
     pub version: u32,
     #[serde(default)]
     pub format: FormatOptions,
+    /// Paper, orientation and margins for printing and PDF export.
+    #[serde(default, skip_serializing_if = "PageSetup::is_default")]
+    pub page: PageSetup,
     pub regions: Vec<Region>,
+}
+
+/// Paper sizes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Paper {
+    #[default]
+    A4,
+    A3,
+    A5,
+    Letter,
+    Legal,
+}
+
+impl Paper {
+    pub const ALL: [Paper; 5] = [Paper::A4, Paper::A3, Paper::A5, Paper::Letter, Paper::Legal];
+
+    /// Portrait size in millimetres (width, height).
+    pub fn size_mm(self) -> (f32, f32) {
+        match self {
+            Paper::A4 => (210.0, 297.0),
+            Paper::A3 => (297.0, 420.0),
+            Paper::A5 => (148.0, 210.0),
+            Paper::Letter => (215.9, 279.4),
+            Paper::Legal => (215.9, 355.6),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Paper::A4 => "A4",
+            Paper::A3 => "A3",
+            Paper::A5 => "A5",
+            Paper::Letter => "Letter",
+            Paper::Legal => "Legal",
+        }
+    }
+}
+
+/// Millimetres to worksheet pixels (96 dpi).
+pub const MM_TO_PX: f32 = 96.0 / 25.4;
+
+/// Page parameters (Файл → Параметры страницы).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PageSetup {
+    pub paper: Paper,
+    pub landscape: bool,
+    /// Margins in millimetres: left, top, right, bottom.
+    pub margins: [f32; 4],
+}
+
+impl Default for PageSetup {
+    fn default() -> Self {
+        // the printable area of A4 is then about 756 x 1039 worksheet pixels,
+        // the size of the page the canvas has always shown
+        PageSetup { paper: Paper::A4, landscape: false, margins: [5.0, 11.0, 5.0, 11.0] }
+    }
+}
+
+impl PageSetup {
+    pub fn is_default(&self) -> bool {
+        *self == PageSetup::default()
+    }
+
+    /// Paper size in millimetres with the orientation applied.
+    pub fn paper_mm(&self) -> (f32, f32) {
+        let (w, h) = self.paper.size_mm();
+        if self.landscape {
+            (h, w)
+        } else {
+            (w, h)
+        }
+    }
+
+    /// Size of the printable area in worksheet pixels (never smaller than 50 x 50).
+    pub fn printable_px(&self) -> (f32, f32) {
+        let (w, h) = self.paper_mm();
+        let m = &self.margins;
+        (((w - m[0] - m[2]) * MM_TO_PX).max(50.0), ((h - m[1] - m[3]) * MM_TO_PX).max(50.0))
+    }
 }
 
 fn file_version() -> u32 {
@@ -27,7 +111,7 @@ fn file_version() -> u32 {
 
 impl Default for Worksheet {
     fn default() -> Self {
-        Worksheet { version: FILE_VERSION, format: FormatOptions::default(), regions: Vec::new() }
+        Worksheet { version: FILE_VERSION, format: FormatOptions::default(), page: PageSetup::default(), regions: Vec::new() }
     }
 }
 
@@ -106,6 +190,10 @@ pub enum RegionKind {
         #[serde(default, skip_serializing_if = "PlotFormat::is_default")]
         fmt: PlotFormat,
     },
+    /// Reference to another worksheet (Mathcad: Insert → Reference): that worksheet is
+    /// evaluated first and its definitions are visible below this region. `href` is a path
+    /// relative to the directory of this worksheet (`.xmath` or `.xmcd`).
+    Reference { href: String },
     /// A picture (imported Mathcad pictures and plots that could not be
     /// decoded). Not editable.
     Image {
@@ -383,6 +471,19 @@ impl Worksheet {
     /// Evaluates the whole worksheet; with `snapshots` every computed value is
     /// also kept in [`RegionOutput::value`].
     pub fn evaluate_opts(&self, snapshots: bool) -> HashMap<u64, RegionOutput> {
+        self.evaluate_with(snapshots, &EvalEnv::default())
+    }
+
+    /// Like [`evaluate_opts`](Self::evaluate_opts) in a worksheet directory `env`: relative file
+    /// names of `READPRN`/`WRITEPRN`/`READEXCEL` and references are resolved there.
+    pub fn evaluate_with(&self, snapshots: bool, env: &EvalEnv) -> HashMap<u64, RegionOutput> {
+        let mut ev = Evaluator::new();
+        ev.env = env.clone();
+        self.run_regions(&mut ev, snapshots)
+    }
+
+    /// Evaluates the regions in `ev` (definitions stay in it afterwards: references use this).
+    fn run_regions(&self, ev: &mut Evaluator, snapshots: bool) -> HashMap<u64, RegionOutput> {
         let mut out = HashMap::new();
         let order = self.evaluation_order();
         let parsed: Vec<Option<Result<Stmt, ParseError>>> = self
@@ -394,13 +495,11 @@ impl Worksheet {
             })
             .collect();
 
-        let mut ev = Evaluator::new();
-
         // Pass 1: global definitions (≡) are visible everywhere.
         for &i in &order {
             if let Some(Ok(Stmt::Define { target, expr, global: true, show })) = &parsed[i] {
-                let (output, shown) = self.define_output(&mut ev, target, expr, show);
-                let value = if snapshots { snapshot_var(&ev, target).or(shown) } else { None };
+                let (output, shown) = self.define_output(ev, target, expr, show);
+                let value = if snapshots { snapshot_var(ev, target).or(shown) } else { None };
                 out.insert(self.regions[i].id, RegionOutput { stmt: parsed[i].clone(), output, value });
             }
         }
@@ -414,24 +513,25 @@ impl Worksheet {
                 (_, Some(Ok(Stmt::Define { global: true, .. }))) => continue,
                 (RegionKind::Math { .. }, Some(Err(_))) => Output::None,
                 (RegionKind::Math { .. }, Some(Ok(stmt))) => {
-                    self.eval_in_block(&mut ev, stmt, region.id, &mut block, &mut out, snapshots.then_some(&mut value))
+                    self.eval_in_block(ev, stmt, region.id, &mut block, &mut out, snapshots.then_some(&mut value))
                 }
                 (RegionKind::Plot { x, y, xs, x_min, x_max, y_min, y_max, .. }, _) => {
                     let mut d = if xs.len() == y.len() && xs.iter().any(|v| v != &xs[0]) {
                         let mut d = PlotData::default();
                         for (xi, yi) in xs.iter().zip(y) {
-                            let part = plot(&ev, xi, std::slice::from_ref(yi));
+                            let part = plot(ev, xi, std::slice::from_ref(yi));
                             d.series.extend(part.series);
                             d.errors.extend(part.errors);
                             d.x_var = d.x_var.or(part.x_var);
                         }
                         d
                     } else {
-                        plot(&ev, if x.is_empty() { xs.first().map_or("", |s| s.as_str()) } else { x }, y)
+                        plot(ev, if x.is_empty() { xs.first().map_or("", |s| s.as_str()) } else { x }, y)
                     };
                     (d.x_min, d.x_max, d.y_min, d.y_max) = (*x_min, *x_max, *y_min, *y_max);
                     Output::Plot(d)
                 }
+                (RegionKind::Reference { href }, _) => self.eval_reference(ev, href),
                 _ => Output::None,
             };
             out.insert(region.id, RegionOutput { stmt: parsed[i].clone(), output, value });
@@ -440,6 +540,41 @@ impl Worksheet {
             flag_unclosed(&mut out, &b);
         }
         out
+    }
+
+    /// Evaluates the referenced worksheet in `ev`, so its definitions are visible below.
+    fn eval_reference(&self, ev: &mut Evaluator, href: &str) -> Output {
+        const MAX_DEPTH: usize = 16;
+        let path = crate::fileio::resolve_read(&ev.env, href.trim());
+        let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if ev.env.stack.len() >= MAX_DEPTH {
+            return Output::Error("слишком глубокая вложенность ссылок".into());
+        }
+        if ev.env.stack.contains(&canon) {
+            return Output::Error(format!("циклическая ссылка: {href}"));
+        }
+        let loaded = (|| -> Result<Worksheet, String> {
+            let bytes = std::fs::read(&path).map_err(|e| format!("не удалось прочитать {}: {e}", path.display()))?;
+            let src = String::from_utf8_lossy(&bytes).into_owned();
+            let head = src.trim_start_matches('\u{feff}').trim_start();
+            if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmcd")) || head.starts_with("<?xml") {
+                crate::xmcd::import_xmcd(&src).map(|r| r.worksheet)
+            } else if head.starts_with('{') {
+                Worksheet::from_json(&src)
+            } else {
+                Ok(Worksheet::from_lines(&src))
+            }
+        })();
+        let sub = match loaded {
+            Ok(w) => w,
+            Err(e) => return Output::Error(e),
+        };
+        let saved = ev.env.clone();
+        ev.env.dir = path.parent().map(|p| p.to_path_buf()).or(saved.dir.clone());
+        ev.env.stack.push(canon);
+        sub.run_regions(ev, false);
+        ev.env = saved;
+        Output::None
     }
 
     /// Handles solve blocks: `Given`, constraint regions and the closing call.

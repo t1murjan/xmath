@@ -98,6 +98,8 @@ Cursor: `~/.cursor/mcp.json` (или `.cursor/mcp.json` в проекте). Лю
 | `add_region` | добавить регион `math` / `text` / `plot` (в конец или после `after_id`, либо в позицию `x`, `y`) |
 | `update_region` | изменить регион по `id` (`source`, `text`, `x_expr`, `y_exprs`, `x`, `y`) |
 | `delete_region` | удалить регион по `id` |
+| `export_pdf` | `path` (.xmath/.xmcd) → `out` (.pdf): лист в PDF, постранично |
+| `export_xmcd` | `path` → `out` (.xmcd): лист в формате Mathcad 15 |
 | `list_functions` | встроенные функции с описаниями |
 | `list_units` | единицы измерения по размерностям |
 | `syntax_help` | полный справочник по синтаксису |

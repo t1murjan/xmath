@@ -39,11 +39,13 @@ pub struct Evaluator {
     pub max_iterations: u64,
     /// Definitions as source expressions, for symbolic evaluation (`→`).
     pub sym: crate::symbolic::Defs,
+    /// Worksheet directory and file access rules (`READPRN`, `WRITEPRN`, references).
+    pub env: crate::fileio::EvalEnv,
 }
 
 impl Default for Evaluator {
     fn default() -> Self {
-        Evaluator { defs: Vec::new(), depth: Cell::new(0), max_iterations: MAX_LOOP_ITERATIONS, sym: Default::default() }
+        Evaluator { defs: Vec::new(), depth: Cell::new(0), max_iterations: MAX_LOOP_ITERATIONS, sym: Default::default(), env: Default::default() }
     }
 }
 
@@ -619,6 +621,9 @@ impl Evaluator {
             return r;
         }
         let vals = self.eval_args(args, sc)?;
+        if let Some(r) = crate::fileio::call(&self.env, name, &vals) {
+            return r;
+        }
         if name == "matrix" {
             return self.builtin_matrix(&vals);
         }
@@ -919,6 +924,15 @@ impl Evaluator {
     /// definition: the whole right-hand side).
     pub fn define_value(&mut self, target: &Target, expr: &Expr) -> EResult<Value> {
         let sc = self.top_scope();
+        // `WRITEPRN("file") := M`: writes a file instead of defining a function
+        if let Target::Func(name, params) = target {
+            if crate::fileio::is_write_name(name) && params.len() == 1 {
+                let path = crate::fileio::target_path(&params[0], &|n| self.lookup(n, &sc))?;
+                let v = self.eval(expr, &sc)?;
+                crate::fileio::write(&self.env, name, &path, &v)?;
+                return Ok(v);
+            }
+        }
         if let Target::Vector(names) = target {
             let v = self.eval(expr, &sc)?;
             let m = match &v {
