@@ -226,3 +226,21 @@ fn boolean_operators() {
     assert_eq!(e.to_string(), "a and b ⊕ ¬c");
     assert_eq!(parse_expr(&e.to_string()).unwrap(), e);
 }
+
+/// Mathcad habits of AI models: the line form `statement otherwise`, and `A^T` for the transpose.
+#[test]
+fn otherwise_line_and_transpose_operator() {
+    let v = |lines: &[&str]| match run(lines).unwrap() {
+        Value::Num(n) => n.v.re,
+        other => panic!("{other:?}"),
+    };
+    let f = "f(x) := { 0 if x < 0; x^2 if x < 1; 2*x - 1 otherwise }";
+    // as in Mathcad, both `if` lines run for x = -1 and the last executed value counts
+    assert_eq!(v(&[f, "f(-1)"]), 1.0);
+    assert_eq!(v(&[f, "f(0.5)"]), 0.25);
+    assert_eq!(v(&[f, "f(2)"]), 3.0);
+    assert!(parse_statement("g(x) := { x otherwise }").is_err());
+    assert_eq!(col(&["A := [1, 2, 3]", "A^T"]), vec![1.0, 2.0, 3.0]);
+    // a variable T keeps `^T` a power
+    assert_eq!(col(&["T := 2", "A := [1; 2]", "A^T"]), vec![1.0, 4.0]);
+}

@@ -39,7 +39,7 @@ pub fn tool_list() -> Value {
         },
         {
             "name": "create_worksheet",
-            "description": "Create a new .xmath or .xmcd (Mathcad 15) worksheet file, optionally filled with lines (one math region per line; `# text` lines become text regions; regions are stacked vertically). Returns the evaluated regions. Refuses to overwrite an existing file unless `overwrite` is true.",
+            "description": "Create a new .xmath or .xmcd (Mathcad 15) worksheet file, optionally filled with lines (one math region per line; `# text` lines become text regions; `plot: f(x), g(x) vs x` lines become X-Y plots, so a plot can sit right after the formulas it shows; regions are stacked vertically in the given order and never overlap). Returns the evaluated regions. Refuses to overwrite an existing file unless `overwrite` is true.",
             "inputSchema": {
                 "type":"object",
                 "properties":{
@@ -52,7 +52,7 @@ pub fn tool_list() -> Value {
         },
         {
             "name": "add_region",
-            "description": "Insert a region into a .xmath or .xmcd worksheet and save it (an .xmcd file is rewritten as a Mathcad 15 file: plots as Mathcad plots with pictures, results stored). kind `math` needs `source` (one statement, e.g. `A := b*h`), kind `text` needs `text`, kind `plot` needs `y_exprs` (list of expressions) and usually `x_expr` (a range variable defined above, e.g. `x`). Default position: below the last region; with `after_id` the region is placed right after that one and the following regions are pushed down; explicit `x`/`y` override. Remember that evaluation order is top-to-bottom, so definitions must sit above their uses. Returns the new region id and the re-evaluated worksheet.",
+            "description": "Insert a region into a .xmath or .xmcd worksheet and save it (an .xmcd file is rewritten as a Mathcad 15 file: plots as Mathcad plots with pictures, results stored). kind `math` needs `source` (one statement, e.g. `A := b*h`), kind `text` needs `text`, kind `plot` needs `y_exprs` (list of expressions) and usually `x_expr` (a range variable defined above, e.g. `x`). Default position: below the last region; with `after_id` the region is placed right after that one and the following regions are pushed down; with `beside_id` it goes to the right of that region (e.g. a plot beside its formulas); explicit `x`/`y` override. After every change overlapping regions are separated automatically using their real drawn size (tall fractions, matrices, programs, results), keeping the evaluation order. Remember that evaluation order is top-to-bottom, so definitions must sit above their uses. Returns the new region id and the re-evaluated worksheet.",
             "inputSchema": {
                 "type":"object",
                 "properties":{
@@ -64,6 +64,7 @@ pub fn tool_list() -> Value {
                     "x_expr":{"type":"string","description":"plot: abscissa expression, normally a range variable such as `x`."},
                     "y_exprs":{"type":"array","items":{"type":"string"},"description":"plot: one or more ordinate expressions, e.g. [\"sin(x)\", \"cos(x)\"]."},
                     "after_id":{"type":"integer","description":"Insert directly below the region with this id."},
+                    "beside_id":{"type":"integer","description":"Place the new region to the RIGHT of the region with this id, top-aligned (e.g. a plot next to the formulas it shows, or a result next to its definition). Same evaluation row: it may only use definitions above or to the left."},
                     "x":{"type":"number","description":"Explicit x position (default 20)."},
                     "y":{"type":"number","description":"Explicit y position (overrides the automatic placement)."}
                 },
@@ -284,7 +285,22 @@ fn load_xmath(p: &Path) -> Result<Worksheet, String> {
     }
 }
 
-fn save(p: &Path, ws: &Worksheet) -> Result<(), String> {
+/// Gap kept between regions when they are separated (worksheet points).
+const SEP_GAP: f32 = 12.0;
+
+/// Keeps regions from overlapping, with their real drawn size (formulas with fractions,
+/// matrices, programs, results, plots): Mathcad's «Разделить области».
+fn separate(p: &Path, ws: &mut Worksheet) {
+    let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    let env = xmath_core::EvalEnv { dir: Some(dir), allow_write: false, stack: Vec::new() };
+    let outputs = ws.evaluate_with(false, &env);
+    let sizes = xmath_gui::print::region_sizes(ws, &outputs);
+    ws.separate_regions(&sizes, SEP_GAP);
+}
+
+/// Separates the regions, then writes the file.
+fn save(p: &Path, ws: &mut Worksheet) -> Result<(), String> {
+    separate(p, ws);
     if let Some(dir) = p.parent() {
         if !dir.as_os_str().is_empty() && !dir.exists() {
             return Err(format!("directory {} does not exist", dir.display()));
@@ -550,8 +566,8 @@ fn create_worksheet(a: &Map<String, Value>) -> ToolResult {
     if p.exists() && !overwrite {
         return Err(format!("{} already exists; pass overwrite=true to replace it", p.display()));
     }
-    let ws = Worksheet::from_lines(&split_lines(a)?.join("\n"));
-    save(&p, &ws)?;
+    let mut ws = Worksheet::from_lines(&split_lines(a)?.join("\n"));
+    save(&p, &mut ws)?;
     Ok(report(format!("created {} ({} regions)", p.display(), ws.regions.len()), &ws, None))
 }
 
@@ -652,6 +668,18 @@ fn add_region(a: &Map<String, Value>) -> ToolResult {
     let mut region = Region::new(ws.next_id(), get_f32(a, "x")?.unwrap_or(LEFT), 0.0, kind);
     let h = region_height(&region);
     let explicit_y = get_f32(a, "y")?;
+    if let Some(bid) = get_id(a, "beside_id")? {
+        let b = ws.regions.iter().find(|r| r.id == bid).ok_or_else(|| format!("no region with id {bid}"))?.clone();
+        let outputs = ws.evaluate();
+        let sizes = xmath_gui::print::region_sizes(&ws, &outputs);
+        let bw = sizes.get(&bid).map(|s| s[0]).unwrap_or(120.0);
+        region.x = get_f32(a, "x")?.unwrap_or(b.x + bw + 30.0);
+        region.y = explicit_y.unwrap_or(b.y);
+        let id = region.id;
+        ws.regions.push(region);
+        save(&p, &mut ws)?;
+        return Ok(report(format!("added region {id} beside {bid} in {}", p.display()), &ws, Some(("new_id", json!(id)))));
+    }
     let auto_y = match after {
         Some(id) => {
             let r = ws.regions.iter().find(|r| r.id == id).ok_or_else(|| format!("no region with id {id}"))?;
@@ -668,7 +696,7 @@ fn add_region(a: &Map<String, Value>) -> ToolResult {
     region.y = explicit_y.unwrap_or(auto_y);
     let id = region.id;
     ws.regions.push(region);
-    save(&p, &ws)?;
+    save(&p, &mut ws)?;
     Ok(report(format!("added region {id} to {}", p.display()), &ws, Some(("new_id", json!(id)))))
 }
 
@@ -721,7 +749,7 @@ fn update_region(a: &Map<String, Value>) -> ToolResult {
     if let Some(v) = get_f32(a, "y")? {
         r.y = v;
     }
-    save(&p, &ws)?;
+    save(&p, &mut ws)?;
     Ok(report(format!("updated region {id} in {}", p.display()), &ws, None))
 }
 
@@ -735,7 +763,7 @@ fn delete_region(a: &Map<String, Value>) -> ToolResult {
     if ws.regions.len() == before {
         return Err(format!("no region with id {id}"));
     }
-    save(&p, &ws)?;
+    save(&p, &mut ws)?;
     Ok(report(format!("deleted region {id} from {}", p.display()), &ws, None))
 }
 

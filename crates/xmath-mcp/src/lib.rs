@@ -124,6 +124,57 @@ mod tests {
         d
     }
 
+    /// What weaker models did: tall formulas overlapping, all plots at the end. Now every
+    /// region gets its drawn size, nothing overlaps, and plots stay where they were put.
+    #[test]
+    fn layout_never_overlaps_and_plots_stay_in_place() {
+        let dir = temp_dir("layout");
+        let path = dir.join("lay.xmath");
+        let mut st = State::default();
+        let lines = [
+            "# Балка",
+            "A := [1, 2, 3; 4, 5, 6; 7, 8, 9; 10, 11, 12]",
+            "A =",
+            "q(x) := (x^2 + 1)/(x^3 + x^2/(x + 1) + 2)",
+            "f(x) := { 0 if x < 0; x^2 if x < 1; 2*x - 1 otherwise }",
+            "x := -2, -1.9..3",
+            "plot: f(x), q(x) vs x",
+            "f(2) =",
+            "B := A^T =",
+            "plot: sin(x) vs x",
+            "s := sum(k, 1, 10, k^2/(k + 1)) =",
+        ];
+        let r = call(&mut st, "create_worksheet", json!({"path": path.display().to_string(), "lines": lines}));
+        assert!(r["result"]["isError"] != json!(true), "{}", text(&r));
+        let ws: xmath_core::Worksheet = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let out = ws.evaluate();
+        let sizes = xmath_gui::print::region_sizes(&ws, &out);
+        let rect = |r: &xmath_core::Region| {
+            let s = sizes[&r.id];
+            (r.x, r.y, r.x + s[0], r.y + s[1])
+        };
+        for (i, a) in ws.regions.iter().enumerate() {
+            for b in &ws.regions[i + 1..] {
+                let (ax0, ay0, ax1, ay1) = rect(a);
+                let (bx0, by0, bx1, by1) = rect(b);
+                let overlap = ax0 < bx1 && bx0 < ax1 && ay0 < by1 && by0 < ay1;
+                assert!(!overlap, "regions {} and {} overlap: {:?} {:?}", a.id, b.id, rect(a), rect(b));
+            }
+        }
+        // the order of the lines is kept: the first plot is between `x := ...` and `f(2) =`
+        let order: Vec<u64> = ws.evaluation_order().into_iter().map(|i| ws.regions[i].id).collect();
+        let ids: Vec<u64> = ws.regions.iter().map(|r| r.id).collect();
+        assert_eq!(order, ids);
+        // a plot beside its formulas
+        let plot_id = ws.regions.iter().find(|r| matches!(r.kind, xmath_core::RegionKind::Plot { .. })).unwrap().id;
+        let r = call(&mut st, "add_region", json!({"path": path.display().to_string(), "kind": "math", "source": "f(0.5) =", "beside_id": plot_id}));
+        assert!(r["result"]["isError"] != json!(true), "{}", text(&r));
+        let ws: xmath_core::Worksheet = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let p = ws.regions.iter().find(|r| r.id == plot_id).unwrap();
+        let n = ws.regions.last().unwrap();
+        assert!(n.x > p.x + 100.0 && (n.y - p.y).abs() < 1.0, "beside: {} {} / {} {}", p.x, p.y, n.x, n.y);
+    }
+
     #[test]
     fn initialize_negotiates_version() {
         let mut st = State::default();

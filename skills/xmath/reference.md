@@ -139,7 +139,7 @@ Find(x, y) =
 
 * Matrix literal: `[1, 2; 3, 4]` (commas separate columns, semicolons separate rows). Column vector `[1; 2; 3]`, row vector `[1, 2, 3]`.
 * Indexing: `A[0, 1]` (row, column), `v[2]`; indices start at `ORIGIN` = 0.
-* Operations: `A*B`, `A^-1`, `transpose(A)`, `det(A)`, `lsolve(A, b)`, `A*x`, elementwise through functions (`sqrt([1;4;9])`).
+* Operations: `A*B`, `A^-1`, `transpose(A)` or `A^T` (Mathcad's transpose; a power only if a number `T` is defined), `det(A)`, `lsolve(A, b)`, `A*x`, elementwise through functions (`sqrt([1;4;9])`).
 * Mathcad applies some operations element by element **automatically** (no `vectorize` needed), and xmath follows these rules:
   `v^n` (any scalar `n`) for a non-square array/vector; `scalar/v`; `v/w` for arrays of equal shape when the divisor is non-square; `scalar^v`;
   `v + scalar`, `v - w`, comparisons and scalar functions (`sqrt(v)`) are element-wise. Unchanged: `v*w` of two column vectors is the dot product
@@ -170,7 +170,7 @@ w(a) := { i ← 0; while i < a { i ← i + 1; if i == 5 { break } }; i }
 ```
 
 * Statements: `x ← e` / `v[i] ← e` (local assignment; ASCII `<-`), `for i ∈ range { ... }` (ASCII `in`; range `1..n`, `0, 2..10`, or a vector),
-  `while cond { ... }`, `if cond { ... } otherwise { ... }` (`else` and `else if` also accepted), postfix `stmt if cond`,
+  `while cond { ... }`, `if cond { ... } otherwise { ... }` (`else` and `else if` also accepted), postfix `stmt if cond`, the Mathcad line `stmt otherwise` right after an `if` line,
   `break`, `continue`, `return e`, and `e1 on error e2` (value of `e2` if `e1` fails; usable on any expression).
 * Consecutive `if` statements of a block form a chain: an `otherwise` runs only if its own condition and the conditions of all preceding `if`s of the chain were false, e.g.
   `{ a if x < 0; if x >= 0 and x < 5 { b } otherwise { c } }` returns `a`, `b` or `c` (Mathcad semantics).

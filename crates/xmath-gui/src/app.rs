@@ -783,23 +783,14 @@ impl App {
         self.changed();
     }
 
+    /// «Разделить области»: regions that overlap move down (with everything after them, so
+    /// the evaluation order does not change).
     fn separate_regions(&mut self) {
         self.checkpoint();
-        let order = self.ws.evaluation_order();
-        let mut placed: Vec<Rect> = Vec::new();
-        for i in order {
-            let r = &self.ws.regions[i];
-            let size = self.rects.get(&r.id).map(|q| q.size()).unwrap_or(Vec2::new(60.0, 20.0));
-            let mut rect = Rect::from_min_size(Pos2::new(r.x, r.y), size);
-            while let Some(hit) = placed.iter().find(|p| p.intersects(rect.shrink(0.5))) {
-                let dy = hit.bottom() - rect.top() + GRID;
-                rect = rect.translate(Vec2::new(0.0, dy));
-            }
-            placed.push(rect);
-            let r = &mut self.ws.regions[i];
-            r.y = rect.top();
+        let sizes: HashMap<u64, [f32; 2]> = self.ws.regions.iter().filter_map(|r| self.rects.get(&r.id).map(|q| (r.id, [q.width(), q.height()]))).collect();
+        if self.ws.separate_regions(&sizes, GRID) {
+            self.changed();
         }
-        self.changed();
     }
 
     fn align(&mut self, across: bool) {

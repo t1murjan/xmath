@@ -505,6 +505,21 @@ pub struct PdfOptions {
 /// Renders the worksheet to PDF bytes: every page of the sheet becomes a PDF page of the
 /// paper size from the page setup. Formulas, text and plots are vector graphics; text is real
 /// (embedded fonts). `outputs` are the evaluation results of `ws`.
+/// Width and height of every region as the worksheet draws it at 100 % (with its results),
+/// laid out without a window: used to keep regions from overlapping (MCP, «Разделить области»).
+pub fn region_sizes(ws: &Worksheet, outputs: &HashMap<u64, RegionOutput>) -> HashMap<u64, [f32; 2]> {
+    let (defs, has_bold) = crate::fonts::definitions();
+    let ctx = Context::default();
+    ctx.set_fonts(defs);
+    let _ = ctx.run(Default::default(), |_| {});
+    let mut sheet: Option<Sheet> = None;
+    let _ = ctx.run(Default::default(), |ctx| {
+        sheet = Some(Sheet::layout(ctx, ws, outputs, 1.0, has_bold));
+    });
+    let sheet = sheet.expect("layout pass ran");
+    ws.regions.iter().zip(sheet.items.iter()).map(|(r, p)| (r.id, [p.rect.width(), p.rect.height()])).collect()
+}
+
 pub fn export_pdf(ws: &Worksheet, outputs: &HashMap<u64, RegionOutput>, opts: &PdfOptions) -> Vec<u8> {
     let (defs, has_bold) = crate::fonts::definitions();
     let ctx = Context::default();

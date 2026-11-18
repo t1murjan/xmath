@@ -770,6 +770,21 @@ impl Worksheet {
             }
             let kind = if let Some(text) = t.strip_prefix('#') {
                 RegionKind::new_text(text.trim())
+            } else if let Some(spec) = t.strip_prefix("plot:") {
+                // `plot: f(x), g(x) vs x` (the abscissa is optional)
+                let (ys, x) = match spec.rsplit_once(" vs ") {
+                    Some((ys, x)) => (ys, x.trim()),
+                    None => (spec, ""),
+                };
+                let mut k = RegionKind::new_plot();
+                if let RegionKind::Plot { x: px, y: py, .. } = &mut k {
+                    *px = x.to_string();
+                    *py = split_top_commas(ys).into_iter().filter(|s| !s.is_empty()).collect();
+                }
+                let id = ws.next_id();
+                ws.regions.push(Region::new(id, 20.0, y, k));
+                y += 230.0;
+                continue;
             } else {
                 RegionKind::Math { source: t.to_string() }
             };
@@ -778,6 +793,40 @@ impl Worksheet {
             y += 30.0;
         }
         ws
+    }
+
+    /// Mathcad's «Разделить области»: moves regions down so that no two overlap. Regions are
+    /// taken in evaluation order; one that collides with a region above it goes below that
+    /// region together with every region after it, so the evaluation order never changes and
+    /// regions side by side stay side by side. `sizes`: width and height of each region as
+    /// drawn (missing: 60×20). Returns whether anything moved.
+    pub fn separate_regions(&mut self, sizes: &HashMap<u64, [f32; 2]>, gap: f32) -> bool {
+        let order = self.evaluation_order();
+        let size = |id: u64| sizes.get(&id).copied().unwrap_or([60.0, 20.0]);
+        let mut placed: Vec<[f32; 4]> = Vec::new();
+        let mut moved = false;
+        for (k, &i) in order.iter().enumerate() {
+            let [w, h] = size(self.regions[i].id);
+            loop {
+                let r = &self.regions[i];
+                let (x0, x1, y0) = (r.x, r.x + w, r.y);
+                let bottom = placed
+                    .iter()
+                    .filter(|p| p[0] < x1 + gap * 0.5 && x0 < p[2] + gap * 0.5 && p[1] < y0 + h && y0 < p[3] + gap)
+                    .map(|p| p[3])
+                    .fold(f32::MIN, f32::max);
+                if bottom == f32::MIN {
+                    placed.push([x0, y0, x1, y0 + h]);
+                    break;
+                }
+                let d = bottom + gap - y0;
+                for &j in &order[k..] {
+                    self.regions[j].y += d;
+                }
+                moved = true;
+            }
+        }
+        moved
     }
 
     /// Evaluates the whole worksheet.

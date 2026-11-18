@@ -193,6 +193,17 @@ impl Evaluator {
                 }
             }
             Expr::Binary(op, a, b) => {
+                // Mathcad's transpose `A^T` (T is the operator unless a variable T exists)
+                // (T is also tesla: a matrix "to the power of tesla" means the transpose)
+                if *op == BinOp::Pow && matches!(&**b, Expr::Var(t) if t == "T") {
+                    let t_is_number = self.lookup("T", sc).is_some_and(|t| t.as_num().is_ok_and(|n| n.dim.is_none()));
+                    if !t_is_number {
+                        let v = self.eval(a, sc)?;
+                        if matches!(v, Value::Matrix(_)) || self.lookup("T", sc).is_none() {
+                            return Ok(Value::Matrix(v.to_matrix()?.transpose()));
+                        }
+                    }
+                }
                 match op {
                     BinOp::And => {
                         return Ok(Value::bool(self.eval(a, sc)?.truthy()? && self.eval(b, sc)?.truthy()?));

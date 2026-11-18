@@ -610,6 +610,19 @@ impl Parser {
                 return Ok(out);
             }
             let (s, braced) = self.pstmt()?;
+            // Mathcad's line form `statement otherwise`: the else branch of the `if` above
+            if !braced && self.is_kw("otherwise") && !matches!(self.peek2(), Tok::LBrace) {
+                let pos = self.pos();
+                self.next();
+                match out.last_mut() {
+                    Some(PStmt::If { else_: e @ None, .. }) => *e = Some(vec![s]),
+                    _ => return Err(ParseError { msg: "'otherwise' без предшествующего 'if'".into(), pos }),
+                }
+                if self.eat(&Tok::Semi) || *self.peek() == Tok::RBrace {
+                    continue;
+                }
+                return self.err(format!("ожидалось ';' или '}}', найдено {}", self.peek().describe()));
+            }
             out.push(s);
             if self.eat(&Tok::Semi) || braced || *self.peek() == Tok::RBrace {
                 continue;

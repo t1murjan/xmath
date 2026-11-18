@@ -21,8 +21,8 @@ Tools of the `xmath` MCP server (`claude mcp add xmath -- xmath-mcp`):
 | Tool | Use |
 |------|-----|
 | `evaluate {lines}` | Run lines as a throw-away worksheet; returns `line -> result/error`. START HERE. |
-| `create_worksheet {path, lines?, overwrite?}` | Create a `.xmath` file, one math region per line (`# text` lines become comments). |
-| `add_region {path, kind, source/text/x_expr+y_exprs, after_id?}` | Append or insert a math / text / plot region. |
+| `create_worksheet {path, lines?, overwrite?}` | Create a `.xmcd`/`.xmath` file, one region per line in reading order: math lines, `# text` headings, `plot: f(x), g(x) vs x` plots. |
+| `add_region {path, kind, source/text/x_expr+y_exprs, after_id? / beside_id?}` | Insert a math / text / plot region below (`after_id`) or to the right of (`beside_id`) an existing one. |
 | `update_region {path, id, ...}`, `delete_region {path, id}` | Edit or remove a region by id. |
 | `open_worksheet {path}` | Load and evaluate a file; lists all regions with ids, results, errors, plot summaries. |
 | `list_functions`, `list_units`, `syntax_help` | Catalogs and the syntax reference. |
@@ -31,9 +31,27 @@ Recommended procedure:
 
 1. Translate the problem into xmath lines. Define all inputs with units first, then formulas, then result lines (`name =`).
 2. Test with `evaluate`. Fix errors reported per line (they do not stop the other lines).
-3. When the user wants a deliverable, `create_worksheet` with the verified lines (add `# ...` comment lines for headings),
-   then `add_region` for extras such as plots. Re-read with `open_worksheet` to confirm there are no errors.
+3. When the user wants a deliverable, write ONE `create_worksheet` call whose `lines` are already in the final reading
+   order (see "Layout" below): headings, the inputs and formulas of a step, its plot (`plot: ...` line) right after
+   them, then the results that interpret the plot. Re-read with `open_worksheet` to confirm there are no errors.
 4. Report results to the user with units and mention the file path.
+
+## Layout: a worksheet a teacher can read
+
+The worksheet is read like a Mathcad sheet handed in by a student, top to bottom. The server places regions and
+separates any that would overlap using their real drawn size (tall fractions, matrices, programs, matrix results,
+plots) and keeps the evaluation order, so you never compute coordinates yourself. Your job is the ORDER:
+
+* Group the sheet into steps. Each step: a `# heading` line, its inputs, its formulas, then (if useful) its plot,
+  then the evaluations `name =` that read values off it. Never put all formulas first and all plots at the end:
+  a plot belongs directly below (or beside) the definitions it shows, so it is clear which formulas it illustrates.
+* In `create_worksheet`, write a plot as a line `plot: y1(x), y2(x) vs x` at that place (the range variable `x` must
+  be defined on an earlier line). Several traces: separate them with commas.
+* To put a plot or a result next to its formulas instead of below, use `add_region` with `beside_id` = the id of the
+  region it belongs to (e.g. the plot beside the function definition, `f(2) =` beside the plot). Use `after_id` to
+  insert below a given region; the regions after it move down automatically.
+* Do not pass explicit `x`/`y` unless the user asks for a specific placement; one statement per region (line).
+* Keep a heading text before every step (`# 2. Прогиб балки`), so the sheet reads like a report.
 
 Paths are relative to the server's working directory; writing is only allowed for `.xmath` and `.xmcd` files. Editing an `.xmcd` re-imports it and saves the whole file again (plots as Mathcad plots with pictures, stored results), so you can work directly on Mathcad files; polar and 3D plots are written as pictures for Mathcad and restored by xmath.
 
@@ -151,9 +169,19 @@ Find(x, y) =
 
 ### 6. Plot (via MCP)
 
-1. `create_worksheet` with lines `["x := 0, 0.1..6.28"]`.
-2. `add_region` `{kind: "plot", x_expr: "x", y_exprs: ["sin(x)", "cos(x)"]}`.
-3. The result lists each series: label, number of points, x/y range. (The server returns data, not an image; the GUI renders it.)
+`create_worksheet` with the plot in its place:
+
+```
+# 1. Колебания
+x := 0, 0.1..6.28
+y(x) := sin(x)*exp(-x/5)
+plot: y(x), cos(x) vs x
+y(1) =
+```
+
+Or add one later: `add_region {kind: "plot", x_expr: "x", y_exprs: ["y(x)"], after_id: <id of y(x) :=>}` (below the
+definition) or `beside_id` (to its right). The result lists each series: label, number of points, x/y range. (The
+server returns data, not an image; the GUI renders it.)
 
 ### 7. Complex numbers, electrical
 
@@ -178,8 +206,11 @@ h(x) := { if x < 0 { "neg" } else if x == 0 { "zero" } otherwise { "pos" } }
 ```
 
 Programs are `{ stmt; stmt; ... }` expressions: `←` assigns a local, `for i ∈ a..b { }`, `while c { }`, `if c { } otherwise { }`,
-`stmt if cond`, `break`, `continue`, `return e`, `e1 on error e2`. The value is the last statement (or `return`).
-Details in reference.md ("Programs").
+`stmt if cond`, Mathcad's line form `stmt otherwise` (after an `if` line), `break`, `continue`, `return e`,
+`e1 on error e2`. The value is the last EXECUTED statement (or `return`).
+Mathcad semantics: every `if` line whose condition holds runs, so `{ 0 if x < 0; x^2 if x < 1; 2*x otherwise }` gives
+`x^2` for x = -1, not 0. For exclusive branches use `return` (`{ return 0 if x < 0; return x^2 if x < 1; 2*x }`) or
+non-overlapping conditions. Details in reference.md ("Programs").
 
 ## Export, PDF and files
 
@@ -198,6 +229,7 @@ Details in reference.md ("Programs").
 - Results show 3 decimals; request another unit with `expr = unit`. Large/small numbers print as `a·10^n`.
 - Use `^` for powers (not `**`), `:=` for definitions, `=` only to display. No LaTeX, no `$`.
 - `i` is the imaginary unit; do not use it as a range variable together with complex numbers (use `j`, `k`, `n`).
+- Transpose: `A^T` or `transpose(A)` (T stays a power only if you define a number `T`).
 - `diff` / `integrate` / `root` take an expression and the variable name: `diff(x^2, x, 3)`.
 - An error in one region never stops the others; read each line's `error` field.
 
