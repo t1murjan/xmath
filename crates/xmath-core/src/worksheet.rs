@@ -696,6 +696,9 @@ pub struct RegionOutput {
     pub output: Output,
     /// Computed value (only with snapshots enabled).
     pub value: Option<Snapshot>,
+    /// The statement of this region's program where an evaluation failed (here, or in a call
+    /// of the function this region defines): see [`crate::eval::ProgErr`].
+    pub err_line: Option<Vec<u32>>,
 }
 
 impl RegionOutput {
@@ -866,15 +869,23 @@ impl Worksheet {
             if let Some(Ok(Stmt::Define { target, expr, global: true, show })) = &parsed[i] {
                 let (output, shown) = self.define_output(ev, target, expr, show);
                 let value = if snapshots { snapshot_var(ev, target).or(shown) } else { None };
-                out.insert(self.regions[i].id, RegionOutput { stmt: parsed[i].clone(), output, value });
+                out.insert(self.regions[i].id, RegionOutput { stmt: parsed[i].clone(), output, value, err_line: None });
             }
         }
 
         // Pass 2: everything else in document order.
         let mut block: Option<SolveBlock> = None;
+        // function name -> the region defining it (for the red mark of a failing program line)
+        let mut func_region: HashMap<String, u64> = HashMap::new();
+        for &i in &order {
+            if let Some(Ok(Stmt::Define { target: Target::Func(n, _), .. })) = &parsed[i] {
+                func_region.entry(n.clone()).or_insert(self.regions[i].id);
+            }
+        }
         for &i in &order {
             let region = &self.regions[i];
             let mut value = None;
+            *ev.prog_err.borrow_mut() = None;
             let output = match (&region.kind, &parsed[i]) {
                 (_, Some(Ok(Stmt::Define { global: true, .. }))) => continue,
                 (RegionKind::Math { .. }, Some(Err(_))) => Output::None,
@@ -903,7 +914,23 @@ impl Worksheet {
                 (RegionKind::Reference { href }, _) => self.eval_reference(ev, href),
                 _ => Output::None,
             };
-            out.insert(region.id, RegionOutput { stmt: parsed[i].clone(), output, value });
+            let mut ro = RegionOutput { stmt: parsed[i].clone(), output, value, err_line: None };
+            // a failing program statement: mark it here, or in the definition of the function
+            if let (Some(pe), Some(msg)) = (ev.prog_err.borrow_mut().take(), ro.error()) {
+                if pe.msg == msg || msg.ends_with(&pe.msg) {
+                    match pe.func.as_ref().and_then(|f| func_region.get(f)) {
+                        Some(def) if *def != region.id => {
+                            if let Some(d) = out.get_mut(def) {
+                                if d.err_line.is_none() {
+                                    d.err_line = Some(pe.path);
+                                }
+                            }
+                        }
+                        _ => ro.err_line = Some(pe.path),
+                    }
+                }
+            }
+            out.insert(region.id, ro);
         }
         if let Some(b) = block {
             flag_unclosed(&mut out, &b);

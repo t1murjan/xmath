@@ -93,6 +93,9 @@ pub struct Ts<'a> {
     pub edit_cell: Option<(usize, f32)>,
     /// Result of a symbolic evaluation (`expr →`) to draw after the arrow(s).
     pub sym: Option<Expr>,
+    /// Program statement to underline in pale red (where the evaluation failed), taken by the
+    /// first program laid out; see `xmath_core::eval::ProgErr`.
+    pub err_line: std::cell::RefCell<Option<Vec<u32>>>,
     /// Record a hit box (`Node::Expr`) for every sub-expression (structural editing).
     pub record: bool,
     /// Colour of placeholders when it differs from the text colour.
@@ -103,7 +106,7 @@ const ASC: f32 = 0.80;
 
 impl<'a> Ts<'a> {
     pub fn new(fonts: &'a Fonts) -> Ts<'a> {
-        Ts { fonts, color: Color32::BLACK, edit_cell: None, record: false, ph_color: None, sym: None }
+        Ts { fonts, color: Color32::BLACK, edit_cell: None, record: false, ph_color: None, sym: None, err_line: std::cell::RefCell::new(None) }
     }
 
     pub fn text_c(&self, s: &str, size: f32, color: Color32) -> Lay {
@@ -570,8 +573,22 @@ impl<'a> Ts<'a> {
 
     /// Mathcad program: a vertical bar on the left, one statement per line.
     pub fn program(&self, stmts: &[PStmt], size: f32) -> Lay {
-        let rows = self.program_rows(stmts, size);
+        let err = self.err_line.borrow_mut().take();
+        self.program_e(stmts, size, err.as_deref())
+    }
+
+    /// A program whose statement at `err` (a path, see `ProgErr`) failed.
+    fn program_e(&self, stmts: &[PStmt], size: f32, err: Option<&[u32]>) -> Lay {
+        let rows = self.program_rows_e(stmts, size, err);
         self.block(rows, size)
+    }
+
+    /// Mathcad's mark of the failing program line: a pale red underline.
+    fn mark(&self, mut l: Lay, size: f32) -> Lay {
+        let y = l.desc + size * 0.08;
+        l.items.push(Item::Line { a: Vec2::new(0.0, y), b: Vec2::new(l.w, y), w: (size / 8.0).max(1.5), color: Color32::from_rgb(240, 140, 140) });
+        l.desc += size * 0.12;
+        l
     }
 
     /// The program block around laid-out lines: centred on the math axis, with the bar.
@@ -611,12 +628,13 @@ impl<'a> Ts<'a> {
         out
     }
 
-    /// The statement left of `if` / `otherwise`: one simple line, or a nested block.
-    fn stmt_lay(&self, stmts: &[PStmt], size: f32) -> Lay {
+    /// The statement left of `if` / `otherwise`: one simple line, or a nested block (a failing
+    /// statement inside is marked; a failing single line is marked by the caller).
+    fn stmt_lay(&self, stmts: &[PStmt], size: f32, err: Option<&[u32]>) -> Lay {
         if stmts.len() == 1 && stmts[0].is_simple() {
-            self.program_rows(stmts, size).remove(0)
+            self.program_rows_e(stmts, size, None).remove(0)
         } else {
-            self.program(stmts, size)
+            self.program_e(stmts, size, err)
         }
     }
 
@@ -644,9 +662,13 @@ impl<'a> Ts<'a> {
         }
     }
 
-    fn program_rows(&self, stmts: &[PStmt], size: f32) -> Vec<Lay> {
+    fn program_rows_e(&self, stmts: &[PStmt], size: f32, err: Option<&[u32]>) -> Vec<Lay> {
         let mut rows = Vec::new();
-        for s in stmts {
+        for (i, s) in stmts.iter().enumerate() {
+            // the error path below this statement (Some(&[]) = the statement itself)
+            let e = err.filter(|p| p.first() == Some(&(i as u32))).map(|p| &p[1..]);
+            let start = rows.len();
+            let simple_err = e.is_some() && s.is_simple();
             match s {
                 PStmt::Assign(t, e) => {
                     let lt = self.target(t, size);
@@ -655,22 +677,37 @@ impl<'a> Ts<'a> {
                 PStmt::Expr(e) => rows.push(self.expr(e, size)),
                 // Mathcad 15: `statement if condition`, then `statement otherwise`
                 PStmt::If { cond, then, else_ } => {
-                    rows.push(self.hcat(vec![self.stmt_lay(then, size), self.kw(" if ", size), self.expr(cond, size)]));
-                    if let Some(e) = else_ {
-                        rows.push(self.hcat(vec![self.stmt_lay(e, size), self.kw(" otherwise", size)]));
+                    // branch 0: the statement of `if`; 1: `otherwise`; none: the condition
+                    let branch = |k: u32| e.filter(|p| p.first() == Some(&k)).map(|p| &p[1..]);
+                    let simple = |b: &[PStmt]| b.len() == 1 && b[0].is_simple();
+                    let row = self.hcat(vec![self.stmt_lay(then, size, branch(0)), self.kw(" if ", size), self.expr(cond, size)]);
+                    let bad = e.is_some_and(|p| p.is_empty()) || (branch(0).is_some() && simple(then));
+                    rows.push(if bad { self.mark(row, size) } else { row });
+                    if let Some(el) = else_ {
+                        let row = self.hcat(vec![self.stmt_lay(el, size, branch(1)), self.kw(" otherwise", size)]);
+                        rows.push(if branch(1).is_some() && simple(el) { self.mark(row, size) } else { row });
                     }
                 }
                 PStmt::For { var, iter, body } => {
                     let head = self.hcat(vec![self.kw("for ", size), self.ident(var, size), self.kw(" ∈ ", size), self.expr(iter, size)]);
-                    rows.push(self.loop_lay(head, self.program(body, size), size));
+                    let head = if e.is_some_and(|p| p.is_empty()) { self.mark(head, size) } else { head };
+                    let body_err = e.filter(|p| p.first() == Some(&0)).map(|p| &p[1..]);
+                    rows.push(self.loop_lay(head, self.program_e(body, size, body_err), size));
                 }
                 PStmt::While { cond, body } => {
                     let head = self.hcat(vec![self.kw("while ", size), self.expr(cond, size)]);
-                    rows.push(self.loop_lay(head, self.program(body, size), size));
+                    let head = if e.is_some_and(|p| p.is_empty()) { self.mark(head, size) } else { head };
+                    let body_err = e.filter(|p| p.first() == Some(&0)).map(|p| &p[1..]);
+                    rows.push(self.loop_lay(head, self.program_e(body, size, body_err), size));
                 }
                 PStmt::Break => rows.push(self.kw("break", size)),
                 PStmt::Continue => rows.push(self.kw("continue", size)),
-                PStmt::Return(e) => rows.push(self.hcat(vec![self.kw("return ", size), self.expr(e, size)])),
+                PStmt::Return(r) => rows.push(self.hcat(vec![self.kw("return ", size), self.expr(r, size)])),
+            }
+            if simple_err {
+                if let Some(r) = rows.get_mut(start) {
+                    *r = self.mark(std::mem::take(r), size);
+                }
             }
         }
         rows

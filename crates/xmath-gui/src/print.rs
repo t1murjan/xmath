@@ -473,6 +473,7 @@ fn math_layout(ctx: &Context, out: Option<&RegionOutput>, source: &str, fs: f32)
     ctx.fonts(|f| {
         let mut ts = Ts::new(f);
         let err = out.and_then(|o| o.error());
+        *ts.err_line.borrow_mut() = out.and_then(|o| o.err_line.clone());
         match out.and_then(|o| o.stmt.clone()) {
             Some(Ok(stmt)) => {
                 if err.is_some() {

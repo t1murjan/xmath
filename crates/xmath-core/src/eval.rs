@@ -6,7 +6,7 @@ use crate::builtins;
 use crate::units::{self, Dim};
 use crate::value::*;
 use num_complex::Complex64 as C64;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// Maximum nesting of user-function calls (protects against runaway recursion).
@@ -41,11 +41,38 @@ pub struct Evaluator {
     pub sym: crate::symbolic::Defs,
     /// Worksheet directory and file access rules (`READPRN`, `WRITEPRN`, references).
     pub env: crate::fileio::EvalEnv,
+    /// Programs being run: the function they belong to (if called) and the path of the
+    /// statement being executed (see [`ProgErr`]).
+    prog_stack: RefCell<Vec<(Option<String>, Vec<u32>)>>,
+    /// The function whose program body is about to run.
+    calling: RefCell<Option<String>>,
+    /// Where the innermost failing program statement is (taken by the worksheet).
+    pub prog_err: RefCell<Option<ProgErr>>,
+}
+
+/// The program statement where an error happened, for Mathcad's red mark: `func` is the
+/// user function whose body it is (`None`: the program written in the region itself) and
+/// `path` leads to the statement: an index into the block, then for `if` 0 (its statement)
+/// or 1 (`otherwise`), for loops 0 (the body), and so on into nested blocks.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProgErr {
+    pub func: Option<String>,
+    pub path: Vec<u32>,
+    pub msg: String,
 }
 
 impl Default for Evaluator {
     fn default() -> Self {
-        Evaluator { defs: Vec::new(), depth: Cell::new(0), max_iterations: MAX_LOOP_ITERATIONS, sym: Default::default(), env: Default::default() }
+        Evaluator {
+            defs: Vec::new(),
+            depth: Cell::new(0),
+            max_iterations: MAX_LOOP_ITERATIONS,
+            sym: Default::default(),
+            env: Default::default(),
+            prog_stack: RefCell::new(Vec::new()),
+            calling: RefCell::new(None),
+            prog_err: RefCell::new(None),
+        }
     }
 }
 
@@ -463,12 +490,47 @@ impl Evaluator {
 
     fn run_program(&self, stmts: &[PStmt], sc: &Scope) -> EResult<Value> {
         let mut fr = Frame { sc: sc.clone(), base: sc.locals.len(), iters: 0 };
-        match self.exec_block(stmts, &mut fr)? {
+        let func = self.calling.borrow_mut().take();
+        self.prog_stack.borrow_mut().push((func, Vec::new()));
+        let r = self.exec_block(stmts, &mut fr);
+        self.prog_stack.borrow_mut().pop();
+        match r? {
             Flow::Normal(Some(v)) | Flow::Return(v) => Ok(v),
             Flow::Normal(None) => Err("программа не вернула значения".into()),
             Flow::Break => Err("'break' вне цикла".into()),
             Flow::Continue => Err("'continue' вне цикла".into()),
         }
+    }
+
+    /// Path step of the running program (statement index or branch).
+    fn path_push(&self, k: u32) {
+        if let Some((_, p)) = self.prog_stack.borrow_mut().last_mut() {
+            p.push(k);
+        }
+    }
+
+    fn path_pop(&self) {
+        if let Some((_, p)) = self.prog_stack.borrow_mut().last_mut() {
+            p.pop();
+        }
+    }
+
+    /// Remembers the innermost failing statement (the first one recorded wins).
+    fn note_err(&self, msg: &str) {
+        if self.prog_err.borrow().is_some() {
+            return;
+        }
+        if let Some((func, path)) = self.prog_stack.borrow().last() {
+            *self.prog_err.borrow_mut() = Some(ProgErr { func: func.clone(), path: path.clone(), msg: msg.to_string() });
+        }
+    }
+
+    /// Runs `f` as the branch / body `k` of the current statement.
+    fn in_branch(&self, k: u32, f: impl FnOnce() -> EResult<Flow>) -> EResult<Flow> {
+        self.path_push(k);
+        let r = f();
+        self.path_pop();
+        r
     }
 
     /// Runs a block. Consecutive `if` statements form a chain (as in Mathcad):
@@ -477,24 +539,30 @@ impl Evaluator {
     fn exec_block(&self, stmts: &[PStmt], fr: &mut Frame) -> EResult<Flow> {
         let mut last = None;
         let mut fired = false;
-        for s in stmts {
-            let flow = match s {
-                PStmt::If { cond, then, else_ } => {
-                    if self.eval(cond, &fr.sc)?.truthy()? {
+        for (i, s) in stmts.iter().enumerate() {
+            self.path_push(i as u32);
+            let r = match s {
+                PStmt::If { cond, then, else_ } => (|| {
+                    Ok(if self.eval(cond, &fr.sc)?.truthy()? {
                         fired = true;
-                        self.exec_block(then, fr)?
+                        self.in_branch(0, || self.exec_block(then, fr))?
                     } else if let (Some(e), false) = (else_, fired) {
                         fired = true;
-                        self.exec_block(e, fr)?
+                        self.in_branch(1, || self.exec_block(e, fr))?
                     } else {
                         Flow::Normal(None)
-                    }
-                }
+                    })
+                })(),
                 _ => {
                     fired = false;
-                    self.exec_stmt(s, fr)?
+                    self.exec_stmt(s, fr)
                 }
             };
+            if let Err(e) = &r {
+                self.note_err(e);
+            }
+            self.path_pop();
+            let flow = r?;
             match flow {
                 Flow::Normal(Some(v)) => last = Some(v),
                 Flow::Normal(None) => {}
@@ -546,9 +614,9 @@ impl Evaluator {
             PStmt::Assign(Target::Vector(_), _) => Err("в программе нельзя использовать векторное определение".into()),
             PStmt::If { cond, then, else_ } => {
                 if self.eval(cond, &fr.sc)?.truthy()? {
-                    self.exec_block(then, fr)
+                    self.in_branch(0, || self.exec_block(then, fr))
                 } else if let Some(e) = else_ {
-                    self.exec_block(e, fr)
+                    self.in_branch(1, || self.exec_block(e, fr))
                 } else {
                     Ok(Flow::Normal(None))
                 }
@@ -557,7 +625,7 @@ impl Evaluator {
                 let mut last = None;
                 while self.eval(cond, &fr.sc)?.truthy()? {
                     self.tick(fr)?;
-                    match self.exec_block(body, fr)? {
+                    match self.in_branch(0, || self.exec_block(body, fr))? {
                         Flow::Normal(v) => last = v.or(last),
                         Flow::Break => break,
                         Flow::Continue => {}
@@ -577,7 +645,7 @@ impl Evaluator {
                 for v in items {
                     self.tick(fr)?;
                     fr.set(var, v);
-                    match self.exec_block(body, fr)? {
+                    match self.in_branch(0, || self.exec_block(body, fr))? {
                         Flow::Normal(v) => last = v.or(last),
                         Flow::Break => break,
                         Flow::Continue => {}
@@ -611,6 +679,9 @@ impl Evaluator {
             locals.push((p.clone(), a));
         }
         let sc = Scope { limit: f.limit, locals: Rc::new(locals) };
+        if matches!(*f.body, Expr::Program(_)) {
+            *self.calling.borrow_mut() = Some(f.name.clone());
+        }
         self.depth.set(d + 1);
         let r = self.eval(&f.body, &sc);
         self.depth.set(d);

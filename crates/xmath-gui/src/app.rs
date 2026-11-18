@@ -2165,6 +2165,7 @@ impl App {
         ctx.fonts(|f| {
             let mut ts = Ts::new(f);
             let err = out.and_then(|o| o.error());
+            *ts.err_line.borrow_mut() = out.and_then(|o| o.err_line.clone());
             let parsed = match out.and_then(|o| o.stmt.clone()) {
                 Some(Ok(s)) => Ok(s),
                 // unparsable for the evaluator (e.g. `■` placeholders): still typeset what is possible

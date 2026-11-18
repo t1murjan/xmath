@@ -244,3 +244,21 @@ fn otherwise_line_and_transpose_operator() {
     // a variable T keeps `^T` a power
     assert_eq!(col(&["T := 2", "A := [1; 2]", "A^T"]), vec![1.0, 4.0]);
 }
+
+/// Mathcad marks the program line where the evaluation failed: in the region itself, or in the
+/// definition of the function that failed when called.
+#[test]
+fn failing_program_line_is_located() {
+    let ws = ws_of(&[
+        "f(x) := { a ← 2*x; b ← a/(x - 1); for i ∈ 1..3 { a ← a + q }; b }",
+        "f(1) =",
+        "g := { v ← 5; v + q if v > 3; v otherwise }",
+    ]);
+    let out = evaluate_worksheet(&ws);
+    let id = |k: usize| ws.regions[k].id;
+    // the call fails on line 1 of f (b ← a/(x − 1)): marked in f's definition
+    assert_eq!(out[&id(0)].err_line, Some(vec![1]));
+    assert!(out[&id(1)].error().is_some());
+    // statement 1 of g, inside the `if` statement (branch 0)
+    assert_eq!(out[&id(2)].err_line.as_ref().map(|p| p[0]), Some(1));
+}
