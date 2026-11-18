@@ -13,7 +13,7 @@
 //! This module has no GUI dependencies; `structural.rs` draws it and feeds keys.
 
 use std::collections::HashMap;
-use xmath_core::ast::{BinOp, Expr, Stmt, Target, UnOp};
+use xmath_core::ast::{BinOp, Expr, PStmt, Stmt, Target, UnOp};
 
 pub const PH: &str = "■";
 const PH_IDENT: &str = "ph__";
@@ -97,6 +97,7 @@ pub fn is_ph(e: &Expr) -> bool {
 
 fn is_opaque(e: &Expr) -> bool {
     matches!(e, Expr::Matrix(_) | Expr::Program(_) | Expr::Str(_) | Expr::Num(_) | Expr::Imag(_))
+        || matches!(e, Expr::Call(n, _) if n == P_BREAK || n == P_CONTINUE)
 }
 
 pub fn kids(e: &Expr) -> Vec<&Expr> {
@@ -137,7 +138,8 @@ pub fn kids_mut(e: &mut Expr) -> Vec<&mut Expr> {
 
 /// Nodes that have a closing edge: the cursor can stand "after" them.
 fn has_after(e: &Expr) -> bool {
-    matches!(
+    !is_prog_node(e)
+        && matches!(
         e,
         Expr::Call(..)
             | Expr::Abs(_)
@@ -151,7 +153,7 @@ fn has_after(e: &Expr) -> bool {
 
 /// Nodes that start with a symbol of their own (the cursor can stand "before" them).
 fn has_before(e: &Expr) -> bool {
-    matches!(e, Expr::Call(..) | Expr::Abs(_) | Expr::Vectorize(_))
+    !is_prog_node(e) && matches!(e, Expr::Call(..) | Expr::Abs(_) | Expr::Vectorize(_))
 }
 
 fn stops_of(e: &Expr, path: &mut Path, out: &mut Vec<Cursor>) {
@@ -211,6 +213,193 @@ fn is_target(e: &Expr) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Programs (Mathcad's programming operators)
+//
+// Inside the editor a program is an ordinary node tree, so that the cursor walks through
+// it like through any formula: `Call(P_PROG, lines)` is a program block (one statement per
+// line, drawn with the vertical bar), and the statements are calls with reserved names:
+// `P_ASSIGN(target, value)` (←), `P_IF(statement, condition)`, `P_OTHERWISE(statement)`,
+// `P_FOR(variable, range, body)`, `P_WHILE(condition, body)`, `P_BREAK()`, `P_CONTINUE()`
+// and `P_RETURN(value)`. The statement of `if`/`otherwise` is a line or a nested block;
+// loop bodies are blocks. `on error` is the ordinary `Expr::OnError`.
+
+pub const P_PROG: &str = "⟦prog⟧";
+pub const P_ASSIGN: &str = "⟦←⟧";
+pub const P_IF: &str = "⟦if⟧";
+pub const P_OTHERWISE: &str = "⟦otherwise⟧";
+pub const P_FOR: &str = "⟦for⟧";
+pub const P_WHILE: &str = "⟦while⟧";
+pub const P_BREAK: &str = "⟦break⟧";
+pub const P_CONTINUE: &str = "⟦continue⟧";
+pub const P_RETURN: &str = "⟦return⟧";
+
+/// A program block or statement node of the editor tree.
+pub fn is_prog_node(e: &Expr) -> bool {
+    matches!(e, Expr::Call(n, _) if n.starts_with('⟦'))
+}
+
+fn is_block(e: &Expr) -> bool {
+    matches!(e, Expr::Call(n, _) if n == P_PROG)
+}
+
+fn is_named(e: &Expr, name: &str) -> bool {
+    matches!(e, Expr::Call(n, _) if n == name)
+}
+
+fn pcall(name: &str, args: Vec<Expr>) -> Expr {
+    Expr::Call(name.to_string(), args)
+}
+
+fn block(lines: Vec<Expr>) -> Expr {
+    pcall(P_PROG, if lines.is_empty() { vec![ph()] } else { lines })
+}
+
+/// A line that can stand left of `if` / `otherwise` without a nested block.
+fn is_simple_line(e: &Expr) -> bool {
+    !is_prog_node(e) || [P_ASSIGN, P_BREAK, P_CONTINUE, P_RETURN].iter().any(|n| is_named(e, n))
+}
+
+/// `x`, `v[i]` or a placeholder: what can stand left of ←.
+fn is_local_target(e: &Expr) -> bool {
+    let name_ok = |n: &str| n.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_');
+    match e {
+        Expr::Var(n) => n == PH || name_ok(n),
+        Expr::Index(b, _) => matches!(&**b, Expr::Var(n) if name_ok(n)),
+        _ => false,
+    }
+}
+
+/// `Expr::Program` → editor blocks (recursively; matrix cells stay as they are).
+fn enc(e: Expr) -> Expr {
+    match e {
+        Expr::Program(stmts) => block(enc_stmts(stmts)),
+        Expr::Matrix(_) => e,
+        mut other => {
+            for k in kids_mut(&mut other) {
+                let x = std::mem::replace(k, Expr::Num(0.0));
+                *k = enc(x);
+            }
+            other
+        }
+    }
+}
+
+fn enc_target(t: Target) -> Expr {
+    match t {
+        Target::Var(n) => Expr::Var(n),
+        Target::Indexed(n, idx) => Expr::Index(Box::new(Expr::Var(n)), idx.into_iter().map(enc).collect()),
+        Target::Func(n, params) => Expr::Call(n, params.into_iter().map(Expr::Var).collect()),
+        Target::Vector(names) => Expr::Var(names.join(",")),
+    }
+}
+
+fn enc_stmts(stmts: Vec<PStmt>) -> Vec<Expr> {
+    let mut out = Vec::new();
+    for s in stmts {
+        match s {
+            PStmt::Assign(t, e) => out.push(pcall(P_ASSIGN, vec![enc_target(t), enc(e)])),
+            PStmt::Expr(e) => out.push(enc(e)),
+            PStmt::If { cond, then, else_ } => {
+                out.push(pcall(P_IF, vec![enc_body_line(then), enc(cond)]));
+                if let Some(e) = else_ {
+                    out.push(pcall(P_OTHERWISE, vec![enc_body_line(e)]));
+                }
+            }
+            PStmt::For { var, iter, body } => out.push(pcall(P_FOR, vec![Expr::Var(var), enc(iter), block(enc_stmts(body))])),
+            PStmt::While { cond, body } => out.push(pcall(P_WHILE, vec![enc(cond), block(enc_stmts(body))])),
+            PStmt::Break => out.push(pcall(P_BREAK, vec![])),
+            PStmt::Continue => out.push(pcall(P_CONTINUE, vec![])),
+            PStmt::Return(e) => out.push(pcall(P_RETURN, vec![enc(e)])),
+        }
+    }
+    out
+}
+
+/// The statement of `if` / `otherwise`: a single simple line, or a nested block.
+fn enc_body_line(stmts: Vec<PStmt>) -> Expr {
+    let mut lines = enc_stmts(stmts);
+    if lines.len() == 1 && is_simple_line(&lines[0]) {
+        lines.remove(0)
+    } else {
+        block(lines)
+    }
+}
+
+/// Editor blocks → `Expr::Program` (for the source text and the evaluator).
+pub fn dec(e: &Expr) -> Expr {
+    match e {
+        Expr::Call(n, lines) if n == P_PROG => Expr::Program(dec_lines(lines)),
+        // a statement outside a block (cannot normally happen): a one-line program
+        _ if is_prog_node(e) => Expr::Program(dec_lines(std::slice::from_ref(e))),
+        Expr::Matrix(_) => e.clone(),
+        _ => {
+            let mut c = e.clone();
+            for k in kids_mut(&mut c) {
+                *k = dec(k);
+            }
+            c
+        }
+    }
+}
+
+fn dec_target(e: &Expr) -> Target {
+    match e {
+        Expr::Var(n) => Target::Var(n.clone()),
+        Expr::Index(b, idx) if matches!(&**b, Expr::Var(_)) => {
+            let Expr::Var(n) = &**b else { unreachable!() };
+            Target::Indexed(n.clone(), idx.iter().map(dec).collect())
+        }
+        // not assignable: kept as text, the parser reports it
+        other => Target::Var(dec(other).to_string()),
+    }
+}
+
+fn dec_body(e: &Expr) -> Vec<PStmt> {
+    match e {
+        Expr::Call(n, lines) if n == P_PROG => dec_lines(lines),
+        _ => dec_lines(std::slice::from_ref(e)),
+    }
+}
+
+fn dec_lines(lines: &[Expr]) -> Vec<PStmt> {
+    let mut out: Vec<PStmt> = Vec::new();
+    for l in lines {
+        let a = match l {
+            Expr::Call(_, a) => a.as_slice(),
+            _ => &[],
+        };
+        let arg = |i: usize| a.get(i).cloned().unwrap_or_else(ph);
+        let s = match l {
+            Expr::Call(n, _) if n == P_ASSIGN => PStmt::Assign(dec_target(&arg(0)), dec(&arg(1))),
+            Expr::Call(n, _) if n == P_IF => PStmt::If { cond: dec(&arg(1)), then: dec_body(&arg(0)), else_: None },
+            Expr::Call(n, _) if n == P_OTHERWISE => {
+                let body = dec_body(&arg(0));
+                if let Some(PStmt::If { else_: e @ None, .. }) = out.last_mut() {
+                    *e = Some(body);
+                    continue;
+                }
+                // `otherwise` without `if`: kept so that the error is reported
+                PStmt::Expr(Expr::Call("otherwise".into(), vec![Expr::Program(body)]))
+            }
+            Expr::Call(n, _) if n == P_FOR => {
+                let var = match arg(0) {
+                    Expr::Var(v) => v,
+                    other => dec(&other).to_string(),
+                };
+                PStmt::For { var, iter: dec(&arg(1)), body: dec_body(&arg(2)) }
+            }
+            Expr::Call(n, _) if n == P_WHILE => PStmt::While { cond: dec(&arg(0)), body: dec_body(&arg(1)) },
+            Expr::Call(n, _) if n == P_BREAK => PStmt::Break,
+            Expr::Call(n, _) if n == P_CONTINUE => PStmt::Continue,
+            Expr::Call(n, _) if n == P_RETURN => PStmt::Return(dec(&arg(0))),
+            other => PStmt::Expr(dec(other)),
+        };
+        out.push(s);
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Conversion from / to source
 
 fn decode_ph(e: &mut Expr) {
@@ -241,14 +430,6 @@ fn normalize(e: &mut Expr) {
         Expr::Var(n) if n == PH_IDENT => *e = ph(),
         Expr::Matrix(rows) => rows.iter_mut().flatten().for_each(decode_ph),
         _ => kids_mut(e).into_iter().for_each(normalize),
-    }
-}
-
-fn has_program(e: &Expr) -> bool {
-    match e {
-        Expr::Program(_) => true,
-        Expr::Matrix(rows) => rows.iter().flatten().any(has_program),
-        _ => kids(e).into_iter().any(has_program),
     }
 }
 
@@ -320,9 +501,7 @@ impl Ed {
             // symbolic statements are edited as text
             Stmt::Symbolic { .. } => return None,
         }
-        if ed.slots.iter().any(has_program) {
-            return None;
-        }
+        ed.slots = std::mem::take(&mut ed.slots).into_iter().map(enc).collect();
         ed.slots.iter_mut().for_each(normalize);
         let last = ed.slots.len() - 1;
         ed.cur = ed.end_of(&[last]);
@@ -332,18 +511,19 @@ impl Ed {
     /// The statement as parseable source (`■` for placeholders; empty for a fresh editor).
     pub fn source(&self) -> String {
         let unit = || self.unit_expr().filter(|u| !is_ph(u)).map(|u| format!(" {u}")).unwrap_or_default();
+        let slot = |i: usize| dec(&self.slots[i]).to_string();
         match self.form {
             Form::Plain => {
                 if is_ph(&self.slots[0]) {
                     String::new()
                 } else {
-                    self.slots[0].to_string()
+                    slot(0)
                 }
             }
-            Form::Eval => format!("{} ={}", self.slots[0], unit()),
+            Form::Eval => format!("{} ={}", slot(0), unit()),
             Form::Define { global } => {
                 let tail = if self.show { format!(" ={}", unit()) } else { String::new() };
-                format!("{} {} {}{}", self.slots[0], if global { "≡" } else { ":=" }, self.slots[1], tail)
+                format!("{} {} {}{}", slot(0), if global { "≡" } else { ":=" }, slot(1), tail)
             }
         }
     }
@@ -549,11 +729,16 @@ impl Ed {
             '≠' => self.binop(BinOp::Ne),
             '∧' => self.binop(BinOp::And),
             '∨' => self.binop(BinOp::Or),
+            '⊕' => self.binop(BinOp::Xor),
             '¬' => self.prefix_not(),
             '(' => self.open_paren(),
             ')' => self.close(&[CloseKind::Paren]),
             '[' => self.subscript(),
-            ']' => self.close(&[CloseKind::Index]),
+            // `]` leaves a subscript; elsewhere it is Mathcad's «Add Line»
+            ']' if self.in_subscript() => self.close(&[CloseKind::Index]),
+            ']' => self.add_line(),
+            '{' => self.local_define(),
+            '}' => self.if_stmt(),
             ',' => self.comma(),
             '|' => self.bar(),
             '\\' => self.template("sqrt(■)"),
@@ -584,6 +769,9 @@ impl Ed {
     }
 
     fn type_token(&mut self, c: char) {
+        if self.sel.is_none() && self.node(&self.cur.path).is_some_and(is_prog_node) {
+            return;
+        }
         self.snap();
         if let Some(sel) = self.sel.take() {
             self.replace(&sel, Expr::Var(c.to_string()));
@@ -659,7 +847,9 @@ impl Ed {
         let Some(node) = self.node(&path).cloned() else { return };
         if let Some(sp) = explicit {
             let x = self.node(&sp).cloned().unwrap_or_else(ph);
-            self.wrap_bin(&sp, op, x, self.insert_left);
+            if !is_prog_node(&x) {
+                self.wrap_bin(&sp, op, x, self.insert_left);
+            }
             return;
         }
         if is_ph(&node) {
@@ -696,6 +886,9 @@ impl Ed {
         }
         let target = if left { path } else { self.climb(path, op) };
         let x = self.node(&target).cloned().unwrap_or_else(ph);
+        if is_prog_node(&x) {
+            return;
+        }
         self.wrap_bin(&target, op, x, left);
     }
 
@@ -895,6 +1088,9 @@ impl Ed {
         let explicit = self.sel.take();
         let path = explicit.clone().unwrap_or_else(|| self.cur.path.clone());
         let Some(node) = self.node(&path).cloned() else { return };
+        if explicit.is_none() && is_prog_node(&node) {
+            return;
+        }
         let target = if explicit.is_some() || is_ph(&node) {
             self.replace(&path, e);
             path.clone()
@@ -912,6 +1108,54 @@ impl Ed {
     /// Palette / paste insertion of source text. `false`: it needs the line editor.
     pub fn insert_str(&mut self, s: &str) -> bool {
         let t = s.trim();
+        // the Programming palette (its texts are the line-editor forms)
+        match t {
+            "; ■" | "{ ■ }" => {
+                self.add_line();
+                return true;
+            }
+            "← ■" => {
+                self.local_define();
+                return true;
+            }
+            "■ if ■" | "if ■ { ■ }" => {
+                self.if_stmt();
+                return true;
+            }
+            "■ otherwise" | "otherwise { ■ }" => {
+                self.otherwise_stmt();
+                return true;
+            }
+            "for ■ ∈ ■ { ■ }" => {
+                self.for_stmt();
+                return true;
+            }
+            "while ■ { ■ }" => {
+                self.while_stmt();
+                return true;
+            }
+            "break" => {
+                self.jump_stmt(P_BREAK);
+                return true;
+            }
+            "continue" => {
+                self.jump_stmt(P_CONTINUE);
+                return true;
+            }
+            "return ■" => {
+                self.return_stmt();
+                return true;
+            }
+            "on error ■" | "■ on error ■" => {
+                self.on_error();
+                return true;
+            }
+            "⊕" => {
+                self.type_binop(BinOp::Xor);
+                return true;
+            }
+            _ => {}
+        }
         let needs_line = t.contains('{')
             || t.contains('←')
             || t.contains("on error")
@@ -1120,6 +1364,13 @@ impl Ed {
                 (Expr::Binary(BinOp::Pow, ..), false, 1) => Some(self.end_of(&Self::child_path(&path, 0))),
                 (Expr::Index(..), false, 0) => Some(self.start_of(&Self::child_path(&path, 1))),
                 (Expr::Index(..), true, j) if j >= 1 => Some(self.end_of(&Self::child_path(&path, 0))),
+                // program lines, and loop header <-> body
+                (e, true, j) if is_block(e) && j > 0 => Some(self.end_of(&Self::child_path(&path, j - 1))),
+                (e, false, j) if is_block(e) && j + 1 < kids(e).len() => Some(self.start_of(&Self::child_path(&path, j + 1))),
+                (e, false, 0 | 1) if is_named(e, P_FOR) => Some(self.start_of(&Self::child_path(&path, 2))),
+                (e, true, 2) if is_named(e, P_FOR) => Some(self.end_of(&Self::child_path(&path, 1))),
+                (e, false, 0) if is_named(e, P_WHILE) => Some(self.start_of(&Self::child_path(&path, 1))),
+                (e, true, 1) if is_named(e, P_WHILE) => Some(self.end_of(&Self::child_path(&path, 0))),
                 _ => None,
             };
             if let Some(t) = target {
@@ -1259,6 +1510,25 @@ impl Ed {
                 self.replace(&parent, *a);
                 self.cur = self.start_of(&parent);
             }
+            Expr::Call(name, args) if name.starts_with('⟦') => {
+                if name == P_PROG && idx > 0 {
+                    if is_ph(&args[idx - 1]) {
+                        // an empty line above goes away
+                        if let Some(Expr::Call(_, lines)) = self.node_mut(&parent) {
+                            lines.remove(idx - 1);
+                        }
+                        self.cur = self.start_of(&Self::child_path(&parent, idx - 1));
+                    } else {
+                        self.cur = self.end_of(&Self::child_path(&parent, idx - 1));
+                    }
+                } else if (name == P_ASSIGN || name == P_IF) && idx == 1 && is_ph(&args[1]) {
+                    // `x ← ■` / `s if ■`: Backspace removes the operator
+                    self.replace(&parent, args[0].clone());
+                    self.cur = self.end_of(&parent);
+                } else {
+                    self.step(-1);
+                }
+            }
             Expr::Call(name, args) if idx == 0 => {
                 let a = args[0].clone();
                 if args.len() == 1 && is_plain_wrapper(&name) {
@@ -1358,6 +1628,7 @@ impl Ed {
                 self.replace(&parent, ph());
                 self.on_ph(&parent);
             }
+            Expr::Call(name, args) if name.starts_with('⟦') => self.delete_in_prog(&parent, idx, &name, &args),
             Expr::Call(name, args) => {
                 if args.len() == 1 || args.iter().all(is_ph) {
                     if is_plain_wrapper(&name) && name.is_empty() || name == "sqrt" || name == "abs" || name.is_empty() {
@@ -1404,6 +1675,43 @@ impl Ed {
                     self.replace(&parent, *a);
                     self.cur = self.end_of(&parent);
                 }
+            }
+            _ => self.step(-1),
+        }
+    }
+
+    /// Backspace / Delete on the placeholder `idx` of a program structure at `parent`.
+    fn delete_in_prog(&mut self, parent: &[usize], idx: usize, name: &str, args: &[Expr]) {
+        let empty = |e: &Expr| is_ph(e) || (is_block(e) && kids(e).into_iter().all(is_ph));
+        match name {
+            P_PROG if args.len() > 1 => {
+                if let Some(Expr::Call(_, lines)) = self.node_mut(parent) {
+                    lines.remove(idx);
+                }
+                self.cur = if idx > 0 { self.end_of(&Self::child_path(parent, idx - 1)) } else { self.start_of(&Self::child_path(parent, 0)) };
+                self.sel = None;
+            }
+            // the last, empty line: the program goes away
+            P_PROG => {
+                self.replace(parent, ph());
+                self.on_ph(parent);
+            }
+            P_ASSIGN | P_IF if idx == 1 => {
+                self.replace(parent, args[0].clone());
+                self.cur = self.end_of(parent);
+                self.sel = None;
+            }
+            P_ASSIGN | P_IF if empty(&args[1]) => {
+                self.replace(parent, ph());
+                self.on_ph(parent);
+            }
+            P_OTHERWISE | P_RETURN => {
+                self.replace(parent, ph());
+                self.on_ph(parent);
+            }
+            P_FOR | P_WHILE if args.iter().all(empty) => {
+                self.replace(parent, ph());
+                self.on_ph(parent);
             }
             _ => self.step(-1),
         }
@@ -1484,7 +1792,7 @@ impl Ed {
 
     /// Source text of the selected operand (Ctrl+C).
     pub fn copy_text(&self) -> String {
-        self.node(&self.selected_path()).map(|n| n.to_string()).unwrap_or_default()
+        self.node(&self.selected_path()).map(|n| dec(n).to_string()).unwrap_or_default()
     }
 
     /// Ctrl+X: copy, then delete the selection.
@@ -1506,12 +1814,179 @@ impl Ed {
         if t.is_empty() {
             return;
         }
-        if let Ok(mut e) = xmath_core::parse_expr(&t.replace('■', PH_IDENT)) {
+        if let Ok(e) = xmath_core::parse_expr(&t.replace('■', PH_IDENT)) {
+            let mut e = enc(e);
             normalize(&mut e);
             self.insert_expr(e);
         } else {
             self.type_str(t);
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Programs
+
+    /// The cursor is in the subscript of an indexed name.
+    fn in_subscript(&self) -> bool {
+        let p = &self.cur.path;
+        (1..p.len()).any(|k| p[k] >= 1 && matches!(self.node(&p[..k]), Some(Expr::Index(..))))
+    }
+
+    /// Whether slot `i` holds an expression that may contain a program (not the name of a
+    /// definition and not the display unit).
+    fn body_slot(&self, i: usize) -> bool {
+        i < self.base_slots() && !(matches!(self.form, Form::Define { .. }) && i == 0)
+    }
+
+    /// The statement level around `path`: a line of a block, or the statement left of
+    /// `if` / `otherwise`. `None` outside programs.
+    fn line_level(&self, path: &[usize]) -> Option<Path> {
+        let mut p = path.to_vec();
+        while p.len() >= 2 {
+            let idx = p[p.len() - 1];
+            match self.node(&p[..p.len() - 1]) {
+                Some(e) if is_block(e) => return Some(p),
+                Some(e) if (is_named(e, P_IF) || is_named(e, P_OTHERWISE)) && idx == 0 => return Some(p),
+                _ => {}
+            }
+            p.pop();
+        }
+        None
+    }
+
+    /// Replaces the statement around the selection by `make(statement)`. Outside a program
+    /// the whole slot becomes a one-line program. Returns the path of the new statement.
+    fn put_stmt(&mut self, make: impl FnOnce(Expr) -> Option<Expr>) -> Option<Path> {
+        let sp = self.selected_path();
+        if !self.body_slot(sp[0]) {
+            return None;
+        }
+        // a subscripted name is one operand
+        let sp = match sp.len() {
+            n if n >= 2 && matches!(self.node(&sp[..n - 1]), Some(Expr::Index(..))) => sp[..n - 1].to_vec(),
+            _ => sp,
+        };
+        let (path, in_prog) = match self.line_level(&sp) {
+            Some(p) => (p, true),
+            None => (vec![sp[0]], false),
+        };
+        let x = self.node(&path).cloned().unwrap_or_else(ph);
+        let new = make(x)?;
+        self.snap();
+        self.sel = None;
+        if in_prog {
+            self.replace(&path, new);
+            Some(path)
+        } else {
+            self.replace(&path, block(vec![new]));
+            Some(Self::child_path(&path, 0))
+        }
+    }
+
+    /// Puts the cursor on the first placeholder of `path` (or at its end).
+    fn cursor_into(&mut self, path: &[usize]) {
+        self.cur = self.first_ph_in(path).unwrap_or_else(|| self.end_of(path));
+        self.sel = None;
+    }
+
+    /// Mathcad's «Add Line» (`]`): a new line below the current statement of the program;
+    /// outside a program the operand becomes the first line of a new program.
+    pub fn add_line(&mut self) {
+        let sp = self.selected_path();
+        if !self.body_slot(sp[0]) {
+            return;
+        }
+        self.snap();
+        self.sel = None;
+        let mut p = sp.clone();
+        while p.len() >= 2 {
+            let idx = p[p.len() - 1];
+            let parent: Path = p[..p.len() - 1].to_vec();
+            match self.node(&parent).cloned() {
+                Some(e) if is_block(&e) => {
+                    let at = if self.insert_left { idx } else { idx + 1 };
+                    if let Some(Expr::Call(_, lines)) = self.node_mut(&parent) {
+                        lines.insert(at, ph());
+                    }
+                    self.on_ph(&Self::child_path(&parent, at));
+                    return;
+                }
+                Some(e) if (is_named(&e, P_IF) || is_named(&e, P_OTHERWISE)) && idx == 0 => {
+                    // the statement of if / otherwise grows into a nested block
+                    let stmt = self.node(&p).cloned().unwrap_or_else(ph);
+                    self.replace(&p, block(vec![stmt, ph()]));
+                    self.on_ph(&Self::child_path(&p, 1));
+                    return;
+                }
+                _ => {}
+            }
+            p.pop();
+        }
+        let x = self.node(&sp).cloned().unwrap_or_else(ph);
+        let first_empty = is_ph(&x);
+        self.replace(&sp, block(vec![x, ph()]));
+        self.on_ph(&Self::child_path(&sp, usize::from(!first_empty)));
+    }
+
+    /// `{`: local definition `x ← ■` (the operand must be a name or an indexed name).
+    pub fn local_define(&mut self) {
+        let Some(p) = self.put_stmt(|x| is_local_target(&x).then(|| pcall(P_ASSIGN, vec![x, ph()]))) else { return };
+        self.cursor_into(&p);
+    }
+
+    /// `}`: `statement if ■`.
+    pub fn if_stmt(&mut self) {
+        let Some(p) = self.put_stmt(|x| (!is_named(&x, P_OTHERWISE)).then(|| pcall(P_IF, vec![x, ph()]))) else { return };
+        self.cursor_into(&p);
+    }
+
+    /// Ctrl+Shift+}: `statement otherwise`.
+    pub fn otherwise_stmt(&mut self) {
+        let Some(p) = self.put_stmt(|x| (!is_named(&x, P_OTHERWISE)).then(|| pcall(P_OTHERWISE, vec![x]))) else { return };
+        self.cursor_into(&p);
+    }
+
+    /// Ctrl+Shift+": `for ■ ∈ ■` with the statement as the body.
+    pub fn for_stmt(&mut self) {
+        let Some(p) = self.put_stmt(|x| Some(pcall(P_FOR, vec![ph(), ph(), block(vec![x])]))) else { return };
+        self.cursor_into(&p);
+    }
+
+    /// Ctrl+]: `while ■` with the statement as the body.
+    pub fn while_stmt(&mut self) {
+        let Some(p) = self.put_stmt(|x| Some(pcall(P_WHILE, vec![ph(), block(vec![x])]))) else { return };
+        self.cursor_into(&p);
+    }
+
+    /// Ctrl+Shift+| : `return ■`.
+    pub fn return_stmt(&mut self) {
+        let Some(p) = self.put_stmt(|x| Some(pcall(P_RETURN, vec![x]))) else { return };
+        self.cursor_into(&p);
+    }
+
+    /// Ctrl+': `statement on error ■`.
+    pub fn on_error(&mut self) {
+        let Some(p) = self.put_stmt(|x| Some(Expr::OnError(Box::new(x), Box::new(ph())))) else { return };
+        self.cursor_into(&p);
+    }
+
+    /// `break` (Ctrl+Shift+{) / `continue` (Ctrl+[): fills an empty statement, otherwise
+    /// goes on a new line below it.
+    pub fn jump_stmt(&mut self, name: &str) {
+        let sp = self.selected_path();
+        if !self.body_slot(sp[0]) {
+            return;
+        }
+        let line = self.line_level(&sp);
+        let at = line.clone().unwrap_or_else(|| vec![sp[0]]);
+        if !self.node(&at).is_some_and(is_ph) {
+            if line.is_none() {
+                return; // outside a program only an empty operand can take it
+            }
+            self.add_line();
+        }
+        let Some(p) = self.put_stmt(|_| Some(pcall(name, vec![]))) else { return };
+        self.cur = Cursor { path: p, pos: 1 };
     }
 }
 
@@ -1669,7 +2144,10 @@ mod tests {
         e.insert_str("■/■");
         e.type_str("b");
         assert_eq!(e.source(), "a/b");
-        assert!(!Ed::new().insert_str("{ ■ }"));
+        // the Programming palette works structurally: «Add Line» on an empty slot
+        let mut e = Ed::new();
+        assert!(e.insert_str("{ ■ }"));
+        assert_eq!(e.source(), "{ ■; ■ }");
     }
 
     #[test]
@@ -1830,7 +2308,8 @@ mod tests {
             let b = xmath_core::parse_statement(&out).unwrap();
             assert_eq!(a, b, "{s} -> {out}");
         }
-        assert!(Ed::from_source("{ s ← 0; s }").is_none());
+        // programs are edited structurally too
+        assert_eq!(Ed::from_source("{ s ← 0; s }").unwrap().source(), "{ s ← 0; s }");
         assert!(Ed::from_source("x := ").is_none());
         let e = Ed::from_source("x := ■ + 1").unwrap();
         assert!(e.has_placeholder());
@@ -1890,6 +2369,163 @@ mod tests {
     }
 
     /// Evaluates `a := 3` followed by the typed region; returns its error text, if any.
+    /// Value of `call` after the definition typed into `e` (evaluated in a worksheet).
+    fn eval_after(e: &Ed, call: &str) -> String {
+        let mut ws = xmath_core::Worksheet::default();
+        ws.regions.push(xmath_core::Region::new(1, 0.0, 0.0, xmath_core::RegionKind::Math { source: e.source() }));
+        ws.regions.push(xmath_core::Region::new(2, 0.0, 200.0, xmath_core::RegionKind::Math { source: format!("{call} =") }));
+        let out = xmath_core::evaluate_worksheet(&ws);
+        let o = out.get(&2).expect("output");
+        match &o.output {
+            xmath_core::Output::Value { view, .. } => view.to_string(),
+            _ => format!("{:?}", o.error()),
+        }
+    }
+
+    #[test]
+    fn program_lines_and_local_definitions() {
+        // `]` on the empty right side: a program with two lines (Mathcad's Add Line)
+        let mut e = t("f(x):]");
+        e.type_str("s{0");
+        e.press(K::Down);
+        e.type_str("s+x");
+        assert_eq!(e.source(), "f(x) := { s ← 0; s + x }");
+        assert_eq!(eval_after(&e, "f(4)"), "4");
+        // `]` inside a line adds a line below it; Backspace on the empty line removes it
+        e.press(K::End);
+        e.type_str("]");
+        assert_eq!(e.source(), "f(x) := { s ← 0; s + x; ■ }");
+        e.press(K::Backspace);
+        assert_eq!(e.source(), "f(x) := { s ← 0; s + x }");
+        // indexed local definition
+        let mut e = t("v:]");
+        e.type_str("w[1{5");
+        e.press(K::Down);
+        e.type_str("w");
+        assert_eq!(e.source(), "v := { w[1] ← 5; w }");
+    }
+
+    #[test]
+    fn program_if_otherwise() {
+        let mut e = t("h(x):]");
+        e.type_str("0}x<0");
+        e.press(K::Down);
+        e.type_str("x");
+        e.otherwise_stmt();
+        assert_eq!(e.source(), "h(x) := { if x < 0 { 0 } otherwise { x } }");
+        assert_eq!(eval_after(&e, "h(-2)"), "0");
+        assert_eq!(eval_after(&e, "h(3)"), "3");
+        // a postfix `if` alone stays postfix
+        let mut e = t("g(x):]");
+        e.type_str("1}x>0");
+        assert_eq!(e.source(), "g(x) := { 1 if x > 0; ■ }");
+        // `]` in the statement of `if` turns it into a nested block
+        let mut e = t("k(x):]");
+        e.type_str("a{1");
+        e.if_stmt();
+        e.type_str("x>0");
+        let mut p = e.cur.path.clone();
+        p.truncate(3); // [slot, line, stmt]
+        e.sel = Some(vec![1, 0, 0]);
+        e.type_str("]");
+        e.type_str("b{2");
+        assert_eq!(e.source(), "k(x) := { if x > 0 { a ← 1; b ← 2 }; ■ }");
+        let _ = p;
+    }
+
+    #[test]
+    fn program_loops() {
+        // for: the variable, Tab to the range, Tab to the body
+        let mut e = t("S(n):]");
+        e.type_str("s{0");
+        e.press(K::Down);
+        e.for_stmt();
+        e.type_str("i");
+        e.press(K::Tab);
+        e.type_str("1;n");
+        e.press(K::Tab);
+        e.type_str("s{s+i");
+        // a line after the loop: select the loop line, Add Line
+        e.sel = Some(vec![1, 1]);
+        e.type_str("]s");
+        assert_eq!(e.source(), "S(n) := { s ← 0; for i ∈ 1..n { s ← s + i }; s }");
+        assert_eq!(eval_after(&e, "S(10)"), "55");
+        // while with break / continue / return
+        let mut e = t("w(n):]");
+        e.type_str("i{0");
+        e.press(K::Down);
+        e.while_stmt();
+        e.type_str("i<n");
+        e.press(K::Down);
+        e.type_str("i{i+1");
+        e.type_str("]");
+        e.jump_stmt(P_BREAK);
+        assert_eq!(e.source(), "w(n) := { i ← 0; while i < n { i ← i + 1; break } }");
+        let mut e = t("z:]");
+        e.jump_stmt(P_CONTINUE);
+        assert_eq!(e.source(), "z := { continue; ■ }");
+        let mut e = t("r(x):]");
+        e.type_str("x");
+        e.return_stmt();
+        assert_eq!(e.source(), "r(x) := { return x; ■ }");
+        let mut e = t("q(x):]");
+        e.type_str("1/x");
+        e.on_error();
+        e.type_str("0");
+        assert_eq!(e.source(), "q(x) := { 1/x on error 0; ■ }");
+    }
+
+    #[test]
+    fn program_deletion() {
+        // Backspace on the last empty line removes the program
+        let mut e = t("p:]");
+        e.press(K::Backspace);
+        assert_eq!(e.source(), "p := { ■ }");
+        e.press(K::Backspace);
+        assert_eq!(e.source(), "p := ■");
+        // `x ← ■`: Backspace removes the arrow
+        let mut e = t("p:]");
+        e.type_str("x{");
+        e.press(K::Backspace);
+        assert_eq!(e.source(), "p := { x; ■ }");
+        // an empty loop goes away
+        let mut e = t("p:]");
+        e.for_stmt();
+        e.press(K::Backspace);
+        assert_eq!(e.source(), "p := { ■; ■ }");
+    }
+
+    #[test]
+    fn boolean_operators() {
+        assert_eq!(src("a∧b⊕¬c"), "a and b ⊕ ¬c");
+        assert_eq!(src("a∨b"), "a or b");
+        let mut e = t("x:1∧1⊕¬0");
+        assert_eq!(e.source(), "x := 1 and 1 ⊕ ¬0");
+        e.press(K::End);
+        assert_eq!(eval_after(&e, "x"), "0");
+        let e = t("y:1⊕0");
+        assert_eq!(eval_after(&e, "y"), "1");
+    }
+
+    #[test]
+    fn programs_load_and_save() {
+        // every program of the examples is edited structurally and saved back unchanged
+        let ws: serde_json::Value = serde_json::from_str(include_str!("../../../examples/programs.xmath")).unwrap();
+        let mut n = 0;
+        for r in ws["regions"].as_array().unwrap() {
+            let Some(src) = r["kind"]["Math"]["source"].as_str().or_else(|| r["source"].as_str()) else { continue };
+            if !src.contains('{') {
+                continue;
+            }
+            let ed = Ed::from_source(src).unwrap_or_else(|| panic!("not structural: {src}"));
+            let a = xmath_core::parse_statement(src).unwrap();
+            let b = xmath_core::parse_statement(&ed.source()).unwrap_or_else(|e| panic!("{}: {}", ed.source(), e.msg));
+            assert_eq!(a, b, "{src}\n{}", ed.source());
+            n += 1;
+        }
+        assert!(n >= 3, "programs found: {n}");
+    }
+
     fn eval_error(keys: &str) -> (String, Option<String>) {
         let e = t(keys);
         let source = e.source();

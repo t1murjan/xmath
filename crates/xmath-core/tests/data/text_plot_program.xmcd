@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <worksheet xmlns="http://schemas.mathsoft.com/worksheet30" xmlns:ml="http://schemas.mathsoft.com/math30">
 <regions>
-<region region-id="1" left="36" top="18" width="300" height="40"><text use-page-width="false" push-down="false" lock-width="false"><p style="Normal" margin-left="0" text-align="left"><inlineAttr size="14"><b>Расчёт балки</b></inlineAttr></p><p style="Normal"><b>Второй абзац<br/>с переносом</b></p></text></region>
+<region region-id="1" left="36" top="18" width="300" height="40"><text use-page-width="false" push-down="false" lock-width="false"><p style="Normal" margin-left="0" text-align="left"><inlineAttr size="14"><b>Расчёт балки</b></inlineAttr></p><p style="Normal"><inlineAttr size="14"><b>Второй абзац<br/>с переносом</b></inlineAttr></p></text></region>
 <region region-id="2" left="36" top="70" width="300" height="40"><text><p>Площадь A<sub>1</sub> и x<sup>2</sup> заданы ниже.</p></text></region>
 <region region-id="3" left="36" top="120" width="300" height="21"><math><ml:define><ml:id>t</ml:id><ml:range><ml:real>0</ml:real><ml:real>10</ml:real></ml:range></ml:define></math></region>
 <region region-id="4" left="36" top="150" width="300" height="200"><plot><xyPlot><xyAxes><xAxis><ml:sequence><ml:id>t</ml:id></ml:sequence></xAxis><yAxis><ml:sequence><ml:apply><ml:pow/><ml:id>t</ml:id><ml:real>2</ml:real></ml:apply><ml:id>t</ml:id></ml:sequence></yAxis></xyAxes></xyPlot></plot></region>

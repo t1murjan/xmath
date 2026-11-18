@@ -147,6 +147,7 @@ fn source(ws: &Worksheet, id: u64) -> String {
         RegionKind::Text { text, .. } => format!("TEXT:{text}"),
         RegionKind::Plot { x, y, .. } => format!("PLOT:{x}|{}", y.join("|")),
         RegionKind::Image { .. } => "IMAGE".to_string(),
+        RegionKind::Plot3d { expr, .. } => format!("PLOT3D:{expr}"),
         RegionKind::Reference { href } => format!("REF:{href}"),
     }
 }
@@ -205,4 +206,23 @@ fn undefined_i_is_the_imaginary_unit() {
     assert_eq!((z.re, z.im), (-1.0, 0.0));
     // a user definition wins
     assert_eq!(run(&["i := 3", "i"]).unwrap().as_num().unwrap().v.re, 3.0);
+}
+
+/// Mathcad's Boolean toolbar: ¬ ∧ ∨ ⊕ (exclusive or binds like or, and binds tighter).
+#[test]
+fn boolean_operators() {
+    let v = |s: &str| match run(&[s]).unwrap() {
+        Value::Num(n) => n.v.re,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(v("1 ⊕ 0"), 1.0);
+    assert_eq!(v("1 ⊕ 1"), 0.0);
+    assert_eq!(v("0 ⊕ 0"), 0.0);
+    assert_eq!(v("1 ∧ 0 ⊕ ¬0"), 1.0);
+    assert_eq!(v("¬(1 ∨ 0)"), 0.0);
+    assert_eq!(v("(2 > 1) ⊕ (3 ≤ 2)"), 1.0);
+    // printed and parsed back unchanged
+    let e = parse_expr("a ∧ b ⊕ ¬c").unwrap();
+    assert_eq!(e.to_string(), "a and b ⊕ ¬c");
+    assert_eq!(parse_expr(&e.to_string()).unwrap(), e);
 }

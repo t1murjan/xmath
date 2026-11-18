@@ -4,11 +4,11 @@
 use crate::mathview::{Lay, Node, Ts, RED};
 use crate::palettes::{self, Act, Palette};
 use crate::plot;
-use egui::text::{CCursor, CCursorRange, LayoutJob, TextFormat};
+use egui::text::{CCursor, CCursorRange};
 use egui::text_edit::TextEditState;
 use egui::scroll_area::ScrollBarVisibility;
 use egui::{
-    Align, Align2, Color32, Context, CursorIcon, Event, FontFamily, FontId, Id, Key, KeyboardShortcut, Layout,
+    Align, Align2, Color32, Context, CursorIcon, Event, FontId, Id, Key, KeyboardShortcut, Layout,
     Modifiers, Pos2, Rect, RichText, ScrollArea, Sense, Shape, Stroke, TextEdit, Ui, Vec2,
 };
 use std::collections::{HashMap, HashSet};
@@ -16,12 +16,14 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use xmath_core::{
-    AxisStyle, FormatOptions, LineStyle, Output, PlotFormat, Region, RegionKind, RegionOutput,
-    TraceFormat, UnitSystem, Worksheet,
+    FormatOptions, Output, Plot3dData, Plot3dKind, PlotFormat, PlotKind, Region, RegionKind, RegionOutput,
+    UnitSystem, Worksheet,
 };
 
 #[path = "inplace.rs"]
 mod inplace;
+#[path = "plotdlg.rs"]
+mod plotdlg;
 #[path = "print_ui.rs"]
 mod print_ui;
 #[path = "structural.rs"]
@@ -29,7 +31,6 @@ mod structural;
 
 const GRID: f32 = 8.0;
 const BASE_PT: f32 = 10.0;
-const LEGEND_W: f32 = 80.0;
 
 pub const PANEL: Color32 = Color32::from_rgb(236, 233, 216);
 const SELECT_BLUE: Color32 = Color32::from_rgb(49, 106, 197);
@@ -67,6 +68,11 @@ pub enum Action {
     Delete,
     SelectAll,
     InsertPlot,
+    InsertPolar,
+    InsertSurface,
+    InsertContour,
+    InsertBar,
+    InsertScatter,
     InsertMatrix,
     InsertFunction,
     InsertUnit,
@@ -94,6 +100,7 @@ pub enum Action {
 pub static EXAMPLES: &[(&str, &str)] = &[
     ("Знакомство с xmath", include_str!("../../../examples/demo.xmath")),
     ("Балка: прогиб и момент", include_str!("../../../examples/beam.xmath")),
+    ("Графики: X-Y, полярные, 3D", include_str!("../../../examples/plots.xmath")),
 ];
 
 struct MatrixDlg {
@@ -113,12 +120,11 @@ struct FormatDlg {
     tab: usize,
 }
 
-/// Mathcad's «Форматирование графика».
-struct PlotDlg {
+/// Format dialog of a 3D plot.
+struct Plot3dDlg {
     id: u64,
-    fmt: PlotFormat,
-    trace: usize,
-    tab: usize,
+    fmt: xmath_core::Plot3dFormat,
+    view: xmath_core::View3d,
 }
 
 /// Tools → Worksheet Options.
@@ -208,7 +214,8 @@ pub struct App {
     dlg_function: Option<ListDlg>,
     dlg_unit: Option<ListDlg>,
     dlg_format: Option<FormatDlg>,
-    dlg_plot: Option<PlotDlg>,
+    dlg_plot: Option<plotdlg::PlotDlg>,
+    dlg_plot3d: Option<Plot3dDlg>,
     dlg_options: Option<OptionsDlg>,
     lim_buf: Option<LimBuf>,
     eval_tx: mpsc::Sender<EvalDone>,
@@ -245,11 +252,16 @@ pub struct App {
     pending: Vec<Action>,
     has_bold_font: bool,
     import_log: Vec<String>,
+    /// What the last save to .xmcd could not write (shown once in a dialog).
+    save_warnings: Option<Vec<String>>,
+    /// The Mathcad export notes last shown in the dialog (the same notes are not shown again on every Ctrl+S).
+    shown_warnings: Vec<String>,
     /// Debug harness (`XMATH_DUMP_RECTS=path`): writes the rendered region sizes and exits.
     dump_rects: Option<PathBuf>,
     dump_frames: u32,
     /// Scroll state of the worksheet canvas (screen pixels), from the last frame.
     scroll_off: Vec2,
+    view_min: Pos2,
     view_size: Vec2,
     content_size: Vec2,
     /// New scroll offset requested by the keyboard / zoom (applied on the next frame).
@@ -260,6 +272,10 @@ pub struct App {
     last_edit_rect: Option<(u64, Rect)>,
     /// Print preview, page setup, reference dialog.
     print: print_ui::PrintUi,
+    /// Interface scale choice (None = auto), cached auto factor, preferences dialog.
+    ui_scale: crate::uiscale::Choice,
+    ui_scale_auto: Option<f32>,
+    show_prefs: bool,
 }
 
 impl App {
@@ -294,6 +310,7 @@ impl App {
             dlg_unit: None,
             dlg_format: None,
             dlg_plot: None,
+            dlg_plot3d: None,
             dlg_options: None,
             lim_buf: None,
             eval_tx,
@@ -321,15 +338,21 @@ impl App {
             pending: Vec::new(),
             has_bold_font,
             import_log: Vec::new(),
+            save_warnings: None,
+            shown_warnings: Vec::new(),
             dump_rects: std::env::var_os("XMATH_DUMP_RECTS").map(PathBuf::from),
             dump_frames: 0,
             scroll_off: Vec2::ZERO,
+            view_min: Pos2::ZERO,
             view_size: Vec2::new(1000.0, 700.0),
             content_size: Vec2::ZERO,
             scroll_req: None,
             reveal: None,
             last_edit_rect: None,
             print: Default::default(),
+            ui_scale: None,
+            ui_scale_auto: None,
+            show_prefs: false,
         };
         if let Some(st) = cc.storage.and_then(|s| s.get_string("xmath-ui")) {
             app.restore_ui(&st);
@@ -354,6 +377,7 @@ impl App {
                     self.palettes = Palette::ALL.iter().copied().filter(|p| v.split(',').any(|n| n == p.title())).collect();
                 }
                 Some(("auto", v)) => self.auto_calc = v != "0",
+                Some(("uiscale", v)) => self.ui_scale = crate::uiscale::parse(v),
                 _ => {}
             }
         }
@@ -368,7 +392,7 @@ impl App {
             }
         }
         let pal: Vec<&str> = Palette::ALL.iter().filter(|p| self.palettes.contains(p)).map(|p| p.title()).collect();
-        format!("bars:{bars};palettes:{};auto:{}", pal.join(","), self.auto_calc as u8)
+        format!("bars:{bars};palettes:{};auto:{};uiscale:{}", pal.join(","), self.auto_calc as u8, crate::uiscale::serialize(self.ui_scale))
     }
 
     // -----------------------------------------------------------------
@@ -419,8 +443,9 @@ impl App {
         match result {
             Ok((ws, warnings)) => {
                 self.ws = ws;
-                // an imported Mathcad file is saved as a new .xmath next to it
-                self.path = if ext == "xmath" { Some(p.to_path_buf()) } else { None };
+                // Ctrl+S writes back to the file that was opened, in its own format (.xmcd or .xmath);
+                // plain-text imports have no document file yet
+                self.path = if ext == "xmath" || ext == "xmcd" { Some(p.to_path_buf()) } else { None };
                 self.after_load();
                 self.status = if warnings.is_empty() {
                     format!("Открыт файл {}", p.display())
@@ -444,20 +469,30 @@ impl App {
         self.cursor = Pos2::new(24.0, 24.0);
     }
 
+    /// Saves in the format of the extension: `.xmath` is xmath's own JSON, everything else is
+    /// Mathcad 15's `.xmcd` (a name without extension gets `.xmcd`).
     fn save_to(&mut self, p: PathBuf) {
-        if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmcd")) {
-            self.save_xmcd(&p);
+        let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if ext == "xmath" {
+            match std::fs::write(&p, self.ws.to_json()) {
+                Ok(()) => {
+                    self.status = format!("Сохранено: {}", p.display());
+                    self.path = Some(p);
+                    self.modified = false;
+                }
+                Err(e) => self.status = format!("Ошибка сохранения: {e}"),
+            }
             return;
         }
-        let p = if p.extension().is_none() { p.with_extension("xmath") } else { p };
-        match std::fs::write(&p, self.ws.to_json()) {
-            Ok(()) => {
-                self.status = format!("Сохранено: {}", p.display());
-                self.path = Some(p);
-                self.modified = false;
-            }
-            Err(e) => self.status = format!("Ошибка сохранения: {e}"),
-        }
+        let p = if ext == "xmcd" {
+            p
+        } else if ext.is_empty() {
+            p.with_extension("xmcd")
+        } else {
+            let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            p.with_file_name(format!("{name}.xmcd"))
+        };
+        self.save_xmcd(&p);
     }
 
     /// Saves to the current path, or asks for one.
@@ -493,7 +528,10 @@ impl App {
         if self.file_job.is_some() || self.path_dlg.is_some() {
             return;
         }
-        let name = self.doc_name().replace(':', "") + if kind == DlgKind::Pdf { ".pdf" } else { ".xmath" };
+        let name = self.doc_name().replace(':', "");
+        // the dialog (Save As, or the first save of a new document) offers Mathcad 15 files first;
+        // Ctrl+S on an existing document does not ask and keeps the type of its file
+        let name = file_stem_of(&name) + if kind == DlgKind::Pdf { ".pdf" } else { ".xmcd" };
         let (tx, rx) = mpsc::channel();
         let run = move || native_dialog(kind, &name);
         #[cfg(target_os = "linux")]
@@ -531,9 +569,9 @@ impl App {
         if failed {
             self.status = "Системный диалог выбора файла недоступен (нет xdg-desktop-portal?). Введите путь вручную.".into();
             let text = match (&self.path, job.kind) {
-                (Some(p), DlgKind::Save) => p.display().to_string(),
-                (None, DlgKind::Save) => std::env::current_dir().unwrap_or_default().join(self.doc_name().replace(':', "") + ".xmath").display().to_string(),
-                (_, DlgKind::Pdf) => std::env::current_dir().unwrap_or_default().join(self.doc_name().replace(':', "") + ".pdf").display().to_string(),
+                (Some(p), DlgKind::Save) => p.with_extension("xmcd").display().to_string(),
+                (None, DlgKind::Save) => std::env::current_dir().unwrap_or_default().join(file_stem_of(&self.doc_name().replace(':', "")) + ".xmcd").display().to_string(),
+                (_, DlgKind::Pdf) => std::env::current_dir().unwrap_or_default().join(file_stem_of(&self.doc_name().replace(':', "")) + ".pdf").display().to_string(),
                 _ => String::new(),
             };
             self.path_dlg = Some(PathDlg { kind: job.kind, text, then: job.then });
@@ -626,7 +664,24 @@ impl App {
                 self.selection = self.ws.regions.iter().map(|r| r.id).collect();
             }
             Action::InsertPlot => {
-                self.new_region(RegionKind::new_plot(), true);
+                let k = self.blank_plot(PlotKind::Xy);
+                self.new_region(k, true);
+            }
+            Action::InsertPolar => {
+                let k = self.blank_plot(PlotKind::Polar);
+                self.new_region(k, true);
+            }
+            Action::InsertSurface => {
+                self.new_region(RegionKind::new_plot3d(Plot3dKind::Surface), true);
+            }
+            Action::InsertContour => {
+                self.new_region(RegionKind::new_plot3d(Plot3dKind::Contour), true);
+            }
+            Action::InsertBar => {
+                self.new_region(RegionKind::new_plot3d(Plot3dKind::Bar), true);
+            }
+            Action::InsertScatter => {
+                self.new_region(RegionKind::new_plot3d(Plot3dKind::Scatter), true);
             }
             Action::InsertMatrix => self.dlg_matrix = Some(MatrixDlg { rows: if self.active_matrix_cell() { 1 } else { 3 }, cols: if self.active_matrix_cell() { 1 } else { 3 }, delete: false }),
             Action::InsertFunction => self.dlg_function = Some(ListDlg { group: 0, item: 0 }),
@@ -652,9 +707,10 @@ impl App {
                 self.dlg_options = Some(OptionsDlg { tab: 0, origin, tol, ctol, units: self.ws.format.unit_system });
             }
             Action::PlotFormat => {
-                let target = self.editing.into_iter().chain(self.selection.iter().copied()).find(|id| matches!(self.region(*id).map(|r| &r.kind), Some(RegionKind::Plot { .. })));
+                let target = self.editing.into_iter().chain(self.selection.iter().copied()).find(|id| matches!(self.region(*id).map(|r| &r.kind), Some(RegionKind::Plot { .. } | RegionKind::Plot3d { .. })));
                 match target.and_then(|id| self.region(id).map(|r| (id, r.kind.clone()))) {
-                    Some((id, RegionKind::Plot { fmt, .. })) => self.dlg_plot = Some(PlotDlg { id, fmt, trace: 0, tab: 0 }),
+                    Some((id, RegionKind::Plot { .. })) => self.open_plot_dialog(id),
+                    Some((id, RegionKind::Plot3d { .. })) => self.open_plot3d_dialog(id),
                     _ => self.status = "Выберите график".into(),
                 }
             }
@@ -663,7 +719,7 @@ impl App {
             Action::Help => self.show_help = true,
             Action::About => self.show_about = true,
             Action::PageSetup | Action::PrintPreview | Action::Print | Action::ExportPdf | Action::InsertReference => self.print_action(ctx, a),
-            Action::Zoom(p) => self.zoom = p as f32 / 100.0,
+            Action::Zoom(p) => self.zoom_to(p as f32 / 100.0, None),
             Action::ZoomFitWidth => {
                 let right = self.rects.values().map(|r| r.right()).fold(self.page_px().0, f32::max);
                 let old = self.zoom;
@@ -684,6 +740,7 @@ impl App {
                 RegionKind::Math { source } => source.clone(),
                 RegionKind::Text { text, .. } => text.clone(),
                 RegionKind::Plot { x, y, .. } => format!("plot({}; {x})", y.join(", ")),
+                RegionKind::Plot3d { expr, .. } => format!("plot3d({expr})"),
                 RegionKind::Image { .. } => "[изображение]".to_string(),
                 RegionKind::Reference { href } => format!("[ссылка: {href}]"),
             })
@@ -765,6 +822,17 @@ impl App {
         self.changed();
     }
 
+    /// A new empty plot with the document's default plot format.
+    fn blank_plot(&self, kind: PlotKind) -> RegionKind {
+        let mut k = if kind == PlotKind::Polar { RegionKind::new_polar_plot() } else { RegionKind::new_plot() };
+        if let (RegionKind::Plot { fmt, .. }, Some(d)) = (&mut k, &self.ws.plot_defaults) {
+            *fmt = d.clone();
+        } else if let RegionKind::Plot { fmt, .. } = &mut k {
+            *fmt = PlotFormat::new_plot_default();
+        }
+        k
+    }
+
     fn new_region(&mut self, kind: RegionKind, edit: bool) -> u64 {
         self.finish_edit(false);
         self.checkpoint();
@@ -794,8 +862,10 @@ impl App {
             self.edit_snapshot = true;
         }
         self.redo.clear();
-        if let Some(Region { kind: RegionKind::Plot { x, y, .. }, .. }) = self.region(id) {
-            self.plot_buf = Some((id, y.join(", "), x.clone()));
+        match self.region(id).map(|r| &r.kind) {
+            Some(RegionKind::Plot { x, y, .. }) => self.plot_buf = Some((id, y.join(", "), x.clone())),
+            Some(RegionKind::Plot3d { expr, .. }) => self.plot_buf = Some((id, expr.clone(), String::new())),
+            _ => {}
         }
     }
 
@@ -966,6 +1036,7 @@ impl App {
             || self.dlg_unit.is_some()
             || self.dlg_format.is_some()
             || self.dlg_plot.is_some()
+            || self.dlg_plot3d.is_some()
             || self.dlg_options.is_some()
             || self.path_dlg.is_some()
             || self.print.any_open()
@@ -973,7 +1044,56 @@ impl App {
             || self.confirm.is_some()
     }
 
+    /// Sets the worksheet zoom keeping the worksheet point under `anchor` (screen position;
+    /// default: the centre of the view) fixed.
+    fn zoom_to(&mut self, new: f32, anchor: Option<Pos2>) {
+        let new = new.clamp(0.25, 4.0);
+        if (new - self.zoom).abs() < 1e-4 {
+            return;
+        }
+        let a = anchor.unwrap_or(self.view_min + self.view_size / 2.0);
+        let rel = a - self.view_min;
+        let p_ws = (rel + self.scroll_off) / self.zoom;
+        let off = (p_ws * new - rel).max(Vec2::ZERO);
+        self.zoom = new;
+        self.scroll_req = Some(off);
+    }
+
+    /// Ctrl+wheel, touchpad pinch, Ctrl+Plus / Ctrl+Minus / Ctrl+0 zoom the whole worksheet.
+    fn zoom_input(&mut self, ctx: &Context) {
+        const LEVELS: [f32; 9] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0];
+        let (ctrl, raw, pinch, pos) = ctx.input(|i| (i.modifiers.command, i.raw_scroll_delta.y, i.zoom_delta(), i.pointer.hover_pos()));
+        if self.dialogs_open() {
+            return;
+        }
+        if pinch != 1.0 || (ctrl && raw != 0.0) {
+            let factor = if raw != 0.0 { 1.1f32.powf(raw.signum()) } else { pinch };
+            self.zoom_to(self.zoom * factor, pos.filter(|p| Rect::from_min_size(self.view_min, self.view_size).contains(*p)));
+        }
+        if self.editing_math().is_none() && !ctx.wants_keyboard_input() {
+            let (plus, minus, zero) = ctx.input_mut(|i| {
+                (
+                    i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Plus)) || i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::Equals)) || i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Equals)),
+                    i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Minus)),
+                    i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Num0)),
+                )
+            });
+            if plus {
+                let n = LEVELS.iter().copied().find(|l| *l > self.zoom + 0.005).unwrap_or(4.0);
+                self.zoom_to(n, None);
+            }
+            if minus {
+                let n = LEVELS.iter().rev().copied().find(|l| *l < self.zoom - 0.005).unwrap_or(0.25);
+                self.zoom_to(n, None);
+            }
+            if zero {
+                self.zoom_to(1.0, None);
+            }
+        }
+    }
+
     fn shortcuts(&mut self, ctx: &Context) {
+        self.zoom_input(ctx);
         let ctrl = |k| KeyboardShortcut::new(Modifiers::COMMAND, k);
         let ctrl_shift = |k| KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, k);
         let plain = |k| KeyboardShortcut::new(Modifiers::NONE, k);
@@ -981,7 +1101,7 @@ impl App {
         let mut fmt: Vec<u8> = Vec::new();
         let kbd_focus = ctx.wants_keyboard_input();
         let in_text_region = self.editing.is_some_and(|id| matches!(self.region(id).map(|r| &r.kind), Some(RegionKind::Text { .. })));
-        let editing_text = self.editing.is_some_and(|id| !matches!(self.region(id).map(|r| &r.kind), Some(RegionKind::Plot { .. })));
+        let editing_text = self.editing.is_some_and(|id| !matches!(self.region(id).map(|r| &r.kind), Some(RegionKind::Plot { .. } | RegionKind::Plot3d { .. })));
         ctx.input_mut(|i| {
             if i.consume_shortcut(&ctrl_shift(Key::S)) {
                 acts.push(Action::SaveAs);
@@ -995,7 +1115,15 @@ impl App {
                 (Key::S, Action::Save),
                 (Key::M, Action::InsertMatrix),
                 (Key::E, Action::InsertFunction),
+                (Key::Num7, Action::InsertPolar),
+                (Key::Num2, Action::InsertSurface),
+                (Key::Num5, Action::InsertContour),
             ] {
+                // Ctrl+Shift+digit are the Boolean operators of the math editor (egui's
+                // shortcut matching ignores Shift)
+                if i.modifiers.shift && matches!(k, Key::Num7 | Key::Num5) {
+                    continue;
+                }
                 if i.consume_shortcut(&ctrl(k)) {
                     acts.push(a);
                 }
@@ -1062,6 +1190,32 @@ impl App {
             let mut tab = false;
             let mut tab_back = false;
             ctx.input_mut(|i| {
+                // Ctrl+Shift combinations first (egui's shortcut matching ignores Shift)
+                if i.modifiers.shift && i.modifiers.command {
+                    for (k, s) in [
+                        (Key::Num1, "¬"),
+                        (Key::Exclamationmark, "¬"),
+                        (Key::Num7, "∧"),
+                        (Key::Num6, "∨"),
+                        (Key::Num5, "⊕"),
+                        (Key::CloseCurlyBracket, " otherwise { ■ }"),
+                        (Key::CloseBracket, " otherwise { ■ }"),
+                        (Key::Quote, "for ■ ∈ ■ { ■ }"),
+                        (Key::OpenCurlyBracket, "break"),
+                        (Key::OpenBracket, "break"),
+                        (Key::Pipe, "return ■"),
+                        (Key::Backslash, "return ■"),
+                    ] {
+                        if i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, k) {
+                            inserts.push(s);
+                        }
+                    }
+                }
+                for (k, s) in [(Key::CloseBracket, "while ■ { ■ }"), (Key::OpenBracket, "continue"), (Key::Quote, " on error ■")] {
+                    if i.consume_key(Modifiers::COMMAND, k) {
+                        inserts.push(s);
+                    }
+                }
                 for (k, s) in [
                     (Key::Num3, "≠"),
                     (Key::Num9, "≤"),
@@ -1205,7 +1359,8 @@ impl App {
             let id = self.new_region(RegionKind::new_text(rest), true);
             self.place_caret_end(ctx, id);
         } else if typed.starts_with('@') {
-            self.new_region(RegionKind::new_plot(), true);
+            let k = self.blank_plot(PlotKind::Xy);
+            self.new_region(k, true);
         } else {
             if !self.text_mode && typed.trim().is_empty() {
                 return;
@@ -1258,11 +1413,20 @@ fn classic_scrollbars(ui: &mut Ui) {
     v.widgets.active.corner_radius = egui::CornerRadius::ZERO;
 }
 
+/// `report.xmcd` -> `report`; names of unsaved documents have no extension.
+fn file_stem_of(name: &str) -> String {
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if matches!(ext.to_lowercase().as_str(), "xmcd" | "xmath" | "txt") && !stem.is_empty() => stem.to_string(),
+        _ => name.to_string(),
+    }
+}
+
 fn native_dialog(kind: DlgKind, name: &str) -> Option<PathBuf> {
     match kind {
+        // the first filter is the default one
         DlgKind::Save => rfd::FileDialog::new()
-            .add_filter("Рабочий лист xmath (*.xmath)", &["xmath"])
             .add_filter("Mathcad 15 (*.xmcd)", &["xmcd"])
+            .add_filter("Рабочий лист xmath (*.xmath)", &["xmath"])
             .set_file_name(name)
             .save_file(),
         DlgKind::Pdf => rfd::FileDialog::new().add_filter("PDF (*.pdf)", &["pdf"]).set_file_name(name).save_file(),
@@ -1600,6 +1764,24 @@ impl App {
                 });
                 ui.checkbox(&mut self.bars.status, "Строка состояния");
                 ui.separator();
+                ui.menu_button("Масштаб интерфейса", |ui| {
+                    let mut choices: Vec<crate::uiscale::Choice> = vec![None];
+                    choices.extend(crate::uiscale::LEVELS.iter().map(|p| Some(*p)));
+                    for c in choices {
+                        if ui.radio(self.ui_scale == c, crate::uiscale::label(c)).clicked() {
+                            self.ui_scale = c;
+                            ui.close_menu();
+                        }
+                    }
+                    ui.separator();
+                    let eff = ctx.zoom_factor();
+                    if menu_item(ui, "Увеличить интерфейс", "", true) {
+                        self.ui_scale = crate::uiscale::step(self.ui_scale, eff, true);
+                    }
+                    if menu_item(ui, "Уменьшить интерфейс", "", true) {
+                        self.ui_scale = crate::uiscale::step(self.ui_scale, eff, false);
+                    }
+                });
                 ui.menu_button("Масштаб", |ui| {
                     for z in [50, 75, 100, 125, 150, 200] {
                         if menu_item(ui, &format!("{z}%"), "", true) {
@@ -1620,9 +1802,21 @@ impl App {
                     if menu_item(ui, "Декартов график", "@", true) {
                         act = Some(Action::InsertPlot);
                     }
-                    menu_item(ui, "Полярный график", "Ctrl+7", false);
-                    menu_item(ui, "График поверхности", "Ctrl+2", false);
-                    menu_item(ui, "Контурный график", "Ctrl+5", false);
+                    if menu_item(ui, "Полярный график", "Ctrl+7", true) {
+                        act = Some(Action::InsertPolar);
+                    }
+                    if menu_item(ui, "График поверхности", "Ctrl+2", true) {
+                        act = Some(Action::InsertSurface);
+                    }
+                    if menu_item(ui, "Контурный график", "Ctrl+5", true) {
+                        act = Some(Action::InsertContour);
+                    }
+                    if menu_item(ui, "3D гистограмма", "", true) {
+                        act = Some(Action::InsertBar);
+                    }
+                    if menu_item(ui, "3D точечный график", "", true) {
+                        act = Some(Action::InsertScatter);
+                    }
                 });
                 if menu_item(ui, "Матрица...", "Ctrl+M", true) {
                     act = Some(Action::InsertMatrix);
@@ -1682,6 +1876,9 @@ impl App {
                 });
                 if menu_item(ui, "Параметры рабочего листа...", "", true) {
                     act = Some(Action::WorksheetOptions);
+                }
+                if menu_item(ui, "Параметры...", "", true) {
+                    self.show_prefs = true;
                 }
             });
             ui.menu_button("Символика", |ui| {
@@ -1772,7 +1969,7 @@ impl App {
                 .width(64.0)
                 .selected_text(format!("{z}%"))
                 .show_ui(ui, |ui| {
-                    for v in [50, 75, 100, 125, 150, 200] {
+                    for v in [25, 50, 75, 100, 125, 150, 200, 300, 400] {
                         ui.selectable_value(&mut z, v, format!("{v}%"));
                     }
                 });
@@ -1886,6 +2083,8 @@ impl App {
                 .title_bar(false)
                 .resizable(false)
                 .default_pos(default_pos)
+                // stay over the worksheet: never cover the toolbars or the plot format panel
+                .constrain_to(ctx.available_rect())
                 .frame(egui::Frame::window(&ctx.style()).inner_margin(2.0).fill(PANEL))
                 .show(ctx, |ui| {
                     // XP-style blue caption bar
@@ -1930,6 +2129,11 @@ impl App {
             match a {
                 Act::Insert(s) => self.insert(ctx, s),
                 Act::InsertPlot => self.run(ctx, Action::InsertPlot),
+                Act::InsertPolar => self.run(ctx, Action::InsertPolar),
+                Act::InsertSurface => self.run(ctx, Action::InsertSurface),
+                Act::InsertContour => self.run(ctx, Action::InsertContour),
+                Act::InsertBar => self.run(ctx, Action::InsertBar),
+                Act::InsertScatter => self.run(ctx, Action::InsertScatter),
                 Act::MatrixDialog => self.run(ctx, Action::InsertMatrix),
                 Act::Todo => {}
             }
@@ -1961,22 +2165,7 @@ impl App {
     // Worksheet canvas
 
     fn text_galley(&self, ctx: &Context, text: &str, style: &xmath_core::worksheet::TextStyle, wrap: f32) -> std::sync::Arc<egui::Galley> {
-        let size = px(style.size, self.zoom);
-        let family = if style.bold && self.has_bold_font { FontFamily::Name("bold".into()) } else { FontFamily::Proportional };
-        let mut job = LayoutJob::default();
-        job.wrap.max_width = wrap;
-        job.append(
-            if text.is_empty() { " " } else { text },
-            0.0,
-            TextFormat {
-                font_id: FontId::new(size, family),
-                color: Color32::BLACK,
-                italics: style.italic,
-                underline: if style.underline { Stroke::new(1.0_f32, Color32::BLACK) } else { Stroke::NONE },
-                ..Default::default()
-            },
-        );
-        ctx.fonts(|f| f.layout_job(job))
+        crate::print::text_galley(ctx, text, style, wrap, self.zoom, self.has_bold_font)
     }
 
     fn math_layout(&self, ctx: &Context, id: u64, source: &str) -> (Lay, Option<String>) {
@@ -2174,10 +2363,10 @@ impl App {
                         }
                     }
                     RegionKind::Text { text, style, width, lock_width } => {
-                        let wrap = if *lock_width { (*width * z).max(20.0) } else { (page_w * z - (pos.x - origin.x)).max(120.0 * z) };
+                        let wrap = if *lock_width { crate::print::locked_wrap(*width, z) } else { (page_w * z - (pos.x - origin.x)).max(120.0 * z) };
                         if editing {
                             let mut t = text.clone();
-                            let family = if style.bold && self.has_bold_font { FontFamily::Name("bold".into()) } else { FontFamily::Proportional };
+                            let family = crate::print::text_family(style, self.has_bold_font);
                             let g = self.text_galley(&ctx, &t, style, wrap);
                             let r = Rect::from_min_size(pos, Vec2::new(wrap.min(g.size().x + fs * 4.0).max(fs * 8.0), g.size().y + 6.0));
                             let resp = ui.put(
@@ -2210,7 +2399,7 @@ impl App {
                             region_rect = Rect::from_min_size(pos, g.size() + Vec2::splat(4.0));
                             let at = pos + Vec2::splat(2.0);
                             painter.galley(at, g.clone(), Color32::BLACK);
-                            if style.bold && !self.has_bold_font {
+                            if style.bold && !self.has_bold_font && style.font == xmath_core::worksheet::TextFont::Sans {
                                 painter.galley(at + Vec2::X * 0.7, g, Color32::BLACK);
                             }
                         }
@@ -2225,24 +2414,33 @@ impl App {
                         let tex = self.images.texture(&ctx, id, png_base64);
                         crate::image::paint(&painter, region_rect, tex);
                     }
-                    RegionKind::Plot { x, y, width, height, x_min, x_max, y_min, y_max, fmt, .. } => {
-                        let legend_w = LEGEND_W * z;
+                    RegionKind::Plot { x, y, width, height, x_min, x_max, y_min, y_max, fmt, kind: pkind, .. } => {
+                        let polar = *pkind == PlotKind::Polar;
                         // like in Mathcad the region size includes the label placeholders around the plot
-                        let plot_rect = Rect::from_min_size(
-                            pos + Vec2::new(legend_w, 0.0),
-                            Vec2::new((width * z - legend_w).max(60.0), (height * z - fs * 2.0).max(40.0)),
-                        );
                         let data = match self.outputs.get(&id).map(|o| &o.output) {
                             Some(Output::Plot(d)) => d.clone(),
                             _ => Default::default(),
                         };
-                        let view = plot::View { x_min: *x_min, x_max: *x_max, y_min: *y_min, y_max: *y_max, fmt };
-                        let axes = plot::paint(&painter, plot_rect, &data, &view, fs);
-                        let label_row = plot_rect.bottom() + fs * 0.4;
+                        let text_w = |t: &str| painter.layout_no_wrap(t.to_string(), FontId::proportional(fs), Color32::BLACK).size().x;
+                        let mut y_text_w = if fmt.hide_args && !editing { 0.0 } else { y.iter().map(|l| text_w(if l.is_empty() { "■" } else { l })).fold(0.0, f32::max) };
+                        if let (true, Some((_, yb, _))) = (editing, &self.plot_buf) {
+                            y_text_w = y_text_w.max(text_w(yb) + 10.0);
+                        }
+                        let geom = plot::plot_geom(fmt, &data, polar, width * z, height * z, fs, z, y_text_w);
+                        let (legend_w, m) = (geom.legend_w, geom.margins);
+                        let plot_rect = geom.plot_rect.translate(pos.to_vec2());
+                        let view = plot::View { x_min: *x_min, x_max: *x_max, y_min: *y_min, y_max: *y_max, fmt, aspect: plot_rect.width() / plot_rect.height() };
+                        let axes = if polar {
+                            let g = plot::paint_polar(&painter, plot_rect, &data, &view, fs);
+                            plot::Axes { x0: 0.0, x1: std::f64::consts::TAU, xs: 1.0, y0: g.r_min, y1: g.r_max, ys: g.r_step, log_x: false, log_y: false, y2: None, log_y2: false }
+                        } else {
+                            plot::paint(&painter, plot_rect, &data, &view, fs)
+                        };
+                        let label_row = plot_rect.bottom() + m.bottom + fs * 0.4;
                         let mut bottom = label_row + fs * 1.6;
                         // region interaction (drag/click) under the placeholders
-                        region_rect = Rect::from_min_max(pos, Pos2::new(plot_rect.right(), bottom));
-                        if !editing {
+                        region_rect = Rect::from_min_max(pos, Pos2::new(plot_rect.right() + m.right, bottom));
+                        if !editing && !fmt.hide_args {
                             let n = y.len().max(1) as f32;
                             let mut ly = plot_rect.center().y - n * fs * 1.2;
                             for (i, label) in y.iter().enumerate() {
@@ -2256,6 +2454,7 @@ impl App {
                             let (xl, xc) = match (x.is_empty(), &data.x_var) {
                                 (false, _) => (x.as_str(), Color32::BLACK),
                                 (true, Some(v)) => (v.as_str(), Color32::GRAY),
+                                (true, None) if polar => ("θ", Color32::GRAY),
                                 (true, None) => ("■", Color32::BLACK),
                             };
                             painter.text(Pos2::new(plot_rect.center().x, label_row), Align2::CENTER_TOP, xl, FontId::proportional(fs), xc);
@@ -2264,16 +2463,18 @@ impl App {
                             painter.text(Pos2::new(plot_rect.left(), bottom), Align2::LEFT_TOP, e, FontId::proportional(fs * 0.85), RED);
                             bottom += fs * 1.2;
                         }
-                        region_rect = region_rect.union(Rect::from_min_max(pos, Pos2::new(plot_rect.right(), bottom)));
+                        region_rect = region_rect.union(Rect::from_min_max(pos, Pos2::new(plot_rect.right() + m.right, bottom)));
                         // move / select
                         let resp = ui.interact(region_rect, Id::new(("region", id)), Sense::click_and_drag());
                         self.region_interaction(&ctx, id, &resp, z);
                         clicked_region |= resp.clicked();
                         if resp.double_clicked() {
-                            self.dlg_plot = Some(PlotDlg { id, fmt: fmt.clone(), trace: 0, tab: 0 });
+                            // a double click only opens the format panel (the first click started editing)
+                            self.finish_edit(false);
+                            self.open_plot_dialog(id);
                         }
                         if selected || editing {
-                            self.axis_limit_boxes(ui, id, plot_rect, fs, &axes, [*x_min, *x_max, *y_min, *y_max]);
+                            self.axis_limit_boxes(ui, id, plot_rect, fs, &axes, [*x_min, *x_max, *y_min, *y_max], &m, polar, fmt.y2_axis.then(|| [fmt.y2_min, fmt.y2_max]));
                         }
                         if editing {
                             if let Some((bid, mut ybuf, mut xbuf)) = self.plot_buf.clone().filter(|b| b.0 == id) {
@@ -2323,7 +2524,7 @@ impl App {
                         }
                         if selected || editing {
                             // resize handle
-                            let h = Rect::from_center_size(plot_rect.right_bottom(), Vec2::splat(8.0));
+                            let h = Rect::from_center_size(plot_rect.right_bottom() + Vec2::new(m.right, m.bottom), Vec2::splat(8.0));
                             painter.rect_filled(h, 0.0, Color32::BLACK);
                             let hr = ui.interact(h.expand(2.0), Id::new(("plot-resize", id)), Sense::drag());
                             if hr.hovered() || hr.dragged() {
@@ -2342,9 +2543,114 @@ impl App {
                             }
                         }
                     }
+                    RegionKind::Plot3d { kind: k3, expr, width, height, view: v3, fmt: f3 } => {
+                        let plot_rect = Rect::from_min_size(pos, Vec2::new((*width * z).max(80.0), (*height * z - fs * 2.0).max(60.0)));
+                        let data = match self.outputs.get(&id).map(|o| &o.output) {
+                            Some(Output::Plot3d(d)) => d.clone(),
+                            _ => Plot3dData { kind: *k3, ..Default::default() },
+                        };
+                        painter.rect_filled(plot_rect, 0.0, Color32::WHITE);
+                        let thr = self.ws.format.exp_threshold;
+                        let size = [plot_rect.width(), plot_rect.height()];
+                        let scene = if *k3 == Plot3dKind::Contour {
+                            xmath_core::plot3d::contour_scene(&data, f3, size, fs, thr)
+                        } else {
+                            xmath_core::plot3d::scene3d(&data, v3, f3, size, fs, thr)
+                        };
+                        plot::paint_scene(&painter.with_clip_rect(plot_rect), plot_rect.min, &scene);
+                        painter.rect_stroke(plot_rect, 0.0, Stroke::new(1.0_f32, Color32::from_gray(90)), egui::StrokeKind::Middle);
+                        let mut bottom = plot_rect.bottom() + fs * 0.4;
+                        let label_row = bottom;
+                        bottom += fs * 1.6;
+                        if let Some(e) = &data.error {
+                            painter.text(Pos2::new(plot_rect.left(), bottom), Align2::LEFT_TOP, e, FontId::proportional(fs * 0.85), RED);
+                            bottom += fs * 1.2;
+                        }
+                        region_rect = Rect::from_min_max(pos, Pos2::new(plot_rect.right(), bottom));
+                        if !editing {
+                            let (txt, col) = if expr.is_empty() { ("■".to_string(), Color32::BLACK) } else { (expr.clone(), Color32::BLACK) };
+                            painter.text(Pos2::new(plot_rect.left() + 4.0, label_row), Align2::LEFT_TOP, txt, FontId::proportional(fs), col);
+                        }
+                        let resp = ui.interact(region_rect, Id::new(("region", id)), Sense::click_and_drag());
+                        self.region_interaction(&ctx, id, &resp, z);
+                        clicked_region |= resp.clicked();
+                        if resp.double_clicked() {
+                            self.finish_edit(false);
+                            self.open_plot3d_dialog(id);
+                        }
+                        if editing {
+                            if let Some((bid, mut buf, _)) = self.plot_buf.clone().filter(|b| b.0 == id) {
+                                let r = Rect::from_min_size(Pos2::new(plot_rect.left(), label_row - 2.0), Vec2::new((plot_rect.width() - 20.0).min(320.0 * z), fs * 1.6));
+                                let hint = match k3 {
+                                    Plot3dKind::Scatter => "X, Y, Z",
+                                    Plot3dKind::Contour => "M или f",
+                                    _ => "M или f",
+                                };
+                                let r1 = ui.put(r, TextEdit::singleline(&mut buf).id(edit_id(id)).font(FontId::proportional(fs)).lock_focus(true).hint_text(hint));
+                                if self.focus_pending {
+                                    r1.request_focus();
+                                    self.focus_pending = false;
+                                }
+                                if r1.changed() {
+                                    if let Some(Region { kind: RegionKind::Plot3d { expr, .. }, .. }) = self.region_mut(id) {
+                                        *expr = buf.trim().to_string();
+                                    }
+                                    self.changed();
+                                }
+                                self.plot_buf = Some((bid, buf, String::new()));
+                            }
+                        }
+                        if *k3 != Plot3dKind::Contour {
+                            // rotate with the left mouse button (selected plot), zoom with the plain wheel
+                            let live = selected || editing;
+                            let rot = ui.interact(plot_rect, Id::new(("plot3d-rot", id)), if live { Sense::drag() } else { Sense::hover() });
+                            if live && (rot.hovered() || rot.dragged()) {
+                                ctx.set_cursor_icon(CursorIcon::Grab);
+                            }
+                            if rot.drag_started() {
+                                self.checkpoint();
+                            }
+                            // the plain mouse wheel zooms the 3D view (Ctrl+wheel zooms the worksheet)
+                            let wheel = if live && rot.hovered() && !ctx.input(|i| i.modifiers.command) { ctx.input(|i| i.smooth_scroll_delta.y) } else { 0.0 };
+                            if wheel != 0.0 {
+                                ctx.input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
+                            }
+                            let zoom = (wheel * 0.002).exp();
+                            if rot.dragged() || zoom != 1.0 {
+                                let d = rot.drag_delta();
+                                if let Some(Region { kind: RegionKind::Plot3d { view, .. }, .. }) = self.region_mut(id) {
+                                    // "grab" rotation: the surface follows the mouse
+                                    view.azimuth += d.x * 0.5;
+                                    view.elevation = (view.elevation + d.y * 0.5).clamp(-90.0, 90.0);
+                                    view.zoom = (view.zoom * zoom).clamp(0.3, 4.0);
+                                    *view = view.clamped();
+                                }
+                                self.modified = true;
+                            }
+                        }
+                        if selected || editing {
+                            let h = Rect::from_center_size(plot_rect.right_bottom(), Vec2::splat(8.0));
+                            painter.rect_filled(h, 0.0, Color32::BLACK);
+                            let hr = ui.interact(h.expand(2.0), Id::new(("plot-resize", id)), Sense::drag());
+                            if hr.hovered() || hr.dragged() {
+                                ctx.set_cursor_icon(CursorIcon::ResizeNwSe);
+                            }
+                            if hr.drag_started() {
+                                self.checkpoint();
+                            }
+                            if hr.dragged() {
+                                let d = hr.drag_delta() / z;
+                                if let Some(Region { kind: RegionKind::Plot3d { width, height, .. }, .. }) = self.region_mut(id) {
+                                    *width = (*width + d.x).max(120.0);
+                                    *height = (*height + d.y).max(100.0);
+                                }
+                                self.modified = true;
+                            }
+                        }
+                    }
                 }
 
-                if !matches!(region.kind, RegionKind::Plot { .. }) && !editing {
+                if !matches!(region.kind, RegionKind::Plot { .. } | RegionKind::Plot3d { .. }) && !editing {
                     let resp = ui.interact(region_rect, Id::new(("region", id)), Sense::click_and_drag());
                     self.region_interaction(&ctx, id, &resp, z);
                     clicked_region |= resp.clicked();
@@ -2446,6 +2752,7 @@ impl App {
             }
         });
         self.scroll_off = out.state.offset;
+        self.view_min = out.inner_rect.min;
         self.view_size = out.inner_rect.size();
         self.content_size = out.content_size;
         ui.set_style(orig_style);
@@ -2474,6 +2781,7 @@ impl App {
                     RegionKind::Math { .. } => ("math", 4.0), // width pad; the 2 px extra height stays
                     RegionKind::Text { .. } => ("text", 4.0),
                     RegionKind::Plot { .. } => ("plot", 0.0),
+                    RegionKind::Plot3d { .. } => ("plot3d", 0.0),
                     RegionKind::Image { .. } => ("image", 0.0),
                     RegionKind::Reference { .. } => ("reference", 0.0),
                 };
@@ -2766,6 +3074,24 @@ impl App {
             }
         }
 
+        if self.show_prefs {
+            let mut open = true;
+            egui::Window::new("Параметры").collapsible(false).resizable(false).open(&mut open).anchor(Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Масштаб интерфейса:");
+                    egui::ComboBox::from_id_salt("ui-scale").selected_text(crate::uiscale::label(self.ui_scale)).show_ui(ui, |ui| {
+                        let mut choices: Vec<crate::uiscale::Choice> = vec![None];
+                        choices.extend(crate::uiscale::LEVELS.iter().map(|p| Some(*p)));
+                        for c in choices {
+                            ui.selectable_value(&mut self.ui_scale, c, crate::uiscale::label(c));
+                        }
+                    });
+                });
+                ui.label(RichText::new("Не влияет на масштаб рабочего листа (Вид → Масштаб).").weak());
+            });
+            self.show_prefs = open;
+        }
+
         if let Some(d) = &mut self.dlg_options {
             let mut result: Option<bool> = None;
             egui::Window::new("Параметры рабочего листа").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
@@ -2807,106 +3133,6 @@ impl App {
                 let d = self.dlg_options.take().unwrap();
                 if ok {
                     self.apply_options(&d);
-                }
-            }
-        }
-
-        if let Some(d) = &mut self.dlg_plot {
-            let mut result: Option<bool> = None;
-            let names: Vec<String> = match self.ws.regions.iter().find(|r| r.id == d.id).map(|r| &r.kind) {
-                Some(RegionKind::Plot { y, .. }) => y.iter().enumerate().map(|(i, e)| if e.is_empty() { format!("Трасса {}", i + 1) } else { format!("{}: {e}", i + 1) }).collect(),
-                _ => Vec::new(),
-            };
-            egui::Window::new("Форматирование графика").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut d.tab, 0, "Оси X-Y");
-                    ui.selectable_value(&mut d.tab, 1, "Трассы");
-                });
-                ui.separator();
-                if d.tab == 0 {
-                    ui.checkbox(&mut d.fmt.grid, "Линии сетки");
-                    ui.checkbox(&mut d.fmt.legend, "Легенда");
-                    ui.checkbox(&mut d.fmt.log_x, "Логарифмическая шкала X");
-                    ui.checkbox(&mut d.fmt.log_y, "Логарифмическая шкала Y");
-                    ui.separator();
-                    ui.label("Стиль осей:");
-                    for (st, n) in [(AxisStyle::Crossed, "Пересекающиеся"), (AxisStyle::Boxed, "В рамке"), (AxisStyle::None, "Без осей")] {
-                        ui.radio_value(&mut d.fmt.axes, st, n);
-                    }
-                } else if names.is_empty() {
-                    ui.label("Нет трасс");
-                } else {
-                    d.trace = d.trace.min(names.len() - 1);
-                    let i = d.trace;
-                    egui::ComboBox::from_id_salt("pf-trace").width(220.0).selected_text(names[i].clone()).show_ui(ui, |ui| {
-                        for (k, n) in names.iter().enumerate() {
-                            ui.selectable_value(&mut d.trace, k, n.clone());
-                        }
-                    });
-                    while d.fmt.traces.len() <= i {
-                        d.fmt.traces.push(TraceFormat::default());
-                    }
-                    let (c0, l0, w0) = plot::trace_style(i, &d.fmt);
-                    let mut color = [c0.r(), c0.g(), c0.b()];
-                    let mut line = l0;
-                    let mut width = w0;
-                    egui::Grid::new("pf-grid").num_columns(2).spacing(Vec2::new(10.0, 6.0)).show(ui, |ui| {
-                        ui.label("Цвет:");
-                        let cname = plot::PALETTE.iter().find(|(_, c)| *c == color).map_or("Другой", |(n, _)| *n);
-                        egui::ComboBox::from_id_salt("pf-color").selected_text(cname).show_ui(ui, |ui| {
-                            for (n, c) in plot::PALETTE {
-                                ui.selectable_value(&mut color, c, n);
-                            }
-                        });
-                        ui.end_row();
-                        ui.label("Линия:");
-                        let lname = |l: LineStyle| match l {
-                            LineStyle::Solid => "Сплошная",
-                            LineStyle::Dot => "Точки",
-                            LineStyle::Dash => "Штрихи",
-                            LineStyle::DashDot => "Штрих-пунктир",
-                            LineStyle::Points => "Только точки",
-                        };
-                        egui::ComboBox::from_id_salt("pf-line").selected_text(lname(line)).show_ui(ui, |ui| {
-                            for l in [LineStyle::Solid, LineStyle::Dot, LineStyle::Dash, LineStyle::DashDot, LineStyle::Points] {
-                                ui.selectable_value(&mut line, l, lname(l));
-                            }
-                        });
-                        ui.end_row();
-                        ui.label("Толщина:");
-                        ui.add(egui::DragValue::new(&mut width).range(1.0..=6.0).speed(0.1).fixed_decimals(1));
-                        ui.end_row();
-                    });
-                    let (r, p) = ui.allocate_painter(Vec2::new(220.0, 20.0), Sense::hover());
-                    plot::sample(&p, r.rect.left_center() + Vec2::X * 10.0, r.rect.right_center() - Vec2::X * 10.0, Color32::from_rgb(color[0], color[1], color[2]), line, width);
-                    if (color, line, width) != ([c0.r(), c0.g(), c0.b()], l0, w0) {
-                        d.fmt.traces[i] = TraceFormat { color: Some(color), line: Some(line), width: Some(width) };
-                    }
-                }
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if ui.button("ОК").clicked() {
-                        result = Some(true);
-                    }
-                    if ui.button("Отмена").clicked() {
-                        result = Some(false);
-                    }
-                    if ui.button("По умолчанию").clicked() {
-                        d.fmt = PlotFormat::default();
-                    }
-                });
-            });
-            if let Some(ok) = result {
-                let d = self.dlg_plot.take().unwrap();
-                if ok {
-                    let differs = matches!(self.region(d.id).map(|r| &r.kind), Some(RegionKind::Plot { fmt, .. }) if *fmt != d.fmt);
-                    if differs {
-                        self.checkpoint();
-                        if let Some(Region { kind: RegionKind::Plot { fmt, .. }, .. }) = self.region_mut(d.id) {
-                            *fmt = d.fmt;
-                        }
-                        self.changed();
-                    }
                 }
             }
         }
@@ -2978,6 +3204,30 @@ impl App {
                 }
                 Some(_) => self.confirm = None,
                 None => {}
+            }
+        }
+
+        if let Some(list) = &self.save_warnings {
+            let mut close = false;
+            egui::Window::new("Сохранение в Mathcad 15")
+                .collapsible(false)
+                .resizable(true)
+                .default_width(480.0)
+                .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.label("Файл сохранён, но часть содержимого Mathcad покажет иначе, чем xmath:");
+                    ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                        for w in list {
+                            ui.label(format!("• {w}"));
+                        }
+                    });
+                    ui.add_space(4.0);
+                    if ui.button("ОК").clicked() {
+                        close = true;
+                    }
+                });
+            if close {
+                self.save_warnings = None;
             }
         }
 
@@ -3095,16 +3345,30 @@ impl App {
     }
 
     /// The four editable axis-limit boxes around a selected plot.
-    fn axis_limit_boxes(&mut self, ui: &mut Ui, id: u64, pr: Rect, fs: f32, axes: &plot::Axes, user: [Option<f64>; 4]) {
-        let auto = axes.limits();
+    #[allow(clippy::too_many_arguments)]
+    fn axis_limit_boxes(&mut self, ui: &mut Ui, id: u64, pr: Rect, fs: f32, axes: &plot::Axes, user: [Option<f64>; 4], m: &plot::Margins, polar: bool, y2: Option<[Option<f64>; 2]>) {
+        let mut auto = axes.limits().to_vec();
+        let mut user = user.to_vec();
         let (w, h) = (fs * 4.6, fs * 1.5);
-        let slots = [
-            Rect::from_min_size(Pos2::new(pr.left(), pr.bottom() + 2.0), Vec2::new(w, h)),
-            Rect::from_min_size(Pos2::new(pr.right() - w, pr.bottom() + 2.0), Vec2::new(w, h)),
-            Rect::from_min_size(Pos2::new(pr.left() - w - 2.0, pr.bottom() - h), Vec2::new(w, h)),
-            Rect::from_min_size(Pos2::new(pr.left() - w - 2.0, pr.top()), Vec2::new(w, h)),
+        let below = pr.bottom() + m.num_bottom.max(0.0) + 2.0;
+        let left = pr.left() - m.num_left - w - 2.0;
+        let mut slots = vec![
+            Rect::from_min_size(Pos2::new(pr.left(), below), Vec2::new(w, h)),
+            Rect::from_min_size(Pos2::new(pr.right() - w, below), Vec2::new(w, h)),
+            Rect::from_min_size(Pos2::new(left, pr.bottom() - h), Vec2::new(w, h)),
+            Rect::from_min_size(Pos2::new(left, pr.top()), Vec2::new(w, h)),
         ];
+        if let Some(u2) = y2 {
+            let right = pr.right() + 4.0;
+            slots.push(Rect::from_min_size(Pos2::new(right, pr.bottom() - h), Vec2::new(w, h)));
+            slots.push(Rect::from_min_size(Pos2::new(right, pr.top()), Vec2::new(w, h)));
+            auto.extend(axes.limits2());
+            user.extend(u2);
+        }
         for (k, slot) in slots.iter().enumerate() {
+            if polar && k < 2 {
+                continue;
+            }
             let tid = Id::new(("plot-lim", id, k));
             let mine = self.lim_buf.as_ref().is_some_and(|b| b.id == id && b.k == k);
             let mut text = match &self.lim_buf {
@@ -3140,8 +3404,12 @@ impl App {
                         if first {
                             self.checkpoint();
                         }
-                        if let Some(Region { kind: RegionKind::Plot { x_min, x_max, y_min, y_max, .. }, .. }) = self.region_mut(id) {
-                            *[x_min, x_max, y_min, y_max][k] = v;
+                        if let Some(Region { kind: RegionKind::Plot { x_min, x_max, y_min, y_max, fmt, .. }, .. }) = self.region_mut(id) {
+                            if k < 4 {
+                                *[x_min, x_max, y_min, y_max][k] = v;
+                            } else {
+                                *[&mut fmt.y2_min, &mut fmt.y2_max][k - 4] = v;
+                            }
                         }
                         self.changed();
                     }
@@ -3246,6 +3514,8 @@ impl eframe::App for App {
         if !self.hint.is_empty() {
             ctx.request_repaint();
         }
+        let f = crate::uiscale::effective(ctx, self.ui_scale, &mut self.ui_scale_auto);
+        crate::uiscale::apply(ctx, f);
         self.poll_dialog(ctx);
         self.shortcuts(ctx);
         self.sheet_keys(ctx);
@@ -3281,6 +3551,7 @@ impl eframe::App for App {
         });
         self.palette_windows(ctx);
         self.dialogs(ctx);
+        self.plot_dialogs(ctx);
         self.print_windows(ctx);
 
         for a in std::mem::take(&mut self.pending) {

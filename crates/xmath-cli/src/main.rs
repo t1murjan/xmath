@@ -152,7 +152,14 @@ fn main() -> ExitCode {
         }
     }
     if let Some(out) = &xmcd_out {
-        let r = xmath_core::xmcd_export::export_xmcd(&ws);
+        // results are computed in the folder of the worksheet (nothing is written), plots get pictures
+        let dir = std::path::Path::new(&path).parent().filter(|p| !p.as_os_str().is_empty()).map_or_else(|| std::path::PathBuf::from("."), |p| p.to_path_buf());
+        let env = xmath_core::EvalEnv { dir: Some(dir), allow_write: false, stack: Vec::new() };
+        let outputs = ws.evaluate_with(true, &env);
+        let has_plots = ws.regions.iter().any(|r| matches!(r.kind, xmath_core::RegionKind::Plot { .. } | xmath_core::RegionKind::Plot3d { .. }));
+        let renderings = if has_plots { xmath_gui::print::render_plot_pngs(&ws, &outputs) } else { Default::default() };
+        let opts = xmath_core::xmcd_export::ExportOptions { renderings, rendering_scale: xmath_gui::print::PNG_SCALE, env: Some(env), outputs: Some(outputs) };
+        let r = xmath_core::xmcd_export::export_xmcd_with(&ws, &opts);
         for w in &r.warnings {
             eprintln!("warning: {w}");
         }
@@ -202,12 +209,27 @@ fn main() -> ExitCode {
             }
             RegionKind::Image { width, height, .. } => println!("[изображение {}×{}]", width.round(), height.round()),
             RegionKind::Reference { href } => println!("[ссылка: {href}]"),
-            RegionKind::Plot { x, y, .. } => {
+            RegionKind::Plot { x, y, kind, .. } => {
                 let n = match &out.output {
                     Output::Plot(p) => p.series.len(),
                     _ => 0,
                 };
-                println!("[plot {} vs {x}: {n} series]", y.join(", "));
+                if *kind == xmath_core::PlotKind::Polar {
+                    println!("[полярный график r = {} по θ = {x}: {n} кривых]", y.join(", "));
+                } else {
+                    println!("[plot {} vs {x}: {n} series]", y.join(", "));
+                }
+            }
+            RegionKind::Plot3d { kind, expr, .. } => {
+                let info = match &out.output {
+                    Output::Plot3d(d) if kind == &xmath_core::Plot3dKind::Scatter => format!("{} точек", d.pts.len()),
+                    Output::Plot3d(d) => match d.z_range() {
+                        Some((a, b)) => format!("сетка {}×{}, z от {a:.4} до {b:.4}", d.nx(), d.ny()),
+                        None => format!("сетка {}×{}", d.nx(), d.ny()),
+                    },
+                    _ => String::new(),
+                };
+                println!("[{} {expr}: {info}]", kind.title());
             }
         }
         if let Some(e) = out.error() {

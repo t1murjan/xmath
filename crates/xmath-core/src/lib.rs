@@ -14,6 +14,8 @@ pub mod linalg;
 pub mod numeric;
 pub mod parser;
 pub mod symbolic;
+pub mod plot3d;
+pub mod plot_geom;
 pub mod solve;
 pub mod special;
 pub mod units;
@@ -22,6 +24,7 @@ pub mod xmcd;
 pub mod xmcd_check;
 pub mod xmcd_export;
 pub mod xmcd_plot;
+pub mod xmcd_plot_write;
 pub mod worksheet;
 
 #[cfg(test)]
@@ -30,8 +33,9 @@ mod program_tests;
 pub use ast::{BinOp, Expr, PStmt, Stmt, SymOp, Target, UnOp};
 pub use format::{FormatOptions, NumberText, Piece, ResultView, UnitPow, UnitSystem, UnitText};
 pub use parser::{parse_expr, parse_statement, ParseError};
+pub use plot3d::{Colormap, Plot3dData, Plot3dFormat, Plot3dKind, View3d};
 pub use fileio::EvalEnv;
-pub use worksheet::{PageSetup, Paper, AxisStyle, LineStyle, PlotFormat, TraceFormat, Output, PlotData, Region, RegionKind, RegionOutput, Series, Snapshot, Worksheet};
+pub use worksheet::{PageSetup, Paper, AxisLabel, AxisOpts, LegendPos, NumFormat, NumKind, PlotKind, Symbol, TraceType, AxisStyle, LineStyle, PlotFormat, TraceFormat, Output, PlotData, Region, RegionKind, RegionOutput, Series, Snapshot, Worksheet};
 
 /// Evaluates on a thread with a large stack, so deeply recursive user
 /// functions do not overflow the (small) main-thread stack.

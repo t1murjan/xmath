@@ -247,6 +247,44 @@ mod tests {
         assert_eq!(plot["plot"]["series"][0]["points"], 5);
         assert_eq!(plot["plot"]["series"][0]["y_range"], json!([0.0, 4.0]));
 
+        // polar and 3D plots
+        let r = call(&mut st, "add_region", json!({"path": p, "kind": "polar_plot", "x_expr": "x", "y_exprs": ["1 + cos(x)"]}));
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let r = call(&mut st, "add_region", json!({"path": p, "kind": "surface_plot", "expr": "sin(a)*cos(b)"}));
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let regs = r["result"]["structuredContent"]["regions"].as_array().unwrap().clone();
+        assert!(regs.iter().any(|r| r["type"] == "polar_plot" && r["plot"]["series"][0]["points"] == 5));
+        let s = regs.iter().find(|r| r["type"] == "surface_plot").unwrap();
+        assert_eq!(s["plot"]["grid"], json!([25, 25]));
+        assert!(s["plot"]["z_range"][0].as_f64().unwrap() < -0.9);
+        let r = call(&mut st, "add_region", json!({"path": p, "kind": "surface_plot"}));
+        assert_eq!(r["result"]["isError"], true);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+
+    #[test]
+    fn xmcd_files_are_read_and_written() {
+        let dir = temp_dir("xmcd");
+        let mut st = State::default();
+        let p = dir.join("sheet.xmcd");
+        let ps = p.to_str().unwrap();
+        let r = call(&mut st, "create_worksheet", json!({"path": ps, "lines": ["a := 3 m", "b := a^2", "b ="]}));
+        assert_ne!(r["result"]["isError"], true, "{r}");
+        // it is a Mathcad file with stored results
+        let xml = std::fs::read_to_string(&p).unwrap();
+        assert!(xml.contains("schemas.mathsoft.com/worksheet30") && xml.contains("<result"));
+        let r = call(&mut st, "add_region", json!({"path": ps, "kind": "plot", "x_expr": "x", "y_exprs": ["sin(x)"]}));
+        assert_ne!(r["result"]["isError"], true, "{r}");
+        let r = call(&mut st, "add_region", json!({"path": ps, "kind": "math", "source": "c := b + 1 m^2", "after_id": 2}));
+        assert_ne!(r["result"]["isError"], true, "{r}");
+        let r = call(&mut st, "open_worksheet", json!({"path": ps}));
+        let regs = r["result"]["structuredContent"]["regions"].as_array().unwrap().clone();
+        assert!(regs.iter().any(|r| r["type"] == "plot"));
+        assert!(regs.len() >= 5, "{regs:?}");
+        let xml = std::fs::read_to_string(&p).unwrap();
+        assert!(xml.contains("<plot ") && xml.contains("<rendering"), "the plot is a Mathcad plot with a picture");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

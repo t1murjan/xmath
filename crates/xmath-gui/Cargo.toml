@@ -33,3 +33,4 @@ pdf-writer = "0.15"
 ttf-parser = "0.25"
 subsetter = "0.2"
 flate2 = "1"
+tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }

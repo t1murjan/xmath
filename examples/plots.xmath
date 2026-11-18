@@ -1,0 +1,292 @@
+{
+ "version": 1,
+ "format": {
+  "precision": 3,
+  "exp_threshold": 3,
+  "zero_threshold": 15
+ },
+ "regions": [
+  {
+   "x": 24,
+   "y": 16,
+   "type": "text",
+   "text": "Графики: X-Y, полярный, поверхность, контур, 3D точки",
+   "width": 340.0,
+   "style": {
+    "size": 16.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 1
+  },
+  {
+   "x": 24,
+   "y": 44,
+   "type": "text",
+   "text": "Двойной щелчок по графику открывает окно форматирования. Выделенный 3D график вращается мышью, Ctrl+колесо меняет масштаб.",
+   "width": 340.0,
+   "style": {
+    "size": 10.0,
+    "bold": false,
+    "italic": false,
+    "underline": false
+   },
+   "id": 2
+  },
+  {
+   "x": 24,
+   "y": 84,
+   "type": "math",
+   "source": "x := 0, 0.1 .. 10",
+   "id": 3
+  },
+  {
+   "x": 180,
+   "y": 84,
+   "type": "math",
+   "source": "t := 1, 2 .. 100",
+   "id": 4
+  },
+  {
+   "x": 24,
+   "y": 120,
+   "type": "plot",
+   "x_expr": "x",
+   "y_exprs": [
+    "sin(x)",
+    "0.5*cos(2*x)",
+    "100*exp(-x/3)"
+   ],
+   "width": 380.0,
+   "height": 270.0,
+   "fmt": {
+    "legend": true,
+    "legend_pos": "bottom",
+    "y2_axis": true,
+    "title": "Несколько трасс",
+    "show_title": true,
+    "labels": [
+     {
+      "show": true,
+      "text": "время, с"
+     },
+     {
+      "show": true,
+      "text": "сигнал"
+     },
+     {
+      "show": true,
+      "text": "затухание"
+     }
+    ],
+    "traces": [
+     {
+      "legend": "sin"
+     },
+     {
+      "legend": "cos 2x",
+      "symbol": "circle",
+      "symbol_freq": 8
+     },
+     {
+      "legend": "exp",
+      "y2": true,
+      "line": "dash",
+      "color": [
+       0,
+       128,
+       0
+      ]
+     }
+    ]
+   },
+   "id": 5
+  },
+  {
+   "x": 420,
+   "y": 120,
+   "type": "plot",
+   "x_expr": "t",
+   "y_exprs": [
+    "t^-1",
+    "t^-2",
+    "3/t^3"
+   ],
+   "width": 330.0,
+   "height": 270.0,
+   "fmt": {
+    "log_x": true,
+    "log_y": true,
+    "axes": "boxed",
+    "title": "Логарифмические оси"
+   },
+   "id": 6
+  },
+  {
+   "x": 24,
+   "y": 420,
+   "type": "math",
+   "source": "s := 0, 1e-6 .. 4e-6",
+   "id": 7
+  },
+  {
+   "x": 24,
+   "y": 450,
+   "type": "plot",
+   "x_expr": "s",
+   "y_exprs": [
+    "s*5e3",
+    "(s*5e3)^2"
+   ],
+   "width": 380.0,
+   "height": 250.0,
+   "fmt": {
+    "axes": "boxed",
+    "legend": false,
+    "traces": [
+     {
+      "kind": "step"
+     },
+     {
+      "kind": "bars",
+      "color": [
+       0,
+       0,
+       255
+      ]
+     }
+    ]
+   },
+   "id": 8
+  },
+  {
+   "x": 420,
+   "y": 420,
+   "type": "math",
+   "source": "th := 0, 0.02 .. 2*pi",
+   "id": 9
+  },
+  {
+   "x": 420,
+   "y": 450,
+   "type": "plot",
+   "kind": "polar",
+   "x_expr": "th",
+   "y_exprs": [
+    "cos(3*th)",
+    "0.5+0.5*cos(th)"
+   ],
+   "width": 330.0,
+   "height": 300.0,
+   "id": 10
+  },
+  {
+   "x": 24,
+   "y": 730,
+   "type": "text",
+   "text": "Поверхность sin(x)·cos(y) (QuickPlot −5…5 × −5…5)",
+   "width": 340.0,
+   "style": {
+    "size": 11.0,
+    "bold": true,
+    "italic": false,
+    "underline": false
+   },
+   "id": 11
+  },
+  {
+   "x": 24,
+   "y": 756,
+   "type": "plot3d",
+   "kind": "surface",
+   "expr": "sin(x)*cos(y)",
+   "width": 360.0,
+   "height": 300.0,
+   "view": {
+    "azimuth": 35.0,
+    "elevation": 30.0,
+    "zoom": 1.0
+   },
+   "id": 12
+  },
+  {
+   "x": 420,
+   "y": 756,
+   "type": "math",
+   "source": "g(i, j) := exp(-((i - 10)^2 + (j - 10)^2)/30) + 0.4*exp(-((i - 4)^2 + (j - 15)^2)/12)",
+   "id": 13
+  },
+  {
+   "x": 420,
+   "y": 812,
+   "type": "math",
+   "source": "M := matrix(21, 21, g)",
+   "id": 14
+  },
+  {
+   "x": 420,
+   "y": 850,
+   "type": "plot3d",
+   "kind": "contour",
+   "expr": "M",
+   "width": 340.0,
+   "height": 300.0,
+   "fmt": {
+    "levels": 10
+   },
+   "id": 15
+  },
+  {
+   "x": 24,
+   "y": 1150,
+   "type": "math",
+   "source": "k := 0 .. 59",
+   "id": 16
+  },
+  {
+   "x": 24,
+   "y": 1190,
+   "type": "math",
+   "source": "X[k] := cos(k/6)*(1 + k/60)",
+   "id": 17
+  },
+  {
+   "x": 24,
+   "y": 1262,
+   "type": "math",
+   "source": "Y[k] := sin(k/6)*(1 + k/60)",
+   "id": 18
+  },
+  {
+   "x": 24,
+   "y": 1334,
+   "type": "math",
+   "source": "Z[k] := k/20",
+   "id": 19
+  },
+  {
+   "x": 24,
+   "y": 1410,
+   "type": "plot3d",
+   "kind": "scatter",
+   "expr": "(X, Y, Z)",
+   "width": 360.0,
+   "height": 300.0,
+   "id": 20
+  },
+  {
+   "x": 420,
+   "y": 1410,
+   "type": "plot3d",
+   "kind": "bar",
+   "expr": "submatrix(M, 6, 14, 6, 14)",
+   "width": 340.0,
+   "height": 300.0,
+   "fmt": {
+    "colormap": "hot"
+   },
+   "id": 21
+  }
+ ]
+}

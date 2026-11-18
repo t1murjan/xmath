@@ -153,6 +153,7 @@ impl<'a> Env<'a> {
                     BinOp::Ge => Sx::Fun(">=".into(), vec![x, y]),
                     BinOp::And => Sx::Fun("and".into(), vec![x, y]),
                     BinOp::Or => Sx::Fun("or".into(), vec![x, y]),
+                    BinOp::Xor => Sx::Fun("xor".into(), vec![x, y]),
                 }
             }
             Expr::Matrix(rows) => {
@@ -588,6 +589,7 @@ pub fn to_expr(e: &Sx) -> Expr {
             (">=", [x, y]) => bin(BinOp::Ge, to_expr(x), to_expr(y)),
             ("and", [x, y]) => bin(BinOp::And, to_expr(x), to_expr(y)),
             ("or", [x, y]) => bin(BinOp::Or, to_expr(x), to_expr(y)),
+            ("xor", [x, y]) => bin(BinOp::Xor, to_expr(x), to_expr(y)),
             ("not", [x]) => Expr::Unary(UnOp::Not, Box::new(to_expr(x))),
             ("factorial", [x]) => Expr::Unary(UnOp::Factorial, Box::new(to_expr(x))),
             _ => Expr::Call(n.clone(), a.iter().map(to_expr).collect()),

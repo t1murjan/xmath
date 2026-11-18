@@ -39,7 +39,19 @@ fn setup_style(ctx: &egui::Context) {
 }
 
 fn main() -> eframe::Result<()> {
-    let path = std::env::args().nth(1).map(PathBuf::from);
+    let mut path = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        if a == "--ui-scale" {
+            if let Some(v) = args.next() {
+                std::env::set_var("XMATH_UI_SCALE", v);
+            }
+        } else if let Some(v) = a.strip_prefix("--ui-scale=") {
+            std::env::set_var("XMATH_UI_SCALE", v);
+        } else if path.is_none() {
+            path = Some(PathBuf::from(a));
+        }
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("xmath")

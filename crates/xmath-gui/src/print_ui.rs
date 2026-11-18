@@ -73,15 +73,33 @@ impl App {
         };
     }
 
-    /// «Сохранить как…» with the Mathcad 15 filter.
+    /// Writes the worksheet as a Mathcad 15 file: plots as Mathcad plot items with the pictures the
+    /// program draws, results of the evaluation, xmath's own data in comments. Whatever Mathcad
+    /// cannot show exactly is reported once after saving.
     pub(super) fn save_xmcd(&mut self, p: &Path) {
-        let r = xmath_core::xmcd_export::export_xmcd(&self.ws);
-        self.status = match std::fs::write(p, r.xml) {
-            Ok(()) if r.warnings.is_empty() => format!("Экспортировано в Mathcad 15: {}", p.display()),
-            Ok(()) => format!("Экспортировано в Mathcad 15: {} ({} предупреждений: {})", p.display(), r.warnings.len(), r.warnings[0]),
-            Err(e) => format!("Ошибка сохранения: {e}"),
-        };
-        self.import_log = r.warnings;
+        let mut env = self.eval_env();
+        env.allow_write = false;
+        let outputs = self.ws.evaluate_with(true, &env);
+        let has_plots = self.ws.regions.iter().any(|r| matches!(r.kind, xmath_core::RegionKind::Plot { .. } | xmath_core::RegionKind::Plot3d { .. }));
+        let renderings = if has_plots { print::render_plot_pngs(&self.ws, &outputs) } else { Default::default() };
+        let opts = xmath_core::xmcd_export::ExportOptions { renderings, rendering_scale: print::PNG_SCALE, env: Some(env), outputs: Some(outputs) };
+        let r = xmath_core::xmcd_export::export_xmcd_with(&self.ws, &opts);
+        match std::fs::write(p, r.xml) {
+            Ok(()) => {
+                self.path = Some(p.to_path_buf());
+                self.modified = false;
+                if r.warnings.is_empty() {
+                    self.status = format!("Сохранено: {}", p.display());
+                } else {
+                    self.status = format!("Сохранено: {} ({} замечаний при записи в Mathcad 15)", p.display(), r.warnings.len());
+                    if r.warnings != self.shown_warnings {
+                        self.shown_warnings = r.warnings.clone();
+                        self.save_warnings = Some(r.warnings);
+                    }
+                }
+            }
+            Err(e) => self.status = format!("Ошибка сохранения: {e}"),
+        }
     }
 
     /// Writes a temporary PDF and hands it to the system: `lp` under Linux (the default

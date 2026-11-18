@@ -350,7 +350,8 @@ impl PdfPage<'_> {
             self.content.begin_text();
             self.content.set_font(Name(format!("F{fi}").as_bytes()), s);
             // y is flipped because the page is drawn y-down; the slant imitates an italic face
-            self.content.set_text_matrix([1.0, 0.0, slant, -1.0, first.x, first.y]);
+            let (sn, cs) = run.angle.sin_cos();
+            self.content.set_text_matrix([cs, sn, sn + slant * cs, -cs + slant * sn, first.x, first.y]);
             let mut items = self.content.show_positioned();
             let mut ops = items.items();
             for (k, (gid, g)) in glyphs.iter().enumerate() {
@@ -359,7 +360,7 @@ impl PdfPage<'_> {
                 if let Some((_, next)) = glyphs.get(k + 1) {
                     let adv = parsed.as_ref().and_then(|f| f.glyph_hor_advance(ttf_parser::GlyphId(*gid))).unwrap_or(0) as f32 / units;
                     // the pen should be at `next.x`; it is at g.x + adv * s
-                    let err = (g.x + adv * s) - next.x;
+                    let err = (g.x + adv * s * run.angle.cos() - next.x) * run.angle.cos() + (g.y + adv * s * run.angle.sin() - next.y) * run.angle.sin();
                     if err.abs() > 0.002 * s {
                         ops.adjust(err / s * 1000.0);
                     }

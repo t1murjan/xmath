@@ -7,7 +7,7 @@
 use crate::ast::{BinOp, Expr, PStmt, Stmt, SymOp, Target, UnOp};
 use crate::parser::{parse_expr, parse_statement};
 use crate::units::{self, Dim};
-use crate::worksheet::{Paper, Region, RegionKind, TextStyle, Worksheet};
+use crate::worksheet::{Paper, PlotKind, Region, RegionKind, TextFont, TextStyle, Worksheet};
 use base64::Engine;
 use roxmltree::{Document, Node};
 use std::collections::{HashMap, HashSet};
@@ -107,6 +107,19 @@ pub fn import_xmcd(xml: &str) -> Result<ImportResult, String> {
         }
         if let Some(pm) = settings.descendants().find(|n| n.is_element() && lname(*n) == "pageModel") {
             read_page_model(&mut ws, pm);
+        }
+    }
+
+    // xmath's own worksheet settings (exact values that Mathcad's settings cannot hold)
+    if let Some(saved) = xmath_comment(root, "worksheet").and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok()) {
+        if let Some(f) = saved.get("format").and_then(|v| serde_json::from_value(v.clone()).ok()) {
+            ws.format = f;
+        }
+        if let Some(pd) = saved.get("plot_defaults").and_then(|v| serde_json::from_value(v.clone()).ok()) {
+            ws.plot_defaults = pd;
+        }
+        if let Some(pg) = saved.get("page").and_then(|v| serde_json::from_value(v.clone()).ok()) {
+            ws.page = pg;
         }
     }
 
@@ -242,6 +255,42 @@ fn is_true(v: Option<&str>) -> bool {
 
 // ------------------------------------------------------------------- regions
 
+/// The JSON of an `<!--xmath:name {json}-->` comment among the children of `n`.
+fn xmath_comment(n: Node, name: &str) -> Option<String> {
+    let prefix = format!("xmath:{name} ");
+    n.children().filter(|c| c.is_comment()).find_map(|c| c.text()?.strip_prefix(prefix.as_str()).map(|j| j.to_string()))
+}
+
+/// Whether a plot saved in xmath's comment still describes what Mathcad's own plot item says:
+/// an X-Y plot whose expressions or limits changed was edited in Mathcad, and the comment is stale.
+fn saved_plot_is_current(saved: &RegionKind, decoded: &RegionKind) -> bool {
+    let (
+        RegionKind::Plot { x: sx, y: sy, xs: sxs, x_min: a0, x_max: a1, y_min: a2, y_max: a3, kind: sk, .. },
+        RegionKind::Plot { x: dx, y: dy, xs: dxs, x_min: b0, x_max: b1, y_min: b2, y_max: b3, kind: dk, .. },
+    ) = (saved, decoded)
+    else {
+        // a saved text region is current while the text is the same
+        if let (RegionKind::Text { text: a, .. }, RegionKind::Text { text: b, .. }) = (saved, decoded) {
+            let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+            return words(a) == words(b);
+        }
+        return true;
+    };
+    if *sk != PlotKind::Xy || *dk != PlotKind::Xy {
+        return true;
+    }
+    let norm = |s: &str| crate::parser::parse_expr(s).map(|e| e.to_string()).unwrap_or_else(|_| s.trim().to_string());
+    let xs_of = |x: &String, xs: &Vec<String>| -> Vec<String> {
+        if xs.is_empty() {
+            if x.trim().is_empty() { vec![] } else { vec![norm(x)] }
+        } else {
+            xs.iter().map(|s| norm(s)).collect()
+        }
+    };
+    let ys_of = |y: &Vec<String>| -> Vec<String> { y.iter().filter(|s| !s.trim().is_empty()).map(|s| norm(s)).collect() };
+    xs_of(sx, sxs) == xs_of(dx, dxs) && ys_of(sy) == ys_of(dy) && (a0, a1, a2, a3) == (b0, b1, b2, b3)
+}
+
 /// Imports one `<region>`; an `<area>` contributes the regions nested in it.
 fn import_region(cx: &mut Cx, reg: Node) {
     if lname(reg) != "region" {
@@ -286,7 +335,13 @@ fn import_region(cx: &mut Cx, reg: Node) {
             cx.expected.insert(id, e);
         }
     }
-    let kind = convert_region(cx, reg, body, w, h, (raw_w, raw_h));
+    let mut kind = convert_region(cx, reg, body, w, h, (raw_w, raw_h));
+    // what xmath itself wrote next to the region wins, unless the region was edited since
+    if let Some(saved) = xmath_comment(reg, "region").and_then(|j| serde_json::from_str::<RegionKind>(&j).ok()) {
+        if saved_plot_is_current(&saved, &kind) {
+            kind = saved;
+        }
+    }
     cx.regions.push(Region { id, x, y, anchor, kind });
 }
 
@@ -783,6 +838,10 @@ fn conv_apply(cx: &mut Cx, n: Node) -> R<Expr> {
             let v = conv_all(cx, args)?;
             fold(BinOp::Or, v)
         }
+        "xor" => {
+            let v = conv_all(cx, args)?;
+            fold(BinOp::Xor, v)
+        }
         "parens" => {
             need(args, 1, "parens")?;
             conv(cx, args[0])
@@ -817,10 +876,6 @@ fn conv_apply(cx: &mut Cx, n: Node) -> R<Expr> {
         "vectorSum" => {
             need(args, 1, "vectorSum")?;
             Ok(Expr::Call("sum".into(), vec![conv(cx, args[0])?]))
-        }
-        "xor" => {
-            need(args, 2, "xor")?;
-            Ok(Expr::Call("xor".into(), vec![conv(cx, args[0])?, conv(cx, args[1])?]))
         }
         "polyroots" => {
             need(args, 1, "polyroots")?;
@@ -995,7 +1050,11 @@ struct Stats {
     bold: usize,
     italic: usize,
     underline: usize,
-    size: Option<f32>,
+    /// Non-blank characters per font size (pt, in tenths) and per typeface class.
+    sizes: Vec<(f32, usize)>,
+    fonts: [usize; 3],
+    /// Size and class of the first run, for an empty region.
+    first: Option<(f32, TextFont)>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1003,6 +1062,16 @@ struct Fmt {
     bold: bool,
     italic: bool,
     underline: bool,
+    size: Option<f32>,
+    font: Option<TextFont>,
+}
+
+fn font_index(f: TextFont) -> usize {
+    match f {
+        TextFont::Sans => 0,
+        TextFont::Serif => 1,
+        TextFont::Mono => 2,
+    }
 }
 
 /// Paragraph styles (`textStyle name=… / inlineAttr`) of the worksheet settings.
@@ -1015,6 +1084,7 @@ fn read_text_styles(cx: &mut Cx, settings: Node) {
             bold: ia.attribute("font-weight").map_or(false, |w| w == "bold" || w == "700"),
             italic: ia.attribute("font-style") == Some("italic"),
             underline: is_true(ia.attribute("underline")),
+            font: ia.attribute("font-family").map_or(TextFont::Sans, TextFont::from_family),
         };
         cx.styles.insert(name.to_string(), st);
     }
@@ -1033,9 +1103,9 @@ fn convert_text(cx: &mut Cx, node: Node, w: Option<f32>) -> RegionKind {
             let base = p.attribute("style").and_then(|n| cx.styles.get(n)).cloned();
             let mut fmt = Fmt::default();
             if let Some(b) = &base {
-                fmt = Fmt { bold: b.bold, italic: b.italic, underline: b.underline };
-                if i == 0 && b.size != 10.0 {
-                    st.size = Some(b.size);
+                fmt = Fmt { bold: b.bold, italic: b.italic, underline: b.underline, size: Some(b.size), font: Some(b.font) };
+                if i == 0 {
+                    st.first = Some((b.size, b.font));
                 }
             }
             let mut s = String::new();
@@ -1047,14 +1117,36 @@ fn convert_text(cx: &mut Cx, node: Node, w: Option<f32>) -> RegionKind {
     let all = st.total > 0;
     // a region has one style: take what applies to most of the text
     let major = |n: usize| all && n * 2 > st.total;
+    // the size and the typeface of most of the characters
+    let size = st
+        .sizes
+        .iter()
+        .max_by_key(|s| s.1)
+        .map(|s| s.0)
+        .or(st.first.map(|f| f.0))
+        .unwrap_or(10.0);
+    let font = if st.fonts.iter().sum::<usize>() == 0 {
+        st.first.map_or(TextFont::Sans, |f| f.1)
+    } else {
+        // first maximum wins: Sans, Serif, Mono
+        let mut best = 0;
+        for k in 1..3 {
+            if st.fonts[k] > st.fonts[best] {
+                best = k;
+            }
+        }
+        [TextFont::Sans, TextFont::Serif, TextFont::Mono][best]
+    };
     let style = TextStyle {
-        size: st.size.map_or(10.0, |s| s.clamp(4.0, 72.0)),
+        size: size.clamp(4.0, 72.0),
         bold: major(st.bold),
         italic: major(st.italic),
         underline: major(st.underline),
+        font,
     };
-    let lock = is_true(node.attribute("lock-width"));
-    text_kind(text, w, style, lock)
+    // Mathcad always wraps a text region at its stored width ("lock-width" only stops it from
+    // being resized automatically), so the width is authoritative.
+    text_kind(text, w, style, true)
 }
 
 /// Collapses XML pretty-printing whitespace but keeps explicit line breaks.
@@ -1100,6 +1192,14 @@ fn inline(cx: &mut Cx, n: Node, out: &mut String, fmt: Fmt, st: &mut Stats) {
             if fmt.underline {
                 st.underline += chars;
             }
+            if chars > 0 {
+                let sz = fmt.size.unwrap_or(10.0);
+                match st.sizes.iter_mut().find(|e| (e.0 - sz).abs() < 0.05) {
+                    Some(e) => e.1 += chars,
+                    None => st.sizes.push((sz, chars)),
+                }
+                st.fonts[font_index(fmt.font.unwrap_or_default())] += chars;
+            }
             // Pretty-printing newlines inside a paragraph are not line breaks.
             out.push_str(&t.replace('\n', " "));
             continue;
@@ -1138,8 +1238,13 @@ fn inline(cx: &mut Cx, n: Node, out: &mut String, fmt: Fmt, st: &mut Stats) {
                 f.underline = is_true(Some(u));
             }
         }
-        if st.size.is_none() {
-            st.size = num_attr(c, "font-size").or_else(|| num_attr(c, "size"));
+        if matches!(name, "f" | "inlineAttr") {
+            if let Some(sz) = num_attr(c, "font-size").or_else(|| num_attr(c, "size")) {
+                f.size = Some(sz.clamp(4.0, 72.0));
+            }
+            if let Some(fam) = c.attribute("font-family").or_else(|| c.attribute("family")) {
+                f.font = Some(TextFont::from_family(fam));
+            }
         }
         match name {
             "br" => out.push('\n'),
@@ -1343,6 +1448,7 @@ fn mathcad_unit(name: &str) -> Option<&'static units::UnitDef> {
         ("mile", "mi"),
         ("nautical_mile", "nmi"),
         ("mil", "mil"),
+        ("kilogram", "kg"),
         ("pound", "lb"),
         ("pound_mass", "lb"),
         ("ounce", "oz"),

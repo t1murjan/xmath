@@ -24,7 +24,7 @@
    "x": 24,
    "y": 52,
    "type": "text",
-   "text": "Программы записываются в фигурных скобках, операторы разделяются точкой с запятой. Присваивание: ←, цикл: for i ∈ 1..n { ... }, условие: return x if условие или if условие { ... } otherwise { ... }.",
+   "text": "Программы набираются как в Mathcad 15: ] — добавить строку, { — локальное определение ←, } — if, Ctrl+Shift+] — otherwise, Ctrl+Shift+' — for, Ctrl+] — while, Ctrl+Shift+[ — break, Ctrl+[ — continue, Ctrl+Shift+\\ — return, Ctrl+' — on error (или палитра «Программирование»).",
    "width": 520.0,
    "style": {
     "size": 10.0,

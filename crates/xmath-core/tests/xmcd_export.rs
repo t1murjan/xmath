@@ -26,6 +26,7 @@ fn show(ws: &Worksheet) -> HashMap<u64, String> {
                 }
                 (RegionKind::Text { text, .. }, _) => text.split_whitespace().collect::<Vec<_>>().join(" "),
                 (RegionKind::Plot { .. }, _) => "PLOT".into(),
+                (RegionKind::Plot3d { .. }, _) => "PLOT3D".into(),
                 (RegionKind::Image { .. }, _) => "IMAGE".into(),
                 (RegionKind::Reference { href }, _) => format!("REF {href}"),
             };
@@ -48,7 +49,7 @@ fn check_example(path: &str) {
     let (a, b) = (show(&ws), show(&back));
     let mut bad = Vec::new();
     for r in &ws.regions {
-        if matches!(r.kind, RegionKind::Plot { .. }) {
+        if matches!(r.kind, RegionKind::Plot { .. } | RegionKind::Plot3d { .. }) {
             continue; // plots are not exported
         }
         if a.get(&r.id) != b.get(&r.id) {
@@ -138,7 +139,7 @@ fn text_picture_and_reference_roundtrip() {
         1,
         30.0,
         20.0,
-        RegionKind::Text { text: "Заголовок\nвторая строка & <теги>".into(), width: 300.0, style: TextStyle { size: 14.0, bold: true, italic: true, underline: false }, lock_width: true },
+        RegionKind::Text { text: "Заголовок\nвторая строка & <теги>".into(), width: 300.0, style: TextStyle { size: 14.0, bold: true, italic: true, underline: false, ..Default::default() }, lock_width: true },
     ));
     ws.regions.push(Region::new(2, 40.0, 100.0, RegionKind::Reference { href: "lib/other.xmcd".into() }));
     // a 1x1 PNG
@@ -155,9 +156,11 @@ fn text_picture_and_reference_roundtrip() {
         y_max: None,
         xs: vec![],
         fmt: Default::default(),
+        kind: Default::default(),
     }));
+    ws.regions.push(Region::new(5, 40.0, 440.0, RegionKind::new_plot3d(xmath_core::Plot3dKind::Surface)));
     let ex = export_xmcd(&ws);
-    assert_eq!(ex.warnings.len(), 1, "{:?}", ex.warnings); // the plot
+    assert_eq!(ex.warnings.len(), 1, "{:?}", ex.warnings); // the 3D plot is a picture for Mathcad
     let back = import_xmcd(&ex.xml).unwrap().worksheet;
     assert_eq!(back.format.precision, 5);
     assert!(back.page.landscape);
@@ -171,7 +174,8 @@ fn text_picture_and_reference_roundtrip() {
     }
     assert!(matches!(&back.regions.iter().find(|r| r.id == 2).unwrap().kind, RegionKind::Reference { href } if href == "lib/other.xmcd"));
     assert!(matches!(&back.regions.iter().find(|r| r.id == 3).unwrap().kind, RegionKind::Image { png_base64, .. } if png_base64 == png));
-    assert!(matches!(&back.regions.iter().find(|r| r.id == 4).unwrap().kind, RegionKind::Text { text, .. } if text.contains("sin(t)")));
+    assert!(matches!(&back.regions.iter().find(|r| r.id == 4).unwrap().kind, RegionKind::Plot { y, .. } if y == &vec!["sin(t)".to_string()]));
+    assert!(matches!(&back.regions.iter().find(|r| r.id == 5).unwrap().kind, RegionKind::Plot3d { .. }));
 }
 
 /// The exporter output has the structure of real Mathcad files (checked in a lenient way):
@@ -213,7 +217,7 @@ fn corpus_roundtrip() {
         let (a, b) = (show(&ws), show(&back));
         let mut file_bad = 0;
         for r in &ws.regions {
-            if matches!(r.kind, RegionKind::Plot { .. } | RegionKind::Image { .. }) {
+            if matches!(r.kind, RegionKind::Plot { .. } | RegionKind::Plot3d { .. } | RegionKind::Image { .. }) {
                 continue;
             }
             regions += 1;

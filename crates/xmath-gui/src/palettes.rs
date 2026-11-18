@@ -76,6 +76,11 @@ pub enum Act {
     /// Insert text at the cursor (or start a new math region).
     Insert(&'static str),
     InsertPlot,
+    InsertPolar,
+    InsertSurface,
+    InsertContour,
+    InsertBar,
+    InsertScatter,
     MatrixDialog,
     /// Not implemented yet; shown disabled.
     Todo,
@@ -133,11 +138,11 @@ pub static CALCULATOR: &[Btn] = &[
 
 pub static GRAPH: &[Btn] = &[
     b("X-Y", "Декартов график  @", InsertPlot),
-    b("Полярн.", "Полярный график  Ctrl+7", Todo),
-    b("Поверхн.", "График поверхности  Ctrl+2", Todo),
-    b("Контур", "Контурный график  Ctrl+5", Todo),
-    b("3D бар", "3D гистограмма", Todo),
-    b("3D точ.", "3D точечный график", Todo),
+    b("Полярн.", "Полярный график  Ctrl+7", InsertPolar),
+    b("Поверхн.", "График поверхности  Ctrl+2", InsertSurface),
+    b("Контур", "Контурный график  Ctrl+5", InsertContour),
+    b("3D бар", "3D гистограмма", InsertBar),
+    b("3D точ.", "3D точечный график", InsertScatter),
     b("Вектор", "Векторное поле", Todo),
     b("Масштаб", "Масштаб", Todo),
     b("Трасс.", "Трассировка", Todo),
@@ -195,22 +200,20 @@ pub static BOOLEAN: &[Btn] = &[
     b("¬", "Логическое НЕ  Ctrl+Shift+1", Insert("¬")),
     b("∧", "Логическое И  Ctrl+Shift+7", Insert("∧")),
     b("∨", "Логическое ИЛИ  Ctrl+Shift+6", Insert("∨")),
-    b("⊕", "Исключающее ИЛИ", Todo),
+    b("⊕", "Исключающее ИЛИ  Ctrl+Shift+5", Insert("⊕")),
 ];
 
 pub static PROGRAMMING: &[Btn] = &[
-    b("Программа", "Блок программы { ... }", Insert("{ ■ }")),
-    b("Add Line", "Добавить строку программы (;)", Insert("; ■")),
-    b("←", "Локальное присваивание", Insert(" ← ■")),
-    b("if", "Условие: if условие { ... }", Insert("if ■ { ■ }")),
-    b("otherwise", "Иначе: otherwise { ... }", Insert(" otherwise { ■ }")),
-    b("for", "Цикл for: for i ∈ 1..n { ... }", Insert("for ■ ∈ ■ { ■ }")),
-    b("while", "Цикл while: while условие { ... }", Insert("while ■ { ■ }")),
-    b("break", "Прервать цикл", Insert("break")),
-    b("continue", "Продолжить цикл", Insert("continue")),
-    b("return", "Возврат значения", Insert("return ■")),
-    b("on error", "Обработка ошибки: выражение on error значение", Insert(" on error ■")),
-    b("if()", "Функция if(условие, да, нет)", Insert("if(■, ■, ■)")),
+    b("Add Line", "Добавить строку  ]", Insert("; ■")),
+    b("←", "Локальное определение  {", Insert(" ← ■")),
+    b("if", "Условный оператор  }", Insert("if ■ { ■ }")),
+    b("otherwise", "Иначе  Ctrl+Shift+}", Insert(" otherwise { ■ }")),
+    b("for", "Цикл for  Ctrl+Shift+\"", Insert("for ■ ∈ ■ { ■ }")),
+    b("while", "Цикл while  Ctrl+]", Insert("while ■ { ■ }")),
+    b("break", "Прервать цикл  Ctrl+Shift+{", Insert("break")),
+    b("continue", "Следующая итерация цикла  Ctrl+[", Insert("continue")),
+    b("return", "Вернуть значение  Ctrl+Shift+|", Insert("return ■")),
+    b("on error", "Обработка ошибки  Ctrl+'", Insert(" on error ■")),
 ];
 
 pub static GREEK: &[Btn] = &[

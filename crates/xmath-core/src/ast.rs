@@ -24,6 +24,8 @@ pub enum BinOp {
     Ge,
     And,
     Or,
+    /// Exclusive or (Mathcad's ⊕).
+    Xor,
 }
 
 impl BinOp {
@@ -42,13 +44,14 @@ impl BinOp {
             BinOp::Ge => ">=",
             BinOp::And => "and",
             BinOp::Or => "or",
+            BinOp::Xor => "⊕",
         }
     }
 
     /// Binding strength used for printing and parenthesisation.
     pub fn precedence(self) -> u8 {
         match self {
-            BinOp::Or => 1,
+            BinOp::Or | BinOp::Xor => 1,
             BinOp::And => 2,
             BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => 3,
             BinOp::Add | BinOp::Sub => 4,

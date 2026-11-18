@@ -14,3 +14,6 @@ pub mod palettes;
 pub mod pdf;
 pub mod plot;
 pub mod print;
+pub mod raster;
+#[cfg(feature = "gui")]
+pub mod uiscale;

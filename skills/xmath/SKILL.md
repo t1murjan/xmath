@@ -7,7 +7,7 @@ description: Use for engineering and math calculations that need physical units,
 
 xmath is a free, open-source Mathcad 15 clone written in Rust. A *worksheet* is a list of regions (math, text, plot)
 evaluated top-to-bottom, then left-to-right. Math is written as plain linear text, units are first-class, and
-incompatible units produce an error instead of a silent wrong number. Worksheets are saved as `.xmath` (JSON) files.
+incompatible units produce an error instead of a silent wrong number. Worksheets are saved as Mathcad 15 `.xmcd` files (the default format of the program) or xmath's own `.xmath` (JSON) files; every tool below that takes a worksheet path accepts both.
 
 Prefer xmath over doing arithmetic in your head whenever units, many steps, matrices or numeric calculus are involved:
 the result is computed exactly as Mathcad would and can be handed to the user as a reusable file.
@@ -35,7 +35,7 @@ Recommended procedure:
    then `add_region` for extras such as plots. Re-read with `open_worksheet` to confirm there are no errors.
 4. Report results to the user with units and mention the file path.
 
-Paths are relative to the server's working directory; writing is only allowed for `.xmath` files.
+Paths are relative to the server's working directory; writing is only allowed for `.xmath` and `.xmcd` files. Editing an `.xmcd` re-imports it and saves the whole file again (plots as Mathcad plots with pictures, stored results), so you can work directly on Mathcad files; polar and 3D plots are written as pictures for Mathcad and restored by xmath.
 
 ## Syntax in one screen
 
@@ -183,7 +183,7 @@ Details in reference.md ("Programs").
 
 ## Export, PDF and files
 
-* MCP `export_pdf {path, out}` renders a worksheet to PDF (A4 by default); `export_xmcd {path, out}` writes a Mathcad 15 file (plots become text notes). CLI: `xmath-cli sheet.xmath --pdf out.pdf` / `--export-xmcd out.xmcd`.
+* MCP `export_pdf {path, out}` renders a worksheet to PDF (A4 by default); `export_xmcd {path, out}` writes a Mathcad 15 file (X-Y plots as Mathcad plots, polar and 3D plots as pictures). CLI: `xmath-cli sheet.xmath --pdf out.pdf` / `--export-xmcd out.xmcd`.
 * File functions (paths relative to the worksheet folder): `READPRN("a.prn")`, `READFILE("a.csv","delimited")`, `READCSV`, `READEXCEL("a.xlsx","Sheet1!A1:C10")`; writing is a special definition: `WRITEPRN("out.prn") := M`, `APPENDPRN(...)`, `WRITECSV(...)`. Writes never leave the worksheet folder (no `..`); the MCP server never writes while evaluating.
 * A reference region (Insert -> Reference) evaluates another .xmath/.xmcd first and exposes its definitions below it.
 * Details: docs/export-print.md.

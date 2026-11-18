@@ -27,38 +27,38 @@ pub struct PlotInfo {
 }
 
 #[derive(Debug, Clone)]
-struct Node {
-    id: u32,
-    cls: u16,
-    flag: u8,
-    parent: u32,
+pub(crate) struct Node {
+    pub(crate) id: u32,
+    pub(crate) cls: u16,
+    pub(crate) flag: u8,
+    pub(crate) parent: u32,
     /// Bytes between the node header and the next node.
-    payload: Vec<u8>,
+    pub(crate) payload: Vec<u8>,
 }
 
 // Class codes of the expression tree (see docs/xmcd-plot-format.md).
-const C_LEAF: u16 = 0x020f;
-const C_STRING: u16 = 0x5a0f;
-const C_EMPTY: u16 = 0x000f;
-const C_PAIR: u16 = 0x9fc1;
-const C_XY: u16 = 0x19c1;
-const C_WRAP_A: u16 = 0x1340;
-const C_WRAP_B: u16 = 0x1440;
-const C_COMMA: u16 = 0x0ac3;
-const C_PARENS: u16 = 0x8e70;
-const C_CALL: u16 = 0x12ce;
-const C_MUL: u16 = 0x06ca;
-const C_DIV: [u16; 2] = [0x07fb, 0x07cb];
-const C_POW: [u16; 2] = [0x05cc, 0x05fc];
-const C_NEG: u16 = 0x954b;
-const C_ADD: u16 = 0x89c7;
-const C_SUB: u16 = 0x88c7;
-const C_INDEX: [u16; 1] = [0x04fd];
-const C_COLUMN: u16 = 0x34fd;
-const C_SQRT: u16 = 0x9a7b;
+pub(crate) const C_LEAF: u16 = 0x020f;
+pub(crate) const C_STRING: u16 = 0x5a0f;
+pub(crate) const C_EMPTY: u16 = 0x000f;
+pub(crate) const C_PAIR: u16 = 0x9fc1;
+pub(crate) const C_XY: u16 = 0x19c1;
+pub(crate) const C_WRAP_A: u16 = 0x1340;
+pub(crate) const C_WRAP_B: u16 = 0x1440;
+pub(crate) const C_COMMA: u16 = 0x0ac3;
+pub(crate) const C_PARENS: u16 = 0x8e70;
+pub(crate) const C_CALL: u16 = 0x12ce;
+pub(crate) const C_MUL: u16 = 0x06ca;
+pub(crate) const C_DIV: [u16; 2] = [0x07fb, 0x07cb];
+pub(crate) const C_POW: [u16; 2] = [0x05cc, 0x05fc];
+pub(crate) const C_NEG: u16 = 0x954b;
+pub(crate) const C_ADD: u16 = 0x89c7;
+pub(crate) const C_SUB: u16 = 0x88c7;
+pub(crate) const C_INDEX: [u16; 1] = [0x04fd];
+pub(crate) const C_COLUMN: u16 = 0x34fd;
+pub(crate) const C_SQRT: u16 = 0x9a7b;
 
-const FIRST_NODE: u32 = 6;
-const ROOT_PARENT: u32 = 5;
+pub(crate) const FIRST_NODE: u32 = 6;
+pub(crate) const ROOT_PARENT: u32 = 5;
 
 /// Variable-length number: values below 0x40 take one byte, larger ones two
 /// (`0x40 | high 6 bits`, low byte).
@@ -74,7 +74,7 @@ fn read_num(d: &[u8], i: usize) -> Option<(u32, usize)> {
     }
 }
 
-fn write_num(v: u32, out: &mut Vec<u8>) {
+pub(crate) fn write_num(v: u32, out: &mut Vec<u8>) {
     if v < 0x40 {
         out.push(v as u8);
     } else {
@@ -93,7 +93,7 @@ fn find(d: &[u8], pat: &[u8], from: usize) -> Option<usize> {
 /// Splits the serialized tree into nodes. Nodes are numbered consecutively
 /// from 6, so the end of one node is found by looking for the next number
 /// followed by the node tag `0x32` and a plausible header.
-fn parse_nodes(d: &[u8]) -> Result<Vec<Node>, String> {
+pub(crate) fn parse_nodes(d: &[u8]) -> Result<Vec<Node>, String> {
     let tree = find(d, b"tree", 0).ok_or("нет дерева выражений")?;
     let mut start = {
         let mut pat = Vec::new();
@@ -178,7 +178,7 @@ impl Tree {
 }
 
 /// Text of a leaf: `00 00 n [01 n-1] chars...` with `n-1` UTF-16LE characters.
-fn leaf_text(payload: &[u8]) -> Option<String> {
+pub(crate) fn leaf_text(payload: &[u8]) -> Option<String> {
     if payload.len() < 3 || payload[0] != 0 || payload[1] != 0 {
         return None;
     }

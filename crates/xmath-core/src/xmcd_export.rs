@@ -6,14 +6,21 @@
 //! as `unitOverride`), text regions become `<text>` paragraphs, pictures become embedded PNGs
 //! and references become `<reference>` regions.
 //!
-//! Plots are stored in a binary format by Mathcad (see `docs/xmcd-plot-format.md`) that is only
-//! understood for reading: an exported plot is replaced by a text region naming its
-//! expressions, and a warning is returned. Cached results (`<result>`) are not written;
-//! Mathcad recalculates the worksheet when it opens it.
+//! X-Y plots are written as Mathcad's own plot item (expression tree, axis limits, trace
+//! colours and line types; see [`crate::xmcd_plot_write`]). Everything xmath knows about a plot
+//! that the item cannot hold, the polar and 3D plots, and the worksheet-wide xmath settings
+//! (default plot format, number format, page) are also stored as `<!--xmath:… {json}-->`
+//! comments, which Mathcad ignores and [`crate::xmcd`] reads back, so that a worksheet
+//! saved by xmath and opened again in xmath is unchanged. [`ExportOptions`] carries the
+//! pictures of the plots as the program draws them (`<rendering>`); polar and 3D plots are
+//! written as pictures (or as a text note without one) because Mathcad's format for them
+//! is not known. Results of evaluations are written as `<result>` like Mathcad does.
 
 use crate::ast::{BinOp, Expr, PStmt, Stmt, Target, UnOp};
 use crate::parser::parse_statement;
-use crate::worksheet::{Paper, Region, RegionKind, TextStyle, Worksheet};
+use crate::worksheet::{LineStyle, Paper, PlotKind, Region, RegionKind, RegionOutput, Snapshot, TextStyle, Worksheet};
+use crate::xmcd_plot_write::{encode_plot, PlotSpec, TraceSpec};
+use std::collections::HashMap;
 use std::fmt::Write;
 
 /// Mathcad coordinates are in points; the worksheet uses pixels of 96 dpi.
@@ -26,9 +33,32 @@ pub struct ExportResult {
     pub warnings: Vec<String>,
 }
 
-/// Exports `ws` as `.xmcd` XML text.
+/// What the caller can add to an export.
+#[derive(Default)]
+pub struct ExportOptions {
+    /// PNG pictures of regions (plots), by region id, as the program draws them.
+    pub renderings: HashMap<u64, Vec<u8>>,
+    /// Device pixels per worksheet pixel of the pictures in `renderings` (0: 1).
+    pub rendering_scale: f32,
+    /// Where files are read from during the evaluation that produces the `<result>`s.
+    pub env: Option<crate::fileio::EvalEnv>,
+    /// Evaluation results with snapshots (`Worksheet::evaluate_with(true, …)`); computed here
+    /// when `None`.
+    pub outputs: Option<HashMap<u64, RegionOutput>>,
+}
+
+/// Exports `ws` as `.xmcd` XML text (results are computed here, no pictures).
 pub fn export_xmcd(ws: &Worksheet) -> ExportResult {
-    let mut x = Exporter { warnings: Vec::new(), items: Vec::new() };
+    export_xmcd_with(ws, &ExportOptions::default())
+}
+
+/// Exports `ws` as `.xmcd` XML text.
+pub fn export_xmcd_with(ws: &Worksheet, opts: &ExportOptions) -> ExportResult {
+    let outputs = match &opts.outputs {
+        Some(o) if o.values().any(|r| r.value.is_some()) => o.clone(),
+        _ => ws.evaluate_with(true, &opts.env.clone().unwrap_or_default()),
+    };
+    let mut x = Exporter { warnings: Vec::new(), items: Vec::new(), outputs, renderings: &opts.renderings, rendering_scale: if opts.rendering_scale > 0.0 { opts.rendering_scale } else { 1.0 }, pending_result: None };
     let mut out = String::new();
     out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n");
     out.push_str(
@@ -38,6 +68,7 @@ pub fn export_xmcd(ws: &Worksheet) -> ExportResult {
          xmlns:p=\"http://schemas.mathsoft.com/provenance10\">\n",
     );
     out.push_str("\t<pointReleaseData/>\n\t<metadata>\n\t\t<generator>xmath</generator>\n\t\t<userData>\n\t\t\t<title/>\n\t\t\t<description/>\n\t\t\t<author/>\n\t\t\t<company/>\n\t\t\t<keywords/>\n\t\t\t<revisedBy/>\n\t\t</userData>\n\t</metadata>\n");
+    out.push_str(&xmath_comment("worksheet", &worksheet_json(ws)));
     x.settings(ws, &mut out);
     out.push_str("\t<regions>\n");
     // regions are written in evaluation order (the order Mathcad evaluates by position anyway)
@@ -47,8 +78,8 @@ pub fn export_xmcd(ws: &Worksheet) -> ExportResult {
     out.push_str("\t</regions>\n");
     if !x.items.is_empty() {
         out.push_str("\t<binaryContent>\n");
-        for (i, b64) in x.items.iter().enumerate() {
-            let _ = write!(out, "\t\t<item item-id=\"{}\">", i + 1);
+        for (i, (b64, gz)) in x.items.iter().enumerate() {
+            let _ = write!(out, "\t\t<item item-id=\"{}\"{}>", i + 1, if *gz { " content-encoding=\"gzip\"" } else { "" });
             // base64 in lines of 72 characters like Mathcad does
             for (k, ch) in b64.as_bytes().chunks(72).enumerate() {
                 if k > 0 {
@@ -80,17 +111,22 @@ fn esc(s: &str) -> String {
 }
 
 fn pt(v: f32) -> String {
-    let r = (v / SCALE * 100.0).round() / 100.0;
+    let r = (v / SCALE * 1000.0).round() / 1000.0;
     format!("{r}")
 }
 
-struct Exporter {
+struct Exporter<'a> {
     warnings: Vec<String>,
-    /// Base64 payloads of `binaryContent` items (item id = index + 1).
-    items: Vec<String>,
+    /// Base64 payloads of `binaryContent` items (item id = index + 1) and whether gzip-compressed.
+    items: Vec<(String, bool)>,
+    outputs: HashMap<u64, RegionOutput>,
+    renderings: &'a HashMap<u64, Vec<u8>>,
+    rendering_scale: f32,
+    /// `<result>` of the math region being written, consumed by its first `ml:eval`.
+    pending_result: Option<Snapshot>,
 }
 
-impl Exporter {
+impl Exporter<'_> {
     fn settings(&mut self, ws: &Worksheet, out: &mut String) {
         out.push_str("\t<settings>\n\t\t<presentation>\n\t\t\t<textRendering>\n\t\t\t\t<textStyles>\n");
         for (name, size, bold, italic, family, align) in [
@@ -173,7 +209,10 @@ impl Exporter {
             RegionKind::Math { source } => match parse_statement(source) {
                 Ok(stmt) => {
                     let mut body = String::new();
-                    if let Err(e) = self.stmt(&stmt, &mut body, 4) {
+                    self.pending_result = self.outputs.get(&r.id).and_then(|o| o.value.clone());
+                    let res = self.stmt(&stmt, &mut body, 4);
+                    self.pending_result = None;
+                    if let Err(e) = res {
                         self.warnings.push(format!("область {}: {e}; записана как текст", r.id));
                         self.text_region(r, source, &TextStyle::default(), 320.0, false, out);
                         return;
@@ -189,10 +228,22 @@ impl Exporter {
                     self.text_region(r, source, &TextStyle::default(), 320.0, false, out);
                 }
             },
-            RegionKind::Text { text, width, style, lock_width } => self.text_region(r, text, style, *width, *lock_width, out),
+            RegionKind::Text { text, width, style, lock_width } => {
+                if *lock_width {
+                    self.text_region(r, text, style, *width, true, out);
+                } else {
+                    // Mathcad wraps a text region at its stored width; xmath's "wrap at the page
+                    // margin" is kept in a comment
+                    let mut tmp = String::new();
+                    self.text_region(r, text, style, *width, false, &mut tmp);
+                    let at = tmp.rfind("\t\t</region>").unwrap_or(tmp.len());
+                    tmp.insert_str(at, &xmath_comment("region", &serde_json::to_string(&r.kind).unwrap_or_default()));
+                    out.push_str(&tmp);
+                }
+            }
             RegionKind::Image { png_base64, width, height } => {
                 let id = self.items.len() + 1;
-                self.items.push(png_base64.clone());
+                self.items.push((png_base64.clone(), false));
                 let kind = if png_base64.starts_with("/9j/") { "jpeg" } else { "png" };
                 self.region_open(r, *width, *height, out);
                 let _ = writeln!(
@@ -202,14 +253,52 @@ impl Exporter {
                     pt(*height)
                 );
             }
-            RegionKind::Plot { x, y, width, height, .. } => {
-                self.warnings.push(format!(
-                    "область {}: график не может быть записан в .xmcd (бинарный формат Mathcad); вместо него записан текст",
-                    r.id
-                ));
-                let what = format!("[График: {} от {}]", y.join(", "), if x.is_empty() { "x" } else { x });
-                self.text_region(r, &what, &TextStyle::default(), *width, true, out);
-                let _ = height;
+            RegionKind::Plot3d { kind, width, height, .. } => {
+                self.picture_plot(r, kind.title(), *width, *height, out);
+            }
+            RegionKind::Plot { kind: PlotKind::Polar, width, height, .. } => {
+                self.picture_plot(r, "Полярный график", *width, *height, out);
+            }
+            RegionKind::Plot { x, y, xs, width, height, x_min, x_max, y_min, y_max, fmt, kind: _ } => {
+                let parse = |s: &str| crate::parser::parse_expr(s).unwrap_or_else(|_| Expr::Var(s.to_string()));
+                let xs_list: Vec<&String> = if xs.is_empty() { if x.trim().is_empty() { vec![] } else { vec![x] } } else { xs.iter().collect() };
+                let trace = |t: &crate::worksheet::TraceFormat| -> Option<TraceSpec> {
+                    if t.color.is_none() && t.line.is_none() {
+                        return None;
+                    }
+                    let line = match t.line {
+                        Some(LineStyle::Dot) => 2,
+                        Some(LineStyle::Dash) => 3,
+                        Some(LineStyle::DashDot) => 4,
+                        _ => 1,
+                    };
+                    Some(TraceSpec { line, rgb: t.color.unwrap_or([255, 0, 0]) })
+                };
+                let spec = PlotSpec {
+                    x: xs_list.iter().map(|s| parse(s)).collect(),
+                    y: y.iter().filter(|s| !s.trim().is_empty()).map(|s| parse(s)).collect(),
+                    x_min: *x_min,
+                    x_max: *x_max,
+                    y_min: *y_min,
+                    y_max: *y_max,
+                    traces: fmt.traces.iter().take(16).map(trace).collect(),
+                    rect: [
+                        r.x.max(0.0).round() as u32,
+                        r.y.max(0.0).round() as u32,
+                        (r.x.max(0.0) + width).round() as u32,
+                        (r.y.max(0.0) + height).round() as u32,
+                    ],
+                    region_id: r.id as u32,
+                };
+                let blob = self.add_gzip(&encode_plot(&spec));
+                let rendering = self.add_rendering(r.id);
+                self.region_open(r, *width, *height, out);
+                let _ = writeln!(out, "\t\t\t<plot disable-calc=\"false\" item-idref=\"{blob}\"/>");
+                if let Some(rid) = rendering {
+                    let _ = writeln!(out, "\t\t\t<rendering item-idref=\"{rid}\"/>");
+                }
+                out.push_str(&xmath_comment("region", &serde_json::to_string(&r.kind).unwrap_or_default()));
+                out.push_str("\t\t</region>\n");
             }
             RegionKind::Reference { href } => {
                 let mut h = href.replace('\\', "/");
@@ -231,14 +320,81 @@ impl Exporter {
         }
     }
 
+    /// gzip + base64 item; returns its id.
+    fn add_gzip(&mut self, bytes: &[u8]) -> usize {
+        use base64::Engine;
+        use std::io::Write as _;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let _ = enc.write_all(bytes);
+        let gz = enc.finish().unwrap_or_default();
+        self.items.push((base64::engine::general_purpose::STANDARD.encode(gz), true));
+        self.items.len()
+    }
+
+    /// The picture of region `id` as an item, if the caller supplied one.
+    fn add_rendering(&mut self, id: u64) -> Option<usize> {
+        use base64::Engine;
+        let png = self.renderings.get(&id)?;
+        self.items.push((base64::engine::general_purpose::STANDARD.encode(png), false));
+        Some(self.items.len())
+    }
+
+    /// A plot Mathcad cannot read: its picture (or a text note without one) plus the xmath
+    /// comment with the complete plot.
+    fn picture_plot(&mut self, r: &Region, what: &str, width: f32, height: f32, out: &mut String) {
+        let json = match &r.kind {
+            RegionKind::Plot3d { .. } | RegionKind::Plot { .. } => serde_json::to_string(&r.kind).unwrap_or_default(),
+            _ => String::new(),
+        };
+        // the region shows the picture at its own size
+        let (width, height) = match self.renderings.get(&r.id).and_then(|p| png_size(p)) {
+            Some((w, h)) => (w as f32 / self.rendering_scale, h as f32 / self.rendering_scale),
+            None => (width, height),
+        };
+        match self.add_rendering(r.id) {
+            Some(id) => {
+                self.region_open(r, width, height, out);
+                let _ = writeln!(
+                    out,
+                    "\t\t\t<picture>\n\t\t\t\t<png item-idref=\"{id}\" display-width=\"{}\" display-height=\"{}\"/>\n\t\t\t</picture>\n\t\t\t<rendering item-idref=\"{id}\"/>",
+                    pt(width),
+                    pt(height)
+                );
+                out.push_str(&xmath_comment("region", &json));
+                out.push_str("\t\t</region>\n");
+            }
+            None => {
+                let mut tmp = String::new();
+                self.text_region(r, &format!("[{what}: открывается в xmath]"), &TextStyle::default(), width, true, &mut tmp);
+                let at = tmp.rfind("\t\t</region>").unwrap_or(tmp.len());
+                tmp.insert_str(at, &xmath_comment("region", &json));
+                out.push_str(&tmp);
+            }
+        }
+        self.warnings.push(format!(
+            "область {}: {what} записан в .xmcd как рисунок; Mathcad показывает его без возможности редактирования, xmath восстанавливает график при открытии",
+            r.id
+        ));
+    }
+
     fn text_region(&mut self, r: &Region, text: &str, style: &TextStyle, width: f32, lock: bool, out: &mut String) {
         let lines: Vec<&str> = text.split('\n').collect();
         let h = lines.len() as f32 * style.size * 1.4 * SCALE + 4.0;
         self.region_open(r, width, h, out);
         let _ = writeln!(out, "\t\t\t<text use-page-width=\"false\" push-down=\"false\" lock-width=\"{lock}\">");
-        for l in lines {
+        // a line break that keeps the spaces at the line ends is a `<br/>` inside one paragraph
+        // (Mathcad trims the ends of a paragraph)
+        let mut paras: Vec<Vec<&str>> = Vec::new();
+        for (i, l) in lines.iter().enumerate() {
+            if i > 0 && (lines[i - 1].ends_with(' ') || l.starts_with(' ')) {
+                paras.last_mut().expect("first line exists").push(l);
+            } else {
+                paras.push(vec![l]);
+            }
+        }
+        for para in paras {
             let _ = write!(out, "\t\t\t\t<p style=\"Normal\" margin-left=\"inherit\" margin-right=\"inherit\" text-indent=\"inherit\" text-align=\"inherit\" list-style-type=\"inherit\" tabs=\"inherit\">");
-            let mut s = esc(l);
+            let mut s = para.iter().map(|l| esc_spaces(l)).collect::<Vec<_>>().join("<br/>");
             if style.underline {
                 s = format!("<u>{s}</u>");
             }
@@ -248,7 +404,12 @@ impl Exporter {
             if style.bold {
                 s = format!("<b>{s}</b>");
             }
-            let _ = write!(out, "<f size=\"{}\">{s}</f>", style.size);
+            let family = match style.font {
+                crate::worksheet::TextFont::Sans => "Arial",
+                crate::worksheet::TextFont::Serif => "Times New Roman",
+                crate::worksheet::TextFont::Mono => "Courier New",
+            };
+            let _ = write!(out, "<f family=\"{family}\" size=\"{}\">{s}</f>", style.size);
             out.push_str("</p>\n");
         }
         out.push_str("\t\t\t</text>\n\t\t</region>\n");
@@ -272,6 +433,7 @@ impl Exporter {
                         if let Some(u) = unit {
                             self.unit_override(u, o, d + 2)?;
                         }
+                        self.result(o, d + 2);
                         ind(o, d + 1);
                         o.push_str("</ml:eval>\n");
                     }
@@ -286,6 +448,7 @@ impl Exporter {
                 if let Some(u) = unit {
                     self.unit_override(u, o, d + 1)?;
                 }
+                self.result(o, d + 1);
                 ind(o, d);
                 o.push_str("</ml:eval>\n");
             }
@@ -322,6 +485,15 @@ impl Exporter {
             }
         }
         Ok(())
+    }
+
+    /// The stored result of the region, inside its `ml:eval`.
+    fn result(&mut self, o: &mut String, d: usize) {
+        if let Some(sn) = self.pending_result.take() {
+            if let Some(x) = result_xml(&sn, d) {
+                o.push_str(&x);
+            }
+        }
     }
 
     fn unit_override(&mut self, u: &Expr, o: &mut String, d: usize) -> Result<(), String> {
@@ -470,6 +642,7 @@ impl Exporter {
                     BinOp::Ge => "ml:greaterOrEqual",
                     BinOp::And => "ml:and",
                     BinOp::Or => "ml:or",
+                    BinOp::Xor => "ml:xor",
                 };
                 let p = op.precedence();
                 let (pa, pb) = if *op == BinOp::Pow {
@@ -764,4 +937,174 @@ fn id(name: &str, o: &mut String, d: usize) {
             let _ = writeln!(o, "<ml:id xml:space=\"preserve\">{}</ml:id>", esc(name));
         }
     }
+}
+
+/// `<!--xmath:name {json}-->` with `--` escaped (it is not allowed inside XML comments; the
+/// JSON reader turns `\u002d` back into `-`; a double hyphen can only occur inside strings).
+fn xmath_comment(name: &str, json: &str) -> String {
+    if json.is_empty() {
+        return String::new();
+    }
+    let mut safe = String::with_capacity(json.len());
+    let mut prev = ' ';
+    for c in json.chars() {
+        if c == '-' && prev == '-' {
+            safe.push_str("\\u002d");
+            prev = ' ';
+        } else {
+            safe.push(c);
+            prev = c;
+        }
+    }
+    format!("\t\t\t<!--xmath:{name} {safe}-->\n")
+}
+
+fn real_text(v: f64) -> String {
+    format!("{v:?}")
+}
+
+/// SI base units of `dim` as a `<unitMonomial>`.
+fn unit_monomial(dim: crate::units::Dim, o: &mut String, d: usize) {
+    const NAMES: [&str; 7] = ["meter", "kilogram", "second", "ampere", "kelvin", "mole", "candela"];
+    ind(o, d);
+    o.push_str("<unitMonomial xmlns=\"http://schemas.mathsoft.com/units10\">\n");
+    for (i, e) in dim.0.iter().enumerate() {
+        if *e == 0 {
+            continue;
+        }
+        let g = gcd(e.abs(), crate::units::DIM_SCALE);
+        let (num, den) = (e / g, crate::units::DIM_SCALE / g);
+        ind(o, d + 1);
+        let _ = write!(o, "<unitReference unit=\"{}\"", NAMES[i]);
+        if num != 1 {
+            let _ = write!(o, " power-numerator=\"{num}\"");
+        }
+        if den != 1 {
+            let _ = write!(o, " power-denominator=\"{den}\"");
+        }
+        o.push_str("/>\n");
+    }
+    ind(o, d);
+    o.push_str("</unitMonomial>\n");
+}
+
+fn gcd(a: i32, b: i32) -> i32 {
+    if b == 0 {
+        a.max(1)
+    } else {
+        gcd(b, a % b)
+    }
+}
+
+fn scalar(n: &crate::value::Num, o: &mut String, d: usize) -> bool {
+    let (re, im) = (n.v.re, n.v.im);
+    if !re.is_finite() || !im.is_finite() {
+        return false;
+    }
+    ind(o, d);
+    if im == 0.0 {
+        let _ = writeln!(o, "<ml:real>{}</ml:real>", real_text(re));
+    } else {
+        o.push_str("<ml:complex>\n");
+        ind(o, d + 1);
+        let _ = writeln!(o, "<ml:real>{}</ml:real>", real_text(re));
+        ind(o, d + 1);
+        let _ = writeln!(o, "<ml:imag>{}</ml:imag>", real_text(im));
+        ind(o, d);
+        o.push_str("</ml:complex>\n");
+    }
+    true
+}
+
+/// `<result>` for a computed value; `None` when Mathcad could not store it (NaN, infinity).
+fn result_xml(s: &Snapshot, d: usize) -> Option<String> {
+    let mut o = String::new();
+    ind(&mut o, d);
+    o.push_str("<result xmlns=\"http://schemas.mathsoft.com/math30\">\n");
+    let dim = s.data.first().map(|n| n.dim).unwrap_or(crate::units::Dim::NONE);
+    if s.data.iter().any(|n| n.dim != dim) {
+        return None;
+    }
+    let united = !dim.is_none() && s.text.is_none();
+    let mut dd = d + 1;
+    if united {
+        ind(&mut o, dd);
+        o.push_str("<unitedValue>\n");
+        dd += 1;
+    }
+    if let Some(t) = &s.text {
+        ind(&mut o, dd);
+        let _ = writeln!(o, "<ml:str>{}</ml:str>", esc(t));
+    } else if s.rows == 1 && s.cols == 1 && s.data.len() == 1 {
+        if !scalar(&s.data[0], &mut o, dd) {
+            return None;
+        }
+    } else {
+        if s.data.len() != s.rows * s.cols || s.data.is_empty() {
+            return None;
+        }
+        ind(&mut o, dd);
+        let _ = writeln!(o, "<ml:matrix rows=\"{}\" cols=\"{}\">", s.rows, s.cols);
+        for c in 0..s.cols {
+            for r in 0..s.rows {
+                if !scalar(&s.data[r * s.cols + c], &mut o, dd + 1) {
+                    return None;
+                }
+            }
+        }
+        ind(&mut o, dd);
+        o.push_str("</ml:matrix>\n");
+    }
+    if united {
+        unit_monomial(dim, &mut o, dd);
+        ind(&mut o, dd - 1);
+        o.push_str("</unitedValue>\n");
+    }
+    ind(&mut o, d);
+    o.push_str("</result>\n");
+    Some(o)
+}
+
+/// Worksheet-wide xmath settings that `.xmcd` cannot hold exactly.
+fn worksheet_json(ws: &Worksheet) -> String {
+    serde_json::json!({ "format": ws.format, "plot_defaults": ws.plot_defaults, "page": ws.page }).to_string()
+}
+
+/// Escapes a line of text; spaces that XML whitespace handling would lose (runs, and spaces at the
+/// ends of the line) are written as `<sp count="n"/>`, as Mathcad does.
+fn esc_spaces(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut o = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == ' ' {
+            let start = i;
+            while i < chars.len() && chars[i] == ' ' {
+                i += 1;
+            }
+            let n = i - start;
+            if n >= 2 || start == 0 || i == chars.len() {
+                if n == 1 {
+                    o.push_str("<sp/>");
+                } else {
+                    let _ = write!(o, "<sp count=\"{n}\"/>");
+                }
+            } else {
+                o.push(' ');
+            }
+        } else {
+            o.push_str(&esc(&chars[i].to_string()));
+            i += 1;
+        }
+    }
+    o
+}
+
+/// Width and height of a PNG file (from its header).
+fn png_size(png: &[u8]) -> Option<(u32, u32)> {
+    if png.len() < 24 || &png[..8] != b"\x89PNG\r\n\x1a\n" {
+        return None;
+    }
+    let be = |i: usize| u32::from_be_bytes([png[i], png[i + 1], png[i + 2], png[i + 3]]);
+    Some((be(16), be(20)))
 }
