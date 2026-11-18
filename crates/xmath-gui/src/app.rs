@@ -22,6 +22,8 @@ use xmath_core::{
 
 #[path = "inplace.rs"]
 mod inplace;
+#[path = "structural.rs"]
+mod structural;
 
 const GRID: f32 = 8.0;
 const PAGE_W: f32 = 760.0;
@@ -58,6 +60,7 @@ pub enum Action {
     Exit,
     Undo,
     Redo,
+    ToggleTextMode,
     Cut,
     Copy,
     Paste,
@@ -217,6 +220,14 @@ pub struct App {
     edit_snapshot: bool,
     /// Active box of in-place editing (matrix cell / definition target).
     cell: Option<inplace::CellEdit>,
+    /// Structural (2D) editor of the region being edited.
+    ed: Option<structural::EdState>,
+    /// Click position (screen) that started editing: places the structural cursor.
+    edit_click: Option<Pos2>,
+    /// The edited formula is typed as a line of text (menu toggle, or the structural editor gave up).
+    line_edit: bool,
+    /// «Правка → Редактировать как текст».
+    text_mode: bool,
     /// Hit boxes (screen coordinates) of the math regions laid out in the last frame.
     hits: HashMap<u64, Vec<(Node, Rect)>>,
 
@@ -289,6 +300,10 @@ impl App {
             hint: String::new(),
             edit_snapshot: false,
             cell: None,
+            ed: None,
+            edit_click: None,
+            line_edit: false,
+            text_mode: false,
             hits: HashMap::new(),
             status: String::new(),
             title: String::new(),
@@ -411,6 +426,7 @@ impl App {
         self.redo.clear();
         self.selection.clear();
         self.editing = None;
+        self.ed = None;
         self.modified = false;
         self.dirty = true;
         self.cursor = Pos2::new(24.0, 24.0);
@@ -578,6 +594,7 @@ impl App {
                     self.changed();
                 }
             }
+            Action::ToggleTextMode => self.toggle_text_mode(ctx),
             Action::Copy => self.copy(ctx),
             Action::Cut => {
                 self.copy(ctx);
@@ -748,6 +765,8 @@ impl App {
         }
         self.finish_edit(false);
         self.editing = Some(id);
+        self.line_edit = self.text_mode;
+        self.ed = None;
         self.focus_pending = true;
         if snapshot {
             self.undo.push(self.ws.clone());
@@ -764,6 +783,8 @@ impl App {
         let Some(id) = self.editing.take() else { return };
         self.plot_buf = None;
         self.cell = None;
+        self.ed = None;
+        self.edit_click = None;
         // entering a region and leaving it unchanged must not leave an undo step behind
         if std::mem::take(&mut self.edit_snapshot) && self.undo.last().is_some_and(|u| u.to_json() == self.ws.to_json()) {
             self.undo.pop();
@@ -795,6 +816,23 @@ impl App {
     fn insert(&mut self, ctx: &Context, s: &str) {
         if self.insert_in_cell(ctx, s) {
             return;
+        }
+        // structural editor: palettes and shortcuts insert templates at its cursor
+        if self.ed.is_some() {
+            if self.ed_insert(ctx, s) {
+                return;
+            }
+        } else if !self.text_mode && !self.line_edit {
+            let id = match self.editing {
+                Some(id) if self.editing_math() == Some(id) => Some(id),
+                Some(_) => None,
+                None => Some(self.new_region(RegionKind::Math { source: String::new() }, true)),
+            };
+            if let Some(id) = id {
+                if self.begin_structural(id, None) && self.ed_insert(ctx, s) {
+                    return;
+                }
+            }
         }
         let id = match self.editing {
             Some(id) if matches!(self.region(id).map(|r| &r.kind), Some(RegionKind::Math { .. } | RegionKind::Text { .. })) => id,
@@ -958,6 +996,9 @@ impl App {
             }
             if i.consume_shortcut(&plain(Key::F1)) {
                 acts.push(Action::Help);
+            }
+            if i.consume_shortcut(&plain(Key::F2)) {
+                acts.push(Action::ToggleTextMode);
             }
             if !editing_text && !kbd_focus {
                 if i.consume_shortcut(&ctrl(Key::Z)) {
@@ -1141,6 +1182,14 @@ impl App {
         } else if typed.starts_with('@') {
             self.new_region(RegionKind::new_plot(), true);
         } else {
+            if !self.text_mode && typed.trim().is_empty() {
+                return;
+            }
+            if !self.text_mode {
+                // the structural editor of the new region reads this frame's keys itself
+                self.new_region(RegionKind::Math { source: String::new() }, true);
+                return;
+            }
             let mapped: String = match typed.as_str() {
                 "\\" => "sqrt(■)".into(),
                 "?" => "diff(■, ■)".into(),
@@ -1464,6 +1513,10 @@ impl App {
                 }
                 if menu_item(ui, "Повторить", "Ctrl+Y", !self.redo.is_empty()) {
                     act = Some(Action::Redo);
+                }
+                ui.separator();
+                if menu_item(ui, if self.text_mode { "✔ Редактировать как текст" } else { "Редактировать как текст" }, "F2", true) {
+                    act = Some(Action::ToggleTextMode);
                 }
                 ui.separator();
                 if menu_item(ui, "Вырезать", "Ctrl+X", sel) {
@@ -1907,6 +1960,9 @@ impl App {
 
     fn canvas(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        if self.ed.as_ref().is_some_and(|e| Some(e.region) != self.editing) {
+            self.ed = None;
+        }
         let z = self.zoom;
         let fs = px(BASE_PT, z);
         // the canvas reaches just past the last region in both directions
@@ -1986,6 +2042,12 @@ impl App {
                                 self.focus_pending = true;
                             }
                             r
+                        } else if editing && self.cell.is_none() && !self.line_edit {
+                            if self.ed.is_none() {
+                                let click = self.edit_click.take();
+                                self.begin_structural(id, click);
+                            }
+                            if self.ed.is_some() { self.ed_canvas(ui, id, pos, fs) } else { None }
                         } else {
                             None
                         };
@@ -2401,7 +2463,8 @@ impl App {
             } else {
                 self.selection = vec![id];
                 self.begin_edit(id, true);
-                // formulas with matrix cells are edited in place, cell by cell
+                // matrix cells are edited in place, cell by cell; the rest structurally
+                self.edit_click = resp.interact_pointer_pos();
                 self.begin_inplace(ctx, id, resp.interact_pointer_pos());
             }
         }
@@ -3071,6 +3134,16 @@ const HELP: &str = "\
   F = kN           вычислить в выбранных единицах
   \"                 текстовая область
   @                X-Y график (в поле слева — функции через запятую, снизу — переменная)
+
+Редактирование формулы (2D, как в Mathcad)
+  формула остаётся двумерной во время набора: «/» — дробь, «^» — степень, «\\» — корень,
+  «[» — индекс, «(» и «'» — скобки, имя функции + «(» — вызов
+  Пробел  расширить выделение (подчёркнутый операнд): a+b, Пробел, /c  →  (a+b)/c
+  ← → ↑ ↓ Home End  перемещение по полям;  Tab / Shift+Tab  следующее / предыдущее поле
+  Backspace / Delete  удаляют символ или оператор; пустая структура удаляется целиком
+  Insert  оператор слева/справа от операнда;  Ctrl+Z / Ctrl+Y  отмена шагов ввода
+  Ctrl+C / Ctrl+V  копировать / вставить подвыражение как текст
+  F2 (Правка → Редактировать как текст)  ввод строкой — для строк \"\" и программ { }
 
 Клавиши
   \\  корень   |  модуль   ?  производная   &  интеграл   $  сумма   #  произведение

@@ -12,6 +12,8 @@ pub enum Item {
     Text { off: Vec2, galley: Arc<Galley>, color: Color32 },
     Line { a: Vec2, b: Vec2, w: f32, color: Color32 },
     Path { pts: Vec<Vec2>, w: f32, color: Color32 },
+    /// A filled rectangle (placeholders).
+    Rect { a: Vec2, b: Vec2, color: Color32 },
 }
 
 /// A meaningful node of a laid-out statement that can be clicked.
@@ -25,6 +27,8 @@ pub enum Node {
     Target,
     /// The whole right-hand side of a definition.
     Rhs,
+    /// Any sub-expression (recorded when `Ts::record` is on): the address of the `Expr`.
+    Expr(usize),
 }
 
 /// A laid-out box. Coordinates are relative to the left end of the baseline;
@@ -52,6 +56,7 @@ impl Lay {
                 Item::Text { off, galley, color } => Item::Text { off: off + d, galley, color },
                 Item::Line { a, b, w, color } => Item::Line { a: a + d, b: b + d, w, color },
                 Item::Path { pts, w, color } => Item::Path { pts: pts.into_iter().map(|p| p + d).collect(), w, color },
+                Item::Rect { a, b, color } => Item::Rect { a: a + d, b: b + d, color },
             });
         }
     }
@@ -69,6 +74,9 @@ impl Lay {
                 Item::Path { pts, w, color } => {
                     painter.add(Shape::line(pts.iter().map(|p| (*p + o).to_pos2()).collect(), Stroke::new(*w, *color)));
                 }
+                Item::Rect { a, b, color } => {
+                    painter.rect_filled(Rect::from_min_max((*a + o).to_pos2(), (*b + o).to_pos2()), 0.0, *color);
+                }
             }
         }
     }
@@ -83,13 +91,17 @@ pub struct Ts<'a> {
     /// Matrix cell being edited in place: its address and the width of the
     /// editor box. The cell is laid out as an empty box of (at least) that width.
     pub edit_cell: Option<(usize, f32)>,
+    /// Record a hit box (`Node::Expr`) for every sub-expression (structural editing).
+    pub record: bool,
+    /// Colour of placeholders when it differs from the text colour.
+    pub ph_color: Option<Color32>,
 }
 
 const ASC: f32 = 0.80;
 
 impl<'a> Ts<'a> {
     pub fn new(fonts: &'a Fonts) -> Ts<'a> {
-        Ts { fonts, color: Color32::BLACK, edit_cell: None }
+        Ts { fonts, color: Color32::BLACK, edit_cell: None, record: false, ph_color: None }
     }
 
     pub fn text_c(&self, s: &str, size: f32, color: Color32) -> Lay {
@@ -328,6 +340,13 @@ impl<'a> Ts<'a> {
     // Expressions
 
     pub fn ident(&self, name: &str, size: f32) -> Lay {
+        if name == "■" {
+            return self.placeholder(size);
+        }
+        // numbers typed in the structural editor ("1.5") are not subscripted
+        if name.starts_with(|c: char| c.is_ascii_digit()) {
+            return self.text(name, size);
+        }
         // like in Mathcad only a dot starts a literal subscript; an underscore is an ordinary letter
         let split = name.char_indices().skip(1).find(|(_, c)| *c == '.');
         match split {
@@ -337,6 +356,19 @@ impl<'a> Ts<'a> {
                 self.sub(base, sub, size)
             }
             _ => self.text(name, size),
+        }
+    }
+
+    /// Mathcad's empty placeholder: a small black square.
+    pub fn placeholder(&self, size: f32) -> Lay {
+        let t = self.text("x", size);
+        let side = size * 0.5;
+        Lay {
+            w: side + size * 0.2,
+            asc: t.asc,
+            desc: t.desc,
+            items: vec![Item::Rect { a: Vec2::new(size * 0.1, -side - size * 0.04), b: Vec2::new(size * 0.1 + side, -size * 0.04), color: self.ph_color.unwrap_or(self.color) }],
+            boxes: vec![],
         }
     }
 
@@ -384,6 +416,15 @@ impl<'a> Ts<'a> {
     }
 
     pub fn expr(&self, e: &Expr, size: f32) -> Lay {
+        let mut l = self.expr_inner(e, size);
+        if self.record {
+            let r = Rect::from_min_max(Pos2::new(0.0, -l.asc), Pos2::new(l.w, l.desc));
+            l.boxes.push((Node::Expr(e as *const Expr as usize), r));
+        }
+        l
+    }
+
+    fn expr_inner(&self, e: &Expr, size: f32) -> Lay {
         match e {
             Expr::Num(x) => self.literal(*x, size),
             Expr::Imag(x) => self.hcat(vec![self.literal(*x, size), self.text("i", size)]),
@@ -614,6 +655,8 @@ impl<'a> Ts<'a> {
     fn call(&self, name: &str, args: &[Expr], size: f32) -> Lay {
         let small = size * 0.72;
         match (name, args) {
+            // explicit parentheses typed in the structural editor
+            ("", [a]) => self.fence(self.expr(a, size), '(', size),
             ("sqrt", [a]) => self.radical(self.expr(a, size), None, size),
             ("nthroot", [a, n]) => self.radical(self.expr(a, size), Some(self.expr(n, small)), size),
             ("abs", [a]) => self.fence(self.expr(a, size), '|', size),
@@ -771,6 +814,51 @@ impl<'a> Ts<'a> {
         }
     }
 
+    /// ` = result unit` after an evaluated expression (a placeholder while there is no result).
+    fn shown_tail(&self, result: Option<(&ResultView, Option<&Expr>)>, unit: Option<&Expr>, size: f32) -> Vec<Lay> {
+        let mut parts = vec![self.op("=", size)];
+        match result {
+            Some((view, user_unit)) => {
+                parts.push(self.result(view, size));
+                if let Some(u) = user_unit.or(unit) {
+                    parts.push(self.space(size * 0.3));
+                    parts.push(self.expr(u, size));
+                }
+            }
+            None => {
+                if let Some(u) = unit {
+                    parts.push(self.text("■ ", size));
+                    parts.push(self.expr(u, size));
+                } else {
+                    parts.push(self.text("■", size));
+                }
+            }
+        }
+        parts
+    }
+
+    /// A statement being edited structurally: `lhs` (with the global flag) `:=` `body`, and the
+    /// value after `=` when `shown`. Every sub-expression records a hit box when `record` is on.
+    pub fn statement_ed(
+        &self,
+        lhs: Option<(&Expr, bool)>,
+        body: &Expr,
+        shown: Option<Option<&Expr>>,
+        result: Option<(&ResultView, Option<&Expr>)>,
+        size: f32,
+    ) -> Lay {
+        let mut parts = Vec::new();
+        if let Some((l, global)) = lhs {
+            parts.push(self.expr(l, size));
+            parts.push(self.op(if global { "≡" } else { ":=" }, size));
+        }
+        parts.push(self.expr(body, size));
+        if let Some(unit) = shown {
+            parts.extend(self.shown_tail(result, unit, size));
+        }
+        self.hcat(parts)
+    }
+
     /// Lays out a whole math region.
     pub fn statement(&self, stmt: &Stmt, result: Option<(&ResultView, Option<&Expr>)>, size: f32) -> Lay {
         match stmt {
@@ -789,24 +877,7 @@ impl<'a> Ts<'a> {
                 );
                 let mut parts = vec![lt, lo, lr];
                 if let Some(unit) = show {
-                    parts.push(self.op("=", size));
-                    match result {
-                        Some((view, user_unit)) => {
-                            parts.push(self.result(view, size));
-                            if let Some(u) = user_unit.or(unit.as_ref()) {
-                                parts.push(self.space(size * 0.3));
-                                parts.push(self.expr(u, size));
-                            }
-                        }
-                        None => {
-                            if let Some(u) = unit {
-                                parts.push(self.text("■ ", size));
-                                parts.push(self.expr(u, size));
-                            } else {
-                                parts.push(self.text("■", size));
-                            }
-                        }
-                    }
+                    parts.extend(self.shown_tail(result, unit.as_ref(), size));
                 }
                 let mut out = self.hcat(parts);
                 out.boxes.push((Node::Target, tr));
@@ -814,24 +885,8 @@ impl<'a> Ts<'a> {
                 out
             }
             Stmt::Eval { expr, unit } => {
-                let mut parts = vec![self.expr(expr, size), self.op("=", size)];
-                match result {
-                    Some((view, user_unit)) => {
-                        parts.push(self.result(view, size));
-                        if let Some(u) = user_unit.or(unit.as_ref()) {
-                            parts.push(self.space(size * 0.3));
-                            parts.push(self.expr(u, size));
-                        }
-                    }
-                    None => {
-                        if let Some(u) = unit {
-                            parts.push(self.text("■ ", size));
-                            parts.push(self.expr(u, size));
-                        } else {
-                            parts.push(self.text("■", size));
-                        }
-                    }
-                }
+                let mut parts = vec![self.expr(expr, size)];
+                parts.extend(self.shown_tail(result, unit.as_ref(), size));
                 self.hcat(parts)
             }
             Stmt::Show(e) => self.expr(e, size),
