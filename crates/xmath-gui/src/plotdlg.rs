@@ -135,16 +135,6 @@ fn spinner(ui: &mut Ui, v: &mut i64, lo: i64, hi: i64, enabled: bool) {
     });
 }
 
-fn line_text(l: LineStyle) -> &'static str {
-    match l {
-        LineStyle::Solid => "──────",
-        LineStyle::Dot => "······",
-        LineStyle::Dash => "─ ─ ─ ─",
-        LineStyle::DashDot => "─·─·─·",
-        LineStyle::Points => "• • •",
-    }
-}
-
 const GRID_LINE: Color32 = Color32::from_rgb(190, 190, 190);
 
 /// A static cell of the white grid tables; true when clicked.
@@ -344,11 +334,22 @@ fn traces_tab(ui: &mut Ui, d: &mut PlotDlg) {
                     cellx!(ui, widths[4], h, sel(4), clicked, 4, |p, r| {
                         plot::sample(p, Pos2::new(r.left() + 6.0, r.center().y), Pos2::new(r.right() - 6.0, r.center().y), c0_of(&color), line, 1.5);
                     }, |ui| {
-                        egui::ComboBox::from_id_salt(("pf-line", i)).width(widths[4] - 22.0).selected_text(line_text(line)).show_ui(ui, |ui| {
+                        // the styles are drawn as real line samples, like Mathcad's owner-drawn list
+                        let col = c0_of(&color);
+                        let combo = egui::ComboBox::from_id_salt(("pf-line", i)).width(widths[4] - 22.0).selected_text("").show_ui(ui, |ui| {
                             for l in [LineStyle::Solid, LineStyle::Dot, LineStyle::Dash, LineStyle::DashDot, LineStyle::Points] {
-                                ui.selectable_value(&mut line, l, line_text(l));
+                                let (r, resp) = ui.allocate_exact_size(Vec2::new(widths[4] - 8.0, 18.0), Sense::click());
+                                if resp.hovered() || line == l {
+                                    ui.painter().rect_filled(r, 0.0, if resp.hovered() { Color32::from_rgb(204, 228, 247) } else { Color32::from_rgb(229, 241, 251) });
+                                }
+                                plot::sample(ui.painter(), Pos2::new(r.left() + 6.0, r.center().y), Pos2::new(r.right() - 6.0, r.center().y), col, l, 1.5);
+                                if resp.clicked() {
+                                    line = l;
+                                }
                             }
                         });
+                        let r = combo.response.rect;
+                        plot::sample(ui.painter(), Pos2::new(r.left() + 6.0, r.center().y), Pos2::new(r.right() - 20.0, r.center().y), col, line, 1.5);
                     });
                     // 5: line width
                     cellx!(ui, widths[5], h, sel(5), clicked, 5, |p, r| right_text(p, r, &format!("{}", lw)), |ui| {
