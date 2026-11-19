@@ -779,6 +779,28 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
                 Ok(mu + sigma * special::qnorm_std(p))
             })
         })(),
+        "dchisq" | "pchisq" | "qchisq" => (|| {
+            arity(name, args, 2)?;
+            let k = args[1].as_real()?;
+            if k <= 0.0 {
+                return Err("число степеней свободы должно быть положительным".into());
+            }
+            real_checked(&args[0], |x| match name {
+                "dchisq" => {
+                    if x < 0.0 {
+                        return Err("аргумент должен быть неотрицательным".into());
+                    }
+                    Ok(special::chisq_pdf(x, k))
+                }
+                "pchisq" => Ok(special::chisq_cdf(x, k)),
+                _ => {
+                    if !(0.0..=1.0).contains(&x) {
+                        return Err("вероятность должна быть между 0 и 1".into());
+                    }
+                    Ok(special::chisq_quantile(x, k))
+                }
+            })
+        })(),
         "dunif" | "punif" => (|| {
             arity(name, args, 3)?;
             let (a, b) = (args[1].as_real()?, args[2].as_real()?);

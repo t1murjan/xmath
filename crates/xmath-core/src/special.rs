@@ -110,6 +110,124 @@ pub fn qnorm_std(p: f64) -> f64 {
     x
 }
 
+/// Regularized lower incomplete gamma function P(a, x) = γ(a, x) / Γ(a) (series for x < a+1,
+/// continued fraction for the upper part otherwise). Mathcad's pchisq/pgamma are built on it.
+pub fn gamma_p(a: f64, x: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if a <= 0.0 {
+        return f64::NAN;
+    }
+    let ln_pre = -x + a * x.ln() - libm::lgamma(a);
+    if x < a + 1.0 {
+        let mut ap = a;
+        let mut term = 1.0 / a;
+        let mut sum = term;
+        for _ in 0..10_000 {
+            ap += 1.0;
+            term *= x / ap;
+            sum += term;
+            if term.abs() < sum.abs() * 1e-16 {
+                break;
+            }
+        }
+        (sum * ln_pre.exp()).clamp(0.0, 1.0)
+    } else {
+        // Lentz's continued fraction for Q(a, x)
+        let tiny = 1e-300;
+        let mut b = x + 1.0 - a;
+        let mut c = 1.0 / tiny;
+        let mut d = 1.0 / b;
+        let mut h = d;
+        for i in 1..10_000 {
+            let an = -i as f64 * (i as f64 - a);
+            b += 2.0;
+            d = an * d + b;
+            if d.abs() < tiny {
+                d = tiny;
+            }
+            c = b + an / c;
+            if c.abs() < tiny {
+                c = tiny;
+            }
+            d = 1.0 / d;
+            let del = d * c;
+            h *= del;
+            if (del - 1.0).abs() < 1e-16 {
+                break;
+            }
+        }
+        (1.0 - h * ln_pre.exp()).clamp(0.0, 1.0)
+    }
+}
+
+/// The chi-square distribution with `k` degrees of freedom: Mathcad's dchisq, pchisq, qchisq.
+pub fn chisq_pdf(x: f64, k: f64) -> f64 {
+    if x < 0.0 {
+        return 0.0;
+    }
+    let h = k / 2.0;
+    if x == 0.0 {
+        return if h < 1.0 { f64::INFINITY } else if h == 1.0 { 0.5 } else { 0.0 };
+    }
+    ((h - 1.0) * x.ln() - x / 2.0 - h * std::f64::consts::LN_2 - libm::lgamma(h)).exp()
+}
+
+pub fn chisq_cdf(x: f64, k: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    gamma_p(k / 2.0, x / 2.0)
+}
+
+/// The quantile of the chi-square distribution: the `x` with `chisq_cdf(x) == p`.
+pub fn chisq_quantile(p: f64, k: f64) -> f64 {
+    if !(0.0..=1.0).contains(&p) {
+        return f64::NAN;
+    }
+    if p == 0.0 {
+        return 0.0;
+    }
+    if p == 1.0 {
+        return f64::INFINITY;
+    }
+    let mut lo = 0.0;
+    let mut hi = k + 10.0 * (2.0 * k).sqrt() + 100.0;
+    while chisq_cdf(hi, k) < p {
+        hi *= 2.0;
+        if hi > 1e300 {
+            return f64::INFINITY;
+        }
+    }
+    // bisection, then a few Newton steps for the last digits
+    for _ in 0..200 {
+        let mid = 0.5 * (lo + hi);
+        if chisq_cdf(mid, k) < p {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+        if hi - lo <= 1e-15 * hi.max(1.0) {
+            break;
+        }
+    }
+    let mut x = 0.5 * (lo + hi);
+    for _ in 0..4 {
+        let d = chisq_pdf(x, k);
+        if !(d.is_finite() && d > 0.0) {
+            break;
+        }
+        let step = (chisq_cdf(x, k) - p) / d;
+        let next = x - step;
+        if !(next > 0.0 && next.is_finite()) {
+            break;
+        }
+        x = next;
+    }
+    x
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,6 +242,25 @@ mod tests {
         assert!((bessel_k(1, 1.0) - 0.601_907_230_197_234_6).abs() < 1e-13);
         assert!((bessel_k(2, 3.0) - 0.061_510_458_471_742_0).abs() < 1e-13);
         assert!((bessel_k(0, 0.01) - 4.721_244_730_161_08).abs() < 1e-11);
+    }
+
+    #[test]
+    fn chi_square() {
+        // Mathcad 15 itself stored qchisq(1 - 0.1/2, 35) = 49.801846855417033 in a corpus file;
+        // its own quantile is a numeric root accurate to ~5e-8 relative, so 1e-5 here is enough
+        assert!((chisq_quantile(0.95, 35.0) - 49.801_846_855_417_033).abs() < 1e-5);
+        for p in [1e-6, 0.01, 0.3, 0.95, 0.999] {
+            let q = chisq_quantile(p, 35.0);
+            assert!((chisq_cdf(q, 35.0) - p).abs() < 1e-12, "{p} -> {q}");
+        }
+        assert!((chisq_quantile(0.95, 11.0) - 19.675_137_572_682_488).abs() < 1e-9);
+        assert!((chisq_quantile(0.5, 2.0) - 1.386_294_361_119_890_6).abs() < 1e-12);
+        // Mathcad's own stored quantile has a ~5e-8 relative error: its cdf is 0.94999997
+        assert!((chisq_cdf(49.801_846_855_417_033, 35.0) - 0.95).abs() < 1e-7);
+        assert!((chisq_pdf(1.0, 1.0) - 0.241_970_724_519_143_37).abs() < 1e-14);
+        assert!((chisq_pdf(2.0, 4.0) - 0.183_939_720_585_721_17).abs() < 1e-14);
+        assert_eq!(chisq_cdf(-1.0, 3.0), 0.0);
+        assert_eq!(chisq_quantile(0.0, 3.0), 0.0);
     }
 
     #[test]

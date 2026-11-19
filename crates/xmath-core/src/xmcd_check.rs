@@ -1,10 +1,11 @@
 //! Compatibility checker: compares what xmath computes for an imported Mathcad
 //! worksheet with the results Mathcad itself saved in the file.
 
+use crate::ast::{Expr, PStmt, Stmt, Target};
 use crate::value::{Num, Value};
 use crate::worksheet::{RegionKind, Snapshot, Worksheet};
 use crate::xmcd::{Expected, ExpectedValue, ImportResult};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Relative tolerance of the comparison.
 pub const REL_TOL: f64 = 1e-6;
@@ -68,6 +69,7 @@ impl CheckReport {
 pub fn check_import(r: &ImportResult) -> CheckReport {
     let ws = &r.worksheet;
     let outputs = crate::evaluate_worksheet_opts(ws, true);
+    let random = random_dependent_regions(ws);
     let mut report = CheckReport::default();
     for i in ws.evaluation_order() {
         let region = &ws.regions[i];
@@ -77,10 +79,166 @@ pub fn check_import(r: &ImportResult) -> CheckReport {
             RegionKind::Text { text, .. } => format!("[текст] {}", text.lines().next().unwrap_or("")),
             _ => String::new(),
         };
-        let verdict = verdict_of(r, region.id, &region.kind, &source, exp, outputs.get(&region.id));
+        let verdict = if random.contains(&region.id) {
+            Verdict::Skipped("случайные числа: Mathcad сохранил свой розыгрыш".into())
+        } else {
+            verdict_of(r, region.id, &region.kind, &source, exp, outputs.get(&region.id))
+        };
         report.regions.push(RegionCheck { id: region.id, source, verdict });
     }
     report
+}
+
+/// Random generators of Mathcad: a result that depends on one can never match the value Mathcad
+/// saved, because the draw is not reproduced.
+const RANDOM_FNS: &[&str] = &[
+    "rnd", "runif", "rnorm", "rexp", "rpois", "rbinom", "rgamma", "rchisq", "rbeta", "rt", "rlnorm", "rweibull",
+    "rcauchy", "rlogis", "rgeom",
+];
+
+/// Regions whose value comes from a random generator, directly or through a variable defined
+/// from one (`ξ := rnorm(N, a, σ)`, then `Xmean := mean(ξ)`).
+fn random_dependent_regions(ws: &Worksheet) -> HashSet<u64> {
+    let mut tainted: HashSet<String> = HashSet::new();
+    let mut regions = HashSet::new();
+    for i in ws.evaluation_order() {
+        let region = &ws.regions[i];
+        let RegionKind::Math { source } = &region.kind else { continue };
+        let Ok(stmt) = crate::parse_statement(source) else { continue };
+        let mut names = Names::default();
+        names.stmt(&stmt);
+        let uses_random = names.calls.iter().any(|n| RANDOM_FNS.contains(&n.as_str()))
+            || names.vars.iter().any(|n| tainted.contains(n));
+        if uses_random {
+            regions.insert(region.id);
+            if let Stmt::Define { target, .. } = &stmt {
+                tainted.insert(target_name(target));
+            }
+        }
+    }
+    regions
+}
+
+fn target_name(t: &Target) -> String {
+    match t {
+        Target::Var(n) | Target::Func(n, _) | Target::Indexed(n, _) => n.clone(),
+        Target::Vector(ns) => ns.first().cloned().unwrap_or_default(),
+    }
+}
+
+/// Identifiers of a statement: which functions it calls and which variables it mentions.
+#[derive(Default)]
+struct Names {
+    calls: HashSet<String>,
+    vars: HashSet<String>,
+}
+
+impl Names {
+    fn stmt(&mut self, s: &Stmt) {
+        match s {
+            Stmt::Define { target, expr, show, .. } => {
+                self.expr(expr);
+                if let Some(Some(u)) = show {
+                    self.expr(u);
+                }
+                if let Target::Indexed(_, idx) = target {
+                    for e in idx {
+                        self.expr(e);
+                    }
+                }
+            }
+            Stmt::Eval { expr, unit } => {
+                self.expr(expr);
+                if let Some(u) = unit {
+                    self.expr(u);
+                }
+            }
+            Stmt::Show(e) => self.expr(e),
+            Stmt::Symbolic { expr, ops, .. } => {
+                self.expr(expr);
+                for op in ops {
+                    for a in &op.args {
+                        self.expr(a);
+                    }
+                }
+            }
+        }
+    }
+
+    fn expr(&mut self, e: &Expr) {
+        match e {
+            Expr::Var(n) => {
+                self.vars.insert(n.clone());
+            }
+            Expr::Call(n, args) => {
+                self.calls.insert(n.clone());
+                for a in args {
+                    self.expr(a);
+                }
+            }
+            Expr::Unary(_, a) | Expr::Abs(a) | Expr::Vectorize(a) | Expr::MatCol(a, _) => self.expr(a),
+            Expr::Binary(_, a, b) | Expr::OnError(a, b) => {
+                self.expr(a);
+                self.expr(b);
+            }
+            Expr::Index(a, idx) => {
+                self.expr(a);
+                for i in idx {
+                    self.expr(i);
+                }
+            }
+            Expr::Range(a, b, c) => {
+                self.expr(a);
+                if let Some(b) = b {
+                    self.expr(b);
+                }
+                self.expr(c);
+            }
+            Expr::Matrix(rows) => {
+                for r in rows {
+                    for e in r {
+                        self.expr(e);
+                    }
+                }
+            }
+            Expr::Program(stmts) => {
+                for s in stmts {
+                    self.pstmt(s);
+                }
+            }
+            Expr::Num(_) | Expr::Imag(_) | Expr::Str(_) => {}
+        }
+    }
+
+    fn pstmt(&mut self, s: &PStmt) {
+        match s {
+            PStmt::Assign(_, e) | PStmt::Expr(e) | PStmt::Return(e) => self.expr(e),
+            PStmt::If { cond, then, else_ } => {
+                self.expr(cond);
+                for s in then {
+                    self.pstmt(s);
+                }
+                if let Some(else_) = else_ {
+                    for s in else_ {
+                        self.pstmt(s);
+                    }
+                }
+            }
+            PStmt::For { iter, body, .. } => {
+                self.expr(iter);
+                for s in body {
+                    self.pstmt(s);
+                }
+            }
+            PStmt::While { cond, body } => {
+                self.expr(cond);
+                for s in body {
+                    self.pstmt(s);
+                }
+            }
+            PStmt::Break | PStmt::Continue => {}
+        }
+    }
 }
 
 fn import_warning(r: &ImportResult, id: u64) -> Option<String> {

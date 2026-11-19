@@ -79,6 +79,10 @@ pub const FUNCTION_DOCS: &[(&str, &str)] = &[
     ("erf", "erf(x): error function"),
     ("erfc", "erfc(x): complementary error function"),
     ("dnorm", "dnorm(x, mu, sigma): normal probability density"),
+
+    ("dchisq", "dchisq(x, d): chi-square probability density, d degrees of freedom"),
+    ("pchisq", "pchisq(x, d): chi-square cumulative distribution"),
+    ("qchisq", "qchisq(p, d): inverse of pchisq, the chi-square quantile"),
     ("pnorm", "pnorm(x, mu, sigma): normal cumulative distribution"),
     ("UnitsOf", "UnitsOf(x): the unit of x as a value (divide x by it to strip units)"),
     ("concat", "concat(s1, s2, ...): joins strings"),

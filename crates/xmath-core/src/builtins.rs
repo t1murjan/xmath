@@ -17,7 +17,7 @@ pub const NAMES: &[&str] = &[
     "geninv", "rref", "norm1", "norm2", "normi", "cond2", "diag", "csort", "rsort", "lspline", "pspline", "cspline",
     "interp", "slope", "intercept", "line", "corr", "regress", "cvar", "skew", "kurt", "hist", "gmean", "hmean",
     "mode", "gcd", "lcm", "Φ", "heaviside", "δ", "kronecker", "sinc", "csgn", "qnorm", "dunif", "punif", "dexp",
-    "pexp", "J0", "J1", "Jn", "Y0", "Y1", "Yn", "I0", "I1", "In", "K0", "K1", "Kn", "substr", "search", "str2num",
+    "pexp", "dchisq", "pchisq", "qchisq", "J0", "J1", "Jn", "Y0", "Y1", "Yn", "I0", "I1", "In", "K0", "K1", "Kn", "substr", "search", "str2num",
     "vec2str", "str2vec", "lookup", "match", "vlookup", "hlookup", "rkfixed", "Rkadapt", "expfit", "lgsfit",
     "logfit", "lnfit", "pwrfit", "sinfit", "linfit", "genfit", "medfit", "loess", "ksmooth", "medsmooth",
     "supsmooth", "predict", "rnd", "runif", "rnorm", "rexp", "rpois", "rbinom", "rgamma", "rchisq", "rbeta", "rt",
