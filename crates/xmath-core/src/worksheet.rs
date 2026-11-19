@@ -851,6 +851,16 @@ impl Worksheet {
         self.run_regions(&mut ev, snapshots)
     }
 
+    /// The value of an expression in the scope of the whole worksheet. The definitions are
+    /// replayed first, so a display unit that the document defines itself (`kB := 1023*Byte`)
+    /// resolves to the document's value and not to the built-in one.
+    pub fn eval_in_scope(&self, e: &Expr) -> Option<Value> {
+        let mut ev = Evaluator::new();
+        self.run_regions(&mut ev, false);
+        let sc = ev.top_scope();
+        ev.eval(e, &sc).ok()
+    }
+
     /// Evaluates the regions in `ev` (definitions stay in it afterwards: references use this).
     fn run_regions(&self, ev: &mut Evaluator, snapshots: bool) -> HashMap<u64, RegionOutput> {
         let mut out = HashMap::new();

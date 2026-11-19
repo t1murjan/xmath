@@ -479,3 +479,23 @@ fn all_new_names_are_registered() {
         assert!(xmath_core::builtins::NAMES.contains(&name), "{name} is missing from NAMES");
     }
 }
+
+#[test]
+fn hyperbolic_cotangent_and_reciprocals() {
+    // coth, sech and csch are standard Mathcad functions (Mathcad 15 has them too).
+    close(num(&["coth(1)"]), 1.0 / 1f64.tanh(), 1e-12);
+    close(num(&["sech(1)"]), 1.0 / 1f64.cosh(), 1e-12);
+    close(num(&["csch(1)"]), 1.0 / 1f64.sinh(), 1e-12);
+    close(num(&["coth(0.5) * tanh(0.5)"]), 1.0, 1e-12);
+    close(num(&["sech(0)"]), 1.0, 1e-12);
+    // complex arguments go through the complex definitions
+    let z = C64::new(1.0, 2.0);
+    let got = match run(&["coth(1 + 2i)"]).unwrap() {
+        Value::Num(n) => n.v,
+        other => panic!("expected a scalar, got {other:?}"),
+    };
+    assert!((got - z.cosh() / z.sinh()).norm() < 1e-12, "{got} vs {}", z.cosh() / z.sinh());
+    for name in ["coth", "sech", "csch"] {
+        assert!(xmath_core::builtins::NAMES.contains(&name), "{name} is missing from NAMES");
+    }
+}

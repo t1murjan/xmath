@@ -42,6 +42,9 @@ pub struct ExpectedValue {
     pub dim: Dim,
     /// A string result.
     pub text: Option<String>,
+    /// The number is expressed in the region's display unit (`<ml:unitOverride>`) rather than in
+    /// SI units: `Filesize*s = kB` stores the 7.91 of "7.91 kB", not 8092 bytes.
+    pub display_unit: bool,
     /// Set when the unit is not known to xmath, so the value cannot be compared.
     pub unknown_unit: Option<String>,
 }
@@ -1329,7 +1332,13 @@ fn extract_expected(math: Node) -> Option<Expected> {
     let result_name = if lname(eval) == "symEval" { "symResult" } else { "result" };
     let result = eval.children().find(|c| c.is_element() && lname(*c) == result_name)?;
     let body = kids(result).into_iter().next()?;
-    parse_result(body).map(Expected::Value)
+    let has_override = kids(eval)
+        .into_iter()
+        .any(|k| lname(k) == "unitOverride" && kids(k).into_iter().next().is_some_and(|u| lname(u) != "placeholder"));
+    let mut v = parse_result(body)?;
+    // a bare number next to a display unit is that many display units, not that many SI units
+    v.display_unit = has_override && lname(body) != "unitedValue" && v.text.is_none();
+    Some(Expected::Value(v))
 }
 
 fn parse_f(n: Node) -> Option<f64> {
@@ -1380,7 +1389,7 @@ fn parse_result(n: Node) -> Option<ExpectedValue> {
             let mut items = Vec::with_capacity(ks.len());
             for k in ks {
                 if lname(k) == "str" {
-                    return Some(ExpectedValue { rows, cols, data: Vec::new(), dim, text: Some(String::new()), unknown_unit: unknown });
+                    return Some(ExpectedValue { rows, cols, data: Vec::new(), dim, text: Some(String::new()), display_unit: false, unknown_unit: unknown });
                 }
                 items.push(scale(parse_scalar(k)?));
             }
@@ -1390,7 +1399,7 @@ fn parse_result(n: Node) -> Option<ExpectedValue> {
         }
         _ => (1, 1, vec![scale(parse_scalar(core)?)], None),
     };
-    Some(ExpectedValue { rows, cols, data, dim, text, unknown_unit: unknown })
+    Some(ExpectedValue { rows, cols, data, dim, text, display_unit: false, unknown_unit: unknown })
 }
 
 /// SI factor, zero-point offset and dimension of a `unitMonomial`.

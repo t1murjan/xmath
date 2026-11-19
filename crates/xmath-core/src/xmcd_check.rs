@@ -1,8 +1,8 @@
 //! Compatibility checker: compares what xmath computes for an imported Mathcad
 //! worksheet with the results Mathcad itself saved in the file.
 
-use crate::value::Num;
-use crate::worksheet::{RegionKind, Snapshot};
+use crate::value::{Num, Value};
+use crate::worksheet::{RegionKind, Snapshot, Worksheet};
 use crate::xmcd::{Expected, ExpectedValue, ImportResult};
 use std::collections::HashMap;
 
@@ -77,7 +77,7 @@ pub fn check_import(r: &ImportResult) -> CheckReport {
             RegionKind::Text { text, .. } => format!("[текст] {}", text.lines().next().unwrap_or("")),
             _ => String::new(),
         };
-        let verdict = verdict_of(r, region.id, &region.kind, exp, outputs.get(&region.id));
+        let verdict = verdict_of(r, region.id, &region.kind, &source, exp, outputs.get(&region.id));
         report.regions.push(RegionCheck { id: region.id, source, verdict });
     }
     report
@@ -92,6 +92,7 @@ fn verdict_of(
     r: &ImportResult,
     id: u64,
     kind: &RegionKind,
+    source: &str,
     exp: &Expected,
     out: Option<&crate::worksheet::RegionOutput>,
 ) -> Verdict {
@@ -103,13 +104,44 @@ fn verdict_of(
     let ours_err = out.error();
     match (exp, ours_err) {
         (Expected::Error(_), Some(_)) => Verdict::Ok,
+        // Mathcad's error may be the overflow that xmath expresses as ∞: both agree the value
+        // cannot be represented.
+        (Expected::Error(_), None) if out.value.as_ref().is_some_and(overflowed) => Verdict::Ok,
         (Expected::Error(e), None) => Verdict::Mismatch(format!("Mathcad показал ошибку «{e}», а xmath вычислил значение")),
         (Expected::Value(_), Some(e)) => Verdict::NotEvaluated(e),
         (Expected::Value(ev), None) => match &out.value {
             None => Verdict::NotEvaluated("нет значения".into()),
-            Some(s) => compare(s, ev),
+            Some(s) => match in_display_unit(&r.worksheet, source, ev) {
+                Some(scaled) => compare(s, &scaled),
+                None => compare(s, ev),
+            },
         },
     }
+}
+
+/// Mathcad stores a result shown in a display unit (`x = kB`, `<ml:unitOverride>`) as the bare
+/// number of those units, while xmath works in SI. Resolve the unit in the document's own scope
+/// (`kB := 1023*Byte` there) and convert the stored value to SI.
+fn in_display_unit(ws: &Worksheet, source: &str, exp: &ExpectedValue) -> Option<ExpectedValue> {
+    if !exp.display_unit {
+        return None;
+    }
+    let Ok(crate::Stmt::Eval { unit: Some(u), .. }) = crate::parse_statement(source) else { return None };
+    let Some(Value::Num(n)) = ws.eval_in_scope(&u) else { return None };
+    let factor = n.v.re;
+    if n.v.im != 0.0 || !factor.is_finite() || factor == 0.0 {
+        return None;
+    }
+    let mut out = exp.clone();
+    out.data = exp.data.iter().map(|(re, im)| (re * factor, im * factor)).collect();
+    out.dim = n.dim;
+    out.display_unit = false;
+    Some(out)
+}
+
+/// Every element of the result is infinite or NaN (an overflow Mathcad could not show either).
+fn overflowed(s: &Snapshot) -> bool {
+    !s.data.is_empty() && s.data.iter().all(|n| !n.v.re.is_finite() || !n.v.im.is_finite())
 }
 
 fn close(a: f64, b: f64, scale: f64) -> bool {
@@ -232,6 +264,27 @@ mod tests {
         assert_eq!(v[&7], &Verdict::Ok, "{rep:?}");
         assert_eq!((rep.ok(), rep.mismatch(), rep.not_evaluated()), (4, 1, 1));
         assert!(top_causes(&[&rep]).iter().any(|(c, _)| c.contains("nosuchfn")));
+    }
+
+    #[test]
+    fn display_units_of_stored_results() {
+        // Mathcad writes the number as shown, with the display unit in <ml:unitOverride>: the
+        // result of `F = kB` is 7.91 (kB is defined by the document itself), and `2 cm` is 2.
+        let xml = sheet(&[
+            region(1, 10.0, "<ml:define><ml:id>Byte</ml:id><ml:real>1</ml:real></ml:define>"),
+            region(2, 40.0, "<ml:define><ml:id>kB</ml:id><ml:apply><ml:mult/><ml:real>1023</ml:real><ml:id>Byte</ml:id></ml:apply></ml:define>"),
+            region(3, 70.0, "<ml:define><ml:id>F</ml:id><ml:apply><ml:mult/><ml:real>48</ml:real><ml:id>kB</ml:id></ml:apply></ml:define>"),
+            region(4, 100.0, "<ml:eval><ml:id>F</ml:id><ml:unitOverride><ml:id>kB</ml:id></ml:unitOverride><result xmlns=\"http://schemas.mathsoft.com/math30\"><ml:real>48</ml:real></result></ml:eval>"),
+            region(5, 130.0, "<ml:eval><ml:apply><ml:mult/><ml:real>2</ml:real><ml:id>cm</ml:id></ml:apply><ml:unitOverride><ml:id>cm</ml:id></ml:unitOverride><result xmlns=\"http://schemas.mathsoft.com/math30\"><ml:real>2</ml:real></result></ml:eval>"),
+            // wrong number in the display unit: 3 cm where xmath computes 2 cm
+            region(6, 160.0, "<ml:eval><ml:apply><ml:mult/><ml:real>2</ml:real><ml:id>cm</ml:id></ml:apply><ml:unitOverride><ml:id>cm</ml:id></ml:unitOverride><result xmlns=\"http://schemas.mathsoft.com/math30\"><ml:real>3</ml:real></result></ml:eval>"),
+        ].join(""));
+        let r = import_xmcd(&xml).unwrap();
+        let rep = check_import(&r);
+        let v: HashMap<u64, &Verdict> = rep.regions.iter().map(|c| (c.id, &c.verdict)).collect();
+        assert_eq!(v[&4], &Verdict::Ok, "{rep:?}");
+        assert_eq!(v[&5], &Verdict::Ok, "{rep:?}");
+        assert!(matches!(v[&6], Verdict::Mismatch(_)), "{rep:?}");
     }
 
     #[test]

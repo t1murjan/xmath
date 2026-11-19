@@ -7,7 +7,7 @@ use num_complex::Complex64 as C64;
 
 /// Names of all built-in functions (used for highlighting and completion).
 pub const NAMES: &[&str] = &[
-    "sin", "cos", "tan", "cot", "sec", "csc", "asin", "acos", "atan", "acot", "atan2", "sinh", "cosh", "tanh",
+    "sin", "cos", "tan", "cot", "sec", "csc", "asin", "acos", "atan", "acot", "atan2", "sinh", "cosh", "tanh", "coth", "sech", "csch",
     "asinh", "acosh", "atanh", "exp", "ln", "log", "sqrt", "nthroot", "abs", "arg", "Re", "Im", "conj", "xor", "floor",
     "ceil", "round", "trunc", "mod", "sign", "signum", "max", "min", "mean", "median", "stdev", "Stdev", "var",
     "Var", "sum", "prod", "length", "rows", "cols", "last", "identity", "transpose", "det", "tr", "lsolve",
@@ -254,6 +254,9 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
         "sinh" => one(&|v| complex_fn(v, |z| z.sinh())),
         "cosh" => one(&|v| complex_fn(v, |z| z.cosh())),
         "tanh" => one(&|v| complex_fn(v, |z| z.tanh())),
+        "coth" => one(&|v| complex_fn(v, |z| z.cosh() / z.sinh())),
+        "sech" => one(&|v| complex_fn(v, |z| 1.0 / z.cosh())),
+        "csch" => one(&|v| complex_fn(v, |z| 1.0 / z.sinh())),
         "asinh" => one(&|v| complex_fn(v, |z| z.asinh())),
         "acosh" => one(&|v| real_or_complex(v, f64::acosh, |z| z.acosh())),
         "atanh" => one(&|v| real_or_complex(v, f64::atanh, |z| z.atanh())),
