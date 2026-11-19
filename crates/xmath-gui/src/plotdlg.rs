@@ -116,21 +116,60 @@ fn swatch(ui: &mut Ui, c: &mut [u8; 3], enabled: bool) -> bool {
     changed
 }
 
+/// The up/down half of a spin button, drawn by hand: the ▲/▼ glyphs of the UI font have no sane
+/// size at 7 px and come out as ragged stubs, so the triangles are painted instead.
+fn spin_half(ui: &mut Ui, rect: Rect, id: egui::Id, up: bool, enabled: bool) -> bool {
+    let resp = ui.interact(rect, id, Sense::click());
+    let face = if !enabled {
+        Color32::from_rgb(240, 240, 240)
+    } else if resp.is_pointer_button_down_on() {
+        Color32::from_rgb(200, 198, 185)
+    } else if resp.hovered() {
+        Color32::from_rgb(246, 245, 238)
+    } else {
+        Color32::from_rgb(225, 225, 225)
+    };
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, 0.0, face);
+    let ink = if enabled { Color32::BLACK } else { Color32::from_gray(150) };
+    let c = rect.center() + Vec2::new(0.0, 0.5);
+    let (w, h) = (3.5, 2.0);
+    let pts = if up {
+        vec![Pos2::new(c.x, c.y - h), Pos2::new(c.x - w, c.y + h), Pos2::new(c.x + w, c.y + h)]
+    } else {
+        vec![Pos2::new(c.x, c.y + h), Pos2::new(c.x - w, c.y - h), Pos2::new(c.x + w, c.y - h)]
+    };
+    p.add(egui::Shape::convex_polygon(pts, ink, Stroke::NONE));
+    if enabled && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp.clicked()
+}
+
+/// A number field with the Windows spin buttons of Mathcad next to it: one bordered box split in
+/// half by a divider, so the two arrows read as a single control.
 fn spinner(ui: &mut Ui, v: &mut i64, lo: i64, hi: i64, enabled: bool) {
     ui.add_enabled_ui(enabled, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             ui.add_sized([44.0, 22.0], egui::DragValue::new(v).range(lo..=hi).speed(0.1));
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing = Vec2::ZERO;
-                ui.spacing_mut().button_padding = Vec2::ZERO;
-                if ui.add_sized([17.0, 11.0], egui::Button::new(RichText::new("▲").size(7.0))).clicked() {
-                    *v = (*v + 1).min(hi);
-                }
-                if ui.add_sized([17.0, 11.0], egui::Button::new(RichText::new("▼").size(7.0))).clicked() {
-                    *v = (*v - 1).max(lo);
-                }
-            });
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(17.0, 22.0), Sense::hover());
+            let base = ui.next_auto_id();
+            let mid = rect.center().y.round();
+            let top = Rect::from_min_max(rect.min, Pos2::new(rect.right(), mid));
+            let bot = Rect::from_min_max(Pos2::new(rect.left(), mid), rect.max);
+            let on = ui.is_enabled();
+            let up = spin_half(ui, top, base.with("up"), true, on);
+            let down = spin_half(ui, bot, base.with("down"), false, on);
+            let p = ui.painter_at(rect);
+            p.rect_stroke(rect, 2.0, Stroke::new(1.0_f32, Color32::from_gray(110)), egui::StrokeKind::Inside);
+            p.line_segment([Pos2::new(top.left() + 2.0, mid), Pos2::new(top.right() - 2.0, mid)], Stroke::new(1.0_f32, Color32::from_gray(110)));
+            if up {
+                *v = (*v + 1).min(hi);
+            }
+            if down {
+                *v = (*v - 1).max(lo);
+            }
         });
     });
 }
