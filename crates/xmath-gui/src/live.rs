@@ -4,9 +4,15 @@
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
-use std::path::PathBuf;
+use std::hash::{BuildHasher, RandomState};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
+
+/// Computed on the UI thread so drags, undo, Save As and in-place edits are all visible.
+pub fn revision(document: &RandomState, path: Option<&Path>, snapshot: &str) -> String {
+    format!("{:016x}", document.hash_one((path, snapshot)))
+}
 
 /// One request from a client; the UI thread answers through `reply`.
 pub struct Request {

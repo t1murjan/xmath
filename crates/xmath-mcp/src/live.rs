@@ -34,6 +34,12 @@ fn request(_sock: &Path, _cmd: &Value) -> Result<Value, String> {
 
 /// The open windows with their info (`pid`, `title`, `path`, `modified`, `regions`,
 /// `focused_at`); sockets of windows that are gone are removed.
+#[cfg(not(unix))]
+pub fn windows() -> Vec<(PathBuf, Value)> {
+    Vec::new()
+}
+
+#[cfg(unix)]
 pub fn windows() -> Vec<(PathBuf, Value)> {
     let mut out = Vec::new();
     let Ok(rd) = std::fs::read_dir(xmath_core::live::socket_dir()) else { return out };
@@ -68,18 +74,29 @@ fn pick(spec: &str) -> Result<(PathBuf, Value), String> {
     }
 }
 
-/// The worksheet of an open window and the folder of its file (if saved).
-pub fn load(spec: &str) -> Result<(xmath_core::Worksheet, Option<PathBuf>), String> {
-    let (sock, _) = pick(spec)?;
-    let v = request(&sock, &json!({"cmd": "get"}))?;
-    let ws = xmath_core::Worksheet::from_json(&v["worksheet"].to_string())?;
-    let dir = v["path"].as_str().and_then(|p| Path::new(p).parent().map(Path::to_path_buf));
-    Ok((ws, dir))
+/// The exact socket and document revision returned by a single read.
+pub struct WindowEdit {
+    socket: PathBuf,
+    pub revision: Option<String>,
 }
 
-/// Puts the changed worksheet into the window (one undo step there).
-pub fn store(spec: &str, ws: &xmath_core::Worksheet) -> Result<(), String> {
-    let (sock, _) = pick(spec)?;
-    let w: Value = serde_json::from_str(&ws.to_json()).map_err(|e| e.to_string())?;
-    request(&sock, &json!({"cmd": "set", "worksheet": w})).map(|_| ())
+pub fn load(spec: &str) -> Result<(xmath_core::Worksheet, Option<PathBuf>, WindowEdit), String> {
+    let (socket, _) = pick(spec)?;
+    let v = request(&socket, &json!({"cmd": "get"}))?;
+    let ws = xmath_core::Worksheet::from_json(&v["worksheet"].to_string())?;
+    let dir = v["path"].as_str().and_then(|p| Path::new(p).parent().map(Path::to_path_buf));
+    let revision = v["revision"].as_str().map(str::to_owned);
+    Ok((ws, dir, WindowEdit { socket, revision }))
+}
+
+impl WindowEdit {
+    pub fn store(&mut self, ws: &xmath_core::Worksheet) -> Result<(), String> {
+        let revision = self.revision.as_deref().ok_or("Обновите и перезапустите xmath: открытое окно не поддерживает проверку версии листа.")?;
+        let reply = request(&self.socket, &json!({"cmd": "set_if_current", "revision": revision, "worksheet": ws}))?;
+        if reply["ok"] != true {
+            return Err("Окно xmath не подтвердило изменение листа.".into());
+        }
+        self.revision = reply["revision"].as_str().map(str::to_owned);
+        Ok(())
+    }
 }
