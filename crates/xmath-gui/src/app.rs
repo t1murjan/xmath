@@ -257,6 +257,9 @@ pub struct App {
     /// The live link to AI assistants (MCP): this window's socket, see `xmath_core::live`.
     #[cfg(unix)]
     live: Option<crate::live::Server>,
+    /// A fresh hash key for each document, including untitled sheets with identical contents.
+    #[cfg(unix)]
+    live_document: std::hash::RandomState,
     /// When the window last had the keyboard focus (seconds since 1970): the MCP server picks
     /// the window used last.
     focused_at: f64,
@@ -347,6 +350,8 @@ impl App {
             save_warnings: None,
             #[cfg(unix)]
             live: crate::live::start(cc.egui_ctx.clone()),
+            #[cfg(unix)]
+            live_document: std::hash::RandomState::new(),
             focused_at: 0.0,
             shown_warnings: Vec::new(),
             dump_rects: std::env::var_os("XMATH_DUMP_RECTS").map(PathBuf::from),
@@ -421,38 +426,52 @@ impl App {
                 None => return,
             };
             for r in reqs {
-                let path = self.path.as_ref().map(|p| p.display().to_string());
-                let reply = match r.cmd["cmd"].as_str().unwrap_or("") {
-                    "info" => serde_json::json!({
-                        "pid": std::process::id(),
-                        "title": self.doc_name(),
-                        "path": path,
-                        "modified": self.modified,
-                        "regions": self.ws.regions.len(),
-                        "focused_at": self.focused_at,
-                    }),
-                    "get" => {
-                        let ws: serde_json::Value = serde_json::from_str(&self.ws.to_json()).unwrap_or_default();
-                        serde_json::json!({"path": path, "title": self.doc_name(), "worksheet": ws})
-                    }
-                    "set" => match Worksheet::from_json(&r.cmd["worksheet"].to_string()) {
-                        Ok(ws) => {
-                            if self.editing.is_some() {
-                                self.finish_edit(false);
-                            }
-                            self.checkpoint();
-                            self.ws = ws;
-                            self.selection.clear();
-                            self.changed();
-                            self.status = "Лист изменён ИИ-ассистентом (MCP); Ctrl+Z отменяет".into();
-                            serde_json::json!({"ok": true})
-                        }
-                        Err(e) => serde_json::json!({"error": e}),
-                    },
-                    other => serde_json::json!({"error": format!("неизвестная команда '{other}'")}),
-                };
+                let reply = self.handle_live(&r.cmd);
                 let _ = r.reply.send(reply);
             }
+        }
+    }
+
+    #[cfg(unix)]
+    fn handle_live(&mut self, cmd: &serde_json::Value) -> serde_json::Value {
+        let path = self.path.as_ref().and_then(|p| std::path::absolute(p).ok());
+        match cmd["cmd"].as_str().unwrap_or("") {
+            "info" => serde_json::json!({
+                "pid": std::process::id(),
+                "title": self.doc_name(),
+                "path": path,
+                "modified": self.modified,
+                "regions": self.ws.regions.len(),
+                "focused_at": self.focused_at,
+            }),
+            "get" => {
+                let snapshot = self.ws.to_json();
+                let revision = crate::live::revision(&self.live_document, path.as_deref(), &snapshot);
+                let ws: serde_json::Value = serde_json::from_str(&snapshot).unwrap_or_default();
+                serde_json::json!({"path": path, "title": self.doc_name(), "worksheet": ws, "revision": revision})
+            }
+            "set_if_current" if self.editing.is_some() => {
+                serde_json::json!({"error": "В окне редактируется область. Завершите правку и перечитайте лист."})
+            }
+            "set_if_current" if cmd["revision"] != crate::live::revision(&self.live_document, path.as_deref(), &self.ws.to_json()) => {
+                serde_json::json!({"error": "Лист изменился после чтения. Перечитайте его и примените правку заново."})
+            }
+            "set" | "set_if_current" => match Worksheet::from_json(&cmd["worksheet"].to_string()) {
+                Ok(ws) => {
+                    if self.editing.is_some() {
+                        self.finish_edit(false);
+                    }
+                    self.checkpoint();
+                    self.ws = ws;
+                    self.selection.clear();
+                    self.changed();
+                    self.status = "Лист изменён ИИ-ассистентом (MCP); Ctrl+Z отменяет".into();
+                    let revision = crate::live::revision(&self.live_document, path.as_deref(), &self.ws.to_json());
+                    serde_json::json!({"ok": true, "revision": revision})
+                }
+                Err(e) => serde_json::json!({"error": e}),
+            },
+            other => serde_json::json!({"error": format!("неизвестная команда '{other}'")}),
         }
     }
 
@@ -517,6 +536,10 @@ impl App {
     }
 
     fn after_load(&mut self) {
+        #[cfg(unix)]
+        {
+            self.live_document = std::hash::RandomState::new();
+        }
         self.undo.clear();
         self.redo.clear();
         self.selection.clear();
@@ -3662,4 +3685,41 @@ fn optional_placeholder(p: &egui::Painter, c: Pos2, fs: f32) {
     p.line_segment([Pos2::new(xl, yb), Pos2::new(xl + t, yb)], st);
     p.line_segment([Pos2::new(xr, yb - t), Pos2::new(xr, yb)], st);
     p.line_segment([Pos2::new(xr, yb), Pos2::new(xr - t, yb)], st);
+}
+
+#[cfg(all(test, unix))]
+mod live_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn conditional_edit_preserves_the_users_document_and_undo_history() {
+        let cc = eframe::CreationContext::_new_kittest(Context::default());
+        let mut app = App::new(&cc, None, false);
+        let original = Worksheet::from_lines("x := 1");
+        app.ws = original.clone();
+        let read = app.handle_live(&json!({"cmd": "get"}));
+        let edit = json!({"cmd": "set_if_current", "revision": read["revision"], "worksheet": Worksheet::from_lines("x := 2")});
+
+        app.editing = Some(1);
+        assert!(app.handle_live(&edit)["error"].is_string());
+        assert_eq!(app.editing, Some(1));
+        app.editing = None;
+
+        app.ws = Worksheet::from_lines("x := 3");
+        assert!(app.handle_live(&edit)["error"].is_string());
+        assert_eq!(app.ws.to_json(), Worksheet::from_lines("x := 3").to_json());
+        assert!(app.undo.is_empty());
+
+        app.ws = original.clone();
+        app.after_load(); // Another document with identical contents.
+        assert!(app.handle_live(&edit)["error"].is_string());
+        let read = app.handle_live(&json!({"cmd": "get"}));
+        let mut fresh = edit.clone();
+        fresh["revision"] = read["revision"].clone();
+        assert_eq!(app.handle_live(&fresh)["ok"], true);
+        assert_eq!(app.undo.len(), 1);
+        assert_eq!(app.undo[0].to_json(), original.to_json());
+        assert!(app.handle_live(&fresh)["error"].is_string());
+    }
 }

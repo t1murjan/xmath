@@ -131,41 +131,91 @@ mod tests {
     #[test]
     fn tools_work_in_the_open_window() {
         use std::io::{BufRead, BufReader, Write};
-        use std::sync::{Arc, Mutex};
+        use std::sync::{Arc, Mutex, atomic::{AtomicU32, Ordering}};
         let dir = temp_dir("live");
+        let previous_dir = std::env::var_os("XDG_RUNTIME_DIR");
         std::env::set_var("XDG_RUNTIME_DIR", &dir);
         let sock_dir = xmath_core::live::socket_dir();
         std::fs::create_dir_all(&sock_dir).unwrap();
-        let listener = std::os::unix::net::UnixListener::bind(sock_dir.join("4242.sock")).unwrap();
-        let sheet = Arc::new(Mutex::new(xmath_core::Worksheet::from_lines("a := 2")));
-        let s2 = sheet.clone();
-        std::thread::spawn(move || {
-            for st in listener.incoming().flatten() {
-                let mut line = String::new();
-                BufReader::new(&st).read_line(&mut line).unwrap();
-                let cmd: Value = serde_json::from_str(&line).unwrap();
-                let ws = s2.lock().unwrap().clone();
-                let reply = match cmd["cmd"].as_str().unwrap() {
-                    "info" => json!({"pid": 4242, "title": "Без имени:1", "path": null, "modified": false, "regions": ws.regions.len(), "focused_at": 1.0}),
-                    "get" => json!({"path": null, "worksheet": serde_json::from_str::<Value>(&ws.to_json()).unwrap()}),
-                    "set" => {
-                        *s2.lock().unwrap() = xmath_core::Worksheet::from_json(&cmd["worksheet"].to_string()).unwrap();
-                        json!({"ok": true})
-                    }
-                    _ => json!({"error": "?"}),
-                };
-                let mut w = &st;
-                writeln!(w, "{reply}").unwrap();
-            }
-        });
+        std::fs::write(dir.join("data.csv"), "7,8\n").unwrap();
+
+        let focus = Arc::new(AtomicU32::new(4242));
+        let mut sheets = Vec::new();
+        for pid in [4242, 4243] {
+            let sheet = Arc::new(Mutex::new(xmath_core::Worksheet::from_lines("a := 2")));
+            sheets.push(sheet.clone());
+            let focus = focus.clone();
+            let file = dir.join("sheet.xmath");
+            let listener = std::os::unix::net::UnixListener::bind(sock_dir.join(format!("{pid}.sock"))).unwrap();
+            std::thread::spawn(move || {
+                for mut st in listener.incoming().flatten() {
+                    let mut line = String::new();
+                    BufReader::new(&st).read_line(&mut line).unwrap();
+                    let cmd: Value = serde_json::from_str(&line).unwrap();
+                    let mut ws = sheet.lock().unwrap();
+                    let reply = match cmd["cmd"].as_str().unwrap() {
+                        "info" => json!({"pid": pid, "title": "Sheet", "path": file, "regions": ws.regions.len(),
+                            "focused_at": u8::from(focus.load(Ordering::SeqCst) == pid)}),
+                        "get" => {
+                            focus.store(4243, Ordering::SeqCst); // user switches windows during the edit
+                            json!({"path": file, "worksheet": *ws, "revision": ws.regions.len().to_string()})
+                        }
+                        "set_if_current" if cmd["revision"] == ws.regions.len().to_string() => {
+                            *ws = xmath_core::Worksheet::from_json(&cmd["worksheet"].to_string()).unwrap();
+                            json!({"ok": true, "revision": ws.regions.len().to_string()})
+                        }
+                        _ => json!({"error": "unexpected request"}),
+                    };
+                    writeln!(st, "{reply}").unwrap();
+                }
+            });
+        }
         let mut st = State::default();
         let r = call(&mut st, "list_open_windows", json!({}));
-        assert!(text(&r).contains("pid 4242"), "{}", text(&r));
-        let r = call(&mut st, "add_region", json!({"path": "window", "kind": "math", "source": "a*3 ="}));
-        assert!(text(&r).contains("= 6"), "{}", text(&r));
-        assert_eq!(sheet.lock().unwrap().regions.len(), 2);
-        // no file was written for "window"
-        assert!(!std::path::Path::new("window").exists());
+        assert_eq!(r["result"]["structuredContent"]["windows"][0]["pid"], 4242);
+        let r = call(&mut st, "add_region", json!({"path": "window", "kind": "math", "source": "a*READCSV(\"data.csv\")[0,0] ="}));
+        assert_eq!(r["result"]["structuredContent"]["regions"][1]["result"], "14", "{r}");
+        assert_eq!(r["result"]["structuredContent"]["revision"], "2");
+        let stale = call(&mut st, "create_worksheet", json!({"path": "window:4242", "expected_revision": "1", "overwrite": true}));
+        assert_eq!(stale["result"]["isError"], true);
+        let latest = call(&mut st, "open_worksheet", json!({"path": "window:4242"}));
+        assert_eq!(latest["result"]["structuredContent"]["revision"], "2");
+        assert_eq!(sheets[0].lock().unwrap().regions.len(), 2);
+        assert_eq!(sheets[1].lock().unwrap().regions.len(), 1);
+        match previous_dir {
+            Some(p) => std::env::set_var("XDG_RUNTIME_DIR", p),
+            None => std::env::remove_var("XDG_RUNTIME_DIR"),
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn saved_reports_and_exports_use_the_worksheet_directory() {
+        let dir = temp_dir("relative-csv");
+        let path = dir.join("sheet.xmath");
+        let mut st = State::default();
+        std::fs::write(dir.join("data.csv"), "6,7\n").unwrap();
+        let lines = ["v := READCSV(\"data.csv\")", "v[0,0]*v[0,1] ="];
+        let created = call(&mut st, "create_worksheet", json!({"path": path, "lines": lines}));
+        let opened = call(&mut st, "open_worksheet", json!({"path": path}));
+        for r in [created, opened] {
+            let data = &r["result"]["structuredContent"];
+            assert_eq!(data["errors"], 0, "{r}");
+            assert_eq!(data["regions"][1]["result"], "42", "{r}");
+        }
+        let pdf = dir.join("sheet.pdf");
+        let r = call(&mut st, "export_pdf", json!({"path": path, "out": pdf}));
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let ws = xmath_core::Worksheet::from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let env = xmath_core::EvalEnv { dir: Some(dir.clone()), ..Default::default() };
+        let outputs = xmath_core::evaluate_worksheet_with(&ws, false, &env);
+        let expected = xmath_gui::print::export_pdf(&ws, &outputs, &xmath_gui::print::PdfOptions { title: "sheet".into() });
+        assert_eq!(std::fs::read(pdf).unwrap(), expected);
+
+        let r = call(&mut st, "add_region", json!({"path": path, "kind": "math", "source": "WRITECSV(\"copy.csv\") := v"}));
+        assert!(!dir.join("copy.csv").exists());
+        assert_eq!(r["result"]["structuredContent"]["errors"], 1);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// What weaker models did: tall formulas overlapping, all plots at the end. Now every

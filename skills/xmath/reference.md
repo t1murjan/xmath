@@ -219,5 +219,5 @@ Use the MCP tools or `xmath-cli` instead of hand-editing it. The same worksheets
 5. Order matters: a region only sees definitions with a smaller `y` (or same `y` and smaller `x`).
 6. Indices start at 0 (`ORIGIN = 0`).
 7. Results default to 3 decimals; large/small numbers use `a·10^n`. Use `expr = unit` for control.
-8. Do not use `$`, `\`, LaTeX or `==` — only the linear syntax above. Use `^` not `**`.
+8. Use linear syntax and `^` for powers. Use `:=` for a definition, `=` to display a result, and `==` to compare values, including equality constraints inside a `Given` block.
 9. `1/0`, undefined names and unit mismatches return an error string for that region only; the others are still evaluated.

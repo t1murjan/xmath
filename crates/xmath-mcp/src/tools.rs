@@ -2,9 +2,8 @@
 
 use crate::help;
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use xmath_core::{evaluate_worksheet, Output, Plot3dKind, PlotKind, Region, RegionKind, RegionOutput, Worksheet};
+use xmath_core::{evaluate_worksheet, EvalEnv, Output, Plot3dKind, PlotKind, Region, RegionKind, RegionOutput, Worksheet};
 
 /// Successful tool result: human-readable text plus structured data.
 pub struct ToolOutput {
@@ -19,7 +18,8 @@ const GAP: f32 = 0.0;
 const LEFT: f32 = 20.0;
 
 pub fn tool_list() -> Value {
-    let path = json!({"type":"string","description":"Path to a .xmath or Mathcad 15 .xmcd file (absolute, or relative to the server's working directory), or \"window\" for the worksheet open in the xmath program window the user works in (\"window:<pid>\" picks one of several, see list_open_windows). With \"window\" the changes appear in that window at once (one Ctrl+Z step there); do not start xmath or open a new file then."});
+    let path = json!({"type":"string","description":"Path to a .xmath or Mathcad 15 .xmcd file (absolute, or relative to the server's working directory), or \"window\" for the worksheet open in the xmath program window the user works in (select a window with list_open_windows and keep its window:<pid> for the whole task). With \"window\" the changes appear in that window at once (one Ctrl+Z step there); do not start xmath or open a new file then."});
+    let revision = json!({"type":"string","description":"For a window, pass the revision returned by the last open or edit. A changed document must be read again."});
     json!([
         {
             "name": "evaluate",
@@ -34,7 +34,7 @@ pub fn tool_list() -> Value {
         },
         {
             "name": "list_open_windows",
-            "description": "List the xmath program windows the user has open (pid, document title, file path or null if unsaved, modified flag, number of regions), the most recently used first. When the user asks to work in the open xmath / the open window / \"в открытом окне\", call this and then use path \"window\" in every other tool instead of creating or opening a file.",
+            "description": "List the xmath program windows the user has open (pid, document title, file path or null if unsaved, modified flag, number of regions), the most recently used first. When the user asks to work in the open xmath / the open window / \"в открытом окне\", call this and then use the selected window:<pid> for all calls in this task.",
             "inputSchema": {"type":"object","properties":{}}
         },
         {
@@ -48,7 +48,7 @@ pub fn tool_list() -> Value {
             "inputSchema": {
                 "type":"object",
                 "properties":{
-                    "path":path.clone(),
+                    "path":path.clone(), "expected_revision":revision.clone(),
                     "lines":{"type":"array","items":{"type":"string"},"description":"Initial lines, as in `evaluate`."},
                     "overwrite":{"type":"boolean","description":"Replace an existing file (default false)."}
                 },
@@ -61,7 +61,7 @@ pub fn tool_list() -> Value {
             "inputSchema": {
                 "type":"object",
                 "properties":{
-                    "path":path.clone(),
+                    "path":path.clone(), "expected_revision":revision.clone(),
                     "kind":{"type":"string","enum":["math","text","plot","polar_plot","surface_plot","contour_plot","scatter_plot","bar_plot"],"description":"polar_plot takes x_expr (angle) and y_exprs (radii); surface_plot / contour_plot / bar_plot take `expr` (a matrix, a function of two variables, or an expression in x and y); scatter_plot takes `expr` = `X, Y, Z`."},
                     "expr":{"type":"string","description":"3D plots: what to plot (matrix name, function name, expression in x, y, or `X, Y, Z` vectors for scatter_plot)."},
                     "source":{"type":"string","description":"math: the single-line statement."},
@@ -82,7 +82,7 @@ pub fn tool_list() -> Value {
             "inputSchema": {
                 "type":"object",
                 "properties":{
-                    "path":path.clone(),
+                    "path":path.clone(), "expected_revision":revision.clone(),
                     "id":{"type":"integer","description":"Region id, as returned by open_worksheet / add_region."},
                     "source":{"type":"string"},
                     "text":{"type":"string"},
@@ -98,7 +98,7 @@ pub fn tool_list() -> Value {
         {
             "name": "delete_region",
             "description": "Delete a region (by id) from a .xmath or .xmcd worksheet, save, and return the re-evaluated worksheet. Other regions keep their positions and ids.",
-            "inputSchema": {"type":"object","properties":{"path":path,"id":{"type":"integer"}},"required":["path","id"]}
+            "inputSchema": {"type":"object","properties":{"path":path,"expected_revision":revision,"id":{"type":"integer"}},"required":["path","id"]}
         },
         {
             "name": "export_pdf",
@@ -221,18 +221,32 @@ fn check_write_path(path: &str) -> Result<PathBuf, String> {
     Ok(p)
 }
 
-/// Like [`load`], and also reads Mathcad `.xmcd` files.
-fn load_any(p: &Path) -> Result<Worksheet, String> {
+struct WorksheetContext {
+    env: EvalEnv,
+    window: Option<crate::live::WindowEdit>,
+}
+
+impl WorksheetContext {
+    fn file(path: &Path) -> Self {
+        let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        Self { env: EvalEnv { dir: Some(dir.to_owned()), ..Default::default() }, window: None }
+    }
+}
+
+fn load(p: &Path) -> Result<(Worksheet, WorksheetContext), String> {
     if let Some(spec) = p.to_str().filter(|s| crate::live::is_window(s)) {
-        return crate::live::load(spec).map(|(ws, _)| ws);
+        let (ws, dir, window) = crate::live::load(spec)?;
+        let env = EvalEnv { dir, ..Default::default() };
+        return Ok((ws, WorksheetContext { env, window: Some(window) }));
     }
     let src = std::fs::read(p).map_err(|e| format!("cannot read {}: {e}", p.display()))?;
     let src = String::from_utf8_lossy(&src);
-    if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmcd")) || src.trim_start().starts_with("<?xml") {
-        xmath_core::xmcd::import_xmcd(&src).map(|r| r.worksheet).map_err(|e| format!("{}: {e}", p.display()))
+    let ws = if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmcd")) || src.trim_start().starts_with("<?xml") {
+        xmath_core::xmcd::import_xmcd(&src).map(|r| r.worksheet).map_err(|e| format!("{}: {e}", p.display()))?
     } else {
-        load_xmath(p)
-    }
+        load_xmath(p)?
+    };
+    Ok((ws, WorksheetContext::file(p)))
 }
 
 fn check_out_path(path: &str, ext: &str) -> Result<PathBuf, String> {
@@ -254,11 +268,8 @@ fn check_out_path(path: &str, ext: &str) -> Result<PathBuf, String> {
 fn export_pdf(a: &Map<String, Value>) -> ToolResult {
     let src = resolve(req_str(a, "path")?);
     let out = check_out_path(req_str(a, "out")?, "pdf")?;
-    let ws = load_any(&src)?;
-    let dir = src.parent().filter(|d| !d.as_os_str().is_empty()).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
-    // reading is allowed (READPRN, references); nothing is written while evaluating
-    let env = xmath_core::EvalEnv { dir: Some(dir), allow_write: false, stack: Vec::new() };
-    let outputs = xmath_core::evaluate_worksheet_with(&ws, false, &env);
+    let (ws, context) = load(&src)?;
+    let outputs = xmath_core::evaluate_worksheet_with(&ws, false, &context.env);
     let title = src.file_stem().map_or_else(|| "xmath".to_string(), |s| s.to_string_lossy().into_owned());
     let bytes = xmath_gui::print::export_pdf(&ws, &outputs, &xmath_gui::print::PdfOptions { title });
     let pages = String::from_utf8_lossy(&bytes).matches("/Type /Page").count() - String::from_utf8_lossy(&bytes).matches("/Type /Pages").count();
@@ -272,8 +283,8 @@ fn export_pdf(a: &Map<String, Value>) -> ToolResult {
 fn export_xmcd(a: &Map<String, Value>) -> ToolResult {
     let src = resolve(req_str(a, "path")?);
     let out = check_out_path(req_str(a, "out")?, "xmcd")?;
-    let ws = load_any(&src)?;
-    let r = xmath_core::xmcd_export::export_xmcd(&ws);
+    let (ws, context) = load(&src)?;
+    let r = render_xmcd(&ws, &context.env);
     std::fs::write(&out, &r.xml).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
     let mut text = format!("wrote {} ({} regions)", out.display(), ws.regions.len());
     for w in &r.warnings {
@@ -281,10 +292,6 @@ fn export_xmcd(a: &Map<String, Value>) -> ToolResult {
 warning: {w}"));
     }
     Ok(ToolOutput { text, data: json!({"out": out.display().to_string(), "warnings": r.warnings}) })
-}
-
-fn load(p: &Path) -> Result<Worksheet, String> {
-    load_any(p)
 }
 
 /// The worksheet of an `.xmath` (JSON or one line per region) file.
@@ -302,21 +309,24 @@ const SEP_GAP: f32 = 12.0;
 
 /// Keeps regions from overlapping, with their real drawn size (formulas with fractions,
 /// matrices, programs, results, plots): Mathcad's «Разделить области».
-fn separate(p: &Path, ws: &mut Worksheet) {
-    let window = p.to_str().is_some_and(crate::live::is_window);
-    let dir = if window { PathBuf::from(".") } else { p.parent().filter(|d| !d.as_os_str().is_empty()).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(".")) };
-    let env = xmath_core::EvalEnv { dir: Some(dir), allow_write: false, stack: Vec::new() };
-    let outputs = ws.evaluate_with(false, &env);
+fn separate(ws: &mut Worksheet, env: &EvalEnv) {
+    let outputs = xmath_core::evaluate_worksheet_with(ws, false, env);
     let sizes = xmath_gui::print::region_sizes(ws, &outputs);
     ws.separate_regions(&sizes, SEP_GAP);
 }
 
 /// Separates the regions, then writes the file.
-fn save(p: &Path, ws: &mut Worksheet) -> Result<(), String> {
-    separate(p, ws);
-    if let Some(spec) = p.to_str().filter(|s| crate::live::is_window(s)) {
+fn save(p: &Path, ws: &mut Worksheet, context: &mut WorksheetContext, expected_revision: Option<&str>) -> Result<(), String> {
+    if let Some(expected) = expected_revision {
+        let window = context.window.as_ref().ok_or("expected_revision applies only to an open window")?;
+        if window.revision.as_deref() != Some(expected) {
+            return Err("Лист изменился после чтения. Перечитайте его и примените правку заново.".into());
+        }
+    }
+    separate(ws, &context.env);
+    if let Some(window) = &mut context.window {
         // the open window: the user sees the change at once and can undo it there
-        return crate::live::store(spec, ws);
+        return window.store(ws);
     }
     if let Some(dir) = p.parent() {
         if !dir.as_os_str().is_empty() && !dir.exists() {
@@ -324,17 +334,20 @@ fn save(p: &Path, ws: &mut Worksheet) -> Result<(), String> {
         }
     }
     if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xmcd")) {
-        // a Mathcad 15 file: plots as Mathcad plot items plus the pictures, results of the evaluation
-        let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
-        let env = xmath_core::EvalEnv { dir: Some(dir), allow_write: false, stack: Vec::new() };
-        let outputs = ws.evaluate_with(true, &env);
-        let has_plots = ws.regions.iter().any(|r| matches!(r.kind, RegionKind::Plot { .. } | RegionKind::Plot3d { .. }));
-        let renderings = if has_plots { xmath_gui::print::render_plot_pngs(ws, &outputs) } else { Default::default() };
-        let opts = xmath_core::xmcd_export::ExportOptions { renderings, rendering_scale: xmath_gui::print::PNG_SCALE, env: Some(env), outputs: Some(outputs) };
-        let r = xmath_core::xmcd_export::export_xmcd_with(ws, &opts);
+        let r = render_xmcd(ws, &context.env);
         return std::fs::write(p, r.xml).map_err(|e| format!("cannot write {}: {e}", p.display()));
     }
     std::fs::write(p, ws.to_json()).map_err(|e| format!("cannot write {}: {e}", p.display()))
+}
+
+fn render_xmcd(ws: &Worksheet, env: &EvalEnv) -> xmath_core::xmcd_export::ExportResult {
+    let outputs = xmath_core::evaluate_worksheet_with(ws, true, env);
+    let has_plots = ws.regions.iter().any(|r| matches!(r.kind, RegionKind::Plot { .. } | RegionKind::Plot3d { .. }));
+    let renderings = if has_plots { xmath_gui::print::render_plot_pngs(ws, &outputs) } else { Default::default() };
+    let opts = xmath_core::xmcd_export::ExportOptions {
+        renderings, rendering_scale: xmath_gui::print::PNG_SCALE, env: Some(env.clone()), outputs: Some(outputs),
+    };
+    xmath_core::xmcd_export::export_xmcd_with(ws, &opts)
 }
 
 // ------------------------------------------------------------ result output
@@ -490,8 +503,8 @@ fn row(r: &Region, out: Option<&RegionOutput>) -> Row {
     Row { json: j, text }
 }
 
-fn worksheet_report(ws: &Worksheet) -> (String, Value, usize) {
-    let outputs: HashMap<u64, RegionOutput> = evaluate_worksheet(ws);
+fn worksheet_report(ws: &Worksheet, env: &EvalEnv) -> (String, Value, usize) {
+    let outputs = xmath_core::evaluate_worksheet_with(ws, false, env);
     let mut texts = Vec::new();
     let mut rows = Vec::new();
     let mut errors = 0;
@@ -507,9 +520,12 @@ fn worksheet_report(ws: &Worksheet) -> (String, Value, usize) {
     (texts.join("\n"), json!(rows), errors)
 }
 
-fn report(header: String, ws: &Worksheet, extra: Option<(&str, Value)>) -> ToolOutput {
-    let (body, rows, errors) = worksheet_report(ws);
+fn report(header: String, ws: &Worksheet, context: &WorksheetContext, extra: Option<(&str, Value)>) -> ToolOutput {
+    let (body, rows, errors) = worksheet_report(ws, &context.env);
     let mut data = json!({"regions": rows, "errors": errors});
+    if let Some(revision) = context.window.as_ref().and_then(|w| w.revision.as_ref()) {
+        data["revision"] = json!(revision);
+    }
     if let Some((k, v)) = extra {
         data[k] = v;
     }
@@ -572,23 +588,29 @@ fn evaluate(a: &Map<String, Value>) -> ToolResult {
 fn open_worksheet(a: &Map<String, Value>) -> ToolResult {
     let path = req_str(a, "path")?;
     let p = resolve(path);
-    let ws = load(&p)?;
-    Ok(report(format!("{} ({} regions)", p.display(), ws.regions.len()), &ws, None))
+    let (ws, context) = load(&p)?;
+    Ok(report(format!("{} ({} regions)", p.display(), ws.regions.len()), &ws, &context, None))
 }
 
 fn create_worksheet(a: &Map<String, Value>) -> ToolResult {
     let path = req_str(a, "path")?;
     let p = check_write_path(path)?;
     let overwrite = a.get("overwrite").and_then(Value::as_bool).unwrap_or(false);
-    if p.exists() && !overwrite {
-        return Err(format!("{} already exists; pass overwrite=true to replace it", p.display()));
-    }
-    if crate::live::is_window(path) && !overwrite && load(&p).is_ok_and(|w| !w.regions.is_empty()) {
-        return Err("the open window already has regions: add to it with add_region (path \"window\"), or pass overwrite=true to replace its whole content".into());
-    }
+    let mut context = if crate::live::is_window(path) {
+        let (current, context) = load(&p)?;
+        if !overwrite && !current.regions.is_empty() {
+            return Err("the open window already has regions: use add_region, or pass overwrite=true to replace its whole content".into());
+        }
+        context
+    } else {
+        if p.exists() && !overwrite {
+            return Err(format!("{} already exists; pass overwrite=true to replace it", p.display()));
+        }
+        WorksheetContext::file(&p)
+    };
     let mut ws = Worksheet::from_lines(&split_lines(a)?.join("\n"));
-    save(&p, &mut ws)?;
-    Ok(report(format!("created {} ({} regions)", p.display(), ws.regions.len()), &ws, None))
+    save(&p, &mut ws, &mut context, get_str(a, "expected_revision")?)?;
+    Ok(report(format!("created {} ({} regions)", p.display(), ws.regions.len()), &ws, &context, None))
 }
 
 fn region_height(r: &Region) -> f32 {
@@ -683,22 +705,22 @@ fn add_region(a: &Map<String, Value>) -> ToolResult {
         }
         other => return Err(format!("unknown kind '{other}': use math, text, plot, polar_plot, surface_plot, contour_plot, scatter_plot or bar_plot")),
     };
-    let mut ws = load(&p)?;
+    let (mut ws, mut context) = load(&p)?;
     let after = get_id(a, "after_id")?;
     let mut region = Region::new(ws.next_id(), get_f32(a, "x")?.unwrap_or(LEFT), 0.0, kind);
     let h = region_height(&region);
     let explicit_y = get_f32(a, "y")?;
     if let Some(bid) = get_id(a, "beside_id")? {
         let b = ws.regions.iter().find(|r| r.id == bid).ok_or_else(|| format!("no region with id {bid}"))?.clone();
-        let outputs = ws.evaluate();
+        let outputs = xmath_core::evaluate_worksheet_with(&ws, false, &context.env);
         let sizes = xmath_gui::print::region_sizes(&ws, &outputs);
         let bw = sizes.get(&bid).map(|s| s[0]).unwrap_or(120.0);
         region.x = get_f32(a, "x")?.unwrap_or(b.x + bw + 30.0);
         region.y = explicit_y.unwrap_or(b.y);
         let id = region.id;
         ws.regions.push(region);
-        save(&p, &mut ws)?;
-        return Ok(report(format!("added region {id} beside {bid} in {}", p.display()), &ws, Some(("new_id", json!(id)))));
+        save(&p, &mut ws, &mut context, get_str(a, "expected_revision")?)?;
+        return Ok(report(format!("added region {id} beside {bid} in {}", p.display()), &ws, &context, Some(("new_id", json!(id)))));
     }
     let auto_y = match after {
         Some(id) => {
@@ -716,15 +738,15 @@ fn add_region(a: &Map<String, Value>) -> ToolResult {
     region.y = explicit_y.unwrap_or(auto_y);
     let id = region.id;
     ws.regions.push(region);
-    save(&p, &mut ws)?;
-    Ok(report(format!("added region {id} to {}", p.display()), &ws, Some(("new_id", json!(id)))))
+    save(&p, &mut ws, &mut context, get_str(a, "expected_revision")?)?;
+    Ok(report(format!("added region {id} to {}", p.display()), &ws, &context, Some(("new_id", json!(id)))))
 }
 
 fn update_region(a: &Map<String, Value>) -> ToolResult {
     let path = req_str(a, "path")?;
     let p = check_write_path(path)?;
     let id = get_id(a, "id")?.ok_or("missing required argument `id`")?;
-    let mut ws = load(&p)?;
+    let (mut ws, mut context) = load(&p)?;
     let r = ws.regions.iter_mut().find(|r| r.id == id).ok_or_else(|| format!("no region with id {id}"))?;
     match &mut r.kind {
         RegionKind::Math { source } => {
@@ -769,22 +791,22 @@ fn update_region(a: &Map<String, Value>) -> ToolResult {
     if let Some(v) = get_f32(a, "y")? {
         r.y = v;
     }
-    save(&p, &mut ws)?;
-    Ok(report(format!("updated region {id} in {}", p.display()), &ws, None))
+    save(&p, &mut ws, &mut context, get_str(a, "expected_revision")?)?;
+    Ok(report(format!("updated region {id} in {}", p.display()), &ws, &context, None))
 }
 
 fn delete_region(a: &Map<String, Value>) -> ToolResult {
     let path = req_str(a, "path")?;
     let p = check_write_path(path)?;
     let id = get_id(a, "id")?.ok_or("missing required argument `id`")?;
-    let mut ws = load(&p)?;
+    let (mut ws, mut context) = load(&p)?;
     let before = ws.regions.len();
     ws.regions.retain(|r| r.id != id);
     if ws.regions.len() == before {
         return Err(format!("no region with id {id}"));
     }
-    save(&p, &mut ws)?;
-    Ok(report(format!("deleted region {id} from {}", p.display()), &ws, None))
+    save(&p, &mut ws, &mut context, get_str(a, "expected_revision")?)?;
+    Ok(report(format!("deleted region {id} from {}", p.display()), &ws, &context, None))
 }
 
 fn list_functions() -> ToolResult {
@@ -821,7 +843,7 @@ fn list_open_windows() -> ToolResult {
             data: json!({"windows": []}),
         });
     }
-    let mut text = String::from("open xmath windows (use path \"window\" for the first, \"window:<pid>\" for another):");
+    let mut text = String::from("open xmath windows (use the selected window:<pid> for the whole task):");
     let mut list = Vec::new();
     for (i, (_, info)) in ws.iter().enumerate() {
         text.push_str(&format!(
