@@ -22,6 +22,8 @@ use xmath_core::{
 
 #[path = "inplace.rs"]
 mod inplace;
+#[path = "matrixdlg.rs"]
+mod matrixdlg;
 #[path = "plotdlg.rs"]
 mod plotdlg;
 #[path = "print_ui.rs"]
@@ -102,13 +104,6 @@ pub static EXAMPLES: &[(&str, &str)] = &[
     ("Балка: прогиб и момент", include_str!("../../../examples/beam.xmath")),
     ("Графики: X-Y, полярные, 3D", include_str!("../../../examples/plots.xmath")),
 ];
-
-struct MatrixDlg {
-    rows: usize,
-    cols: usize,
-    /// Set by the «Удалить» button.
-    delete: bool,
-}
 
 struct ListDlg {
     group: usize,
@@ -210,7 +205,7 @@ pub struct App {
     palettes: HashSet<Palette>,
     auto_calc: bool,
 
-    dlg_matrix: Option<MatrixDlg>,
+    dlg_matrix: Option<matrixdlg::MatrixDlg>,
     dlg_function: Option<ListDlg>,
     dlg_unit: Option<ListDlg>,
     dlg_format: Option<FormatDlg>,
@@ -764,7 +759,7 @@ impl App {
             Action::InsertScatter => {
                 self.new_region(RegionKind::new_plot3d(Plot3dKind::Scatter), true);
             }
-            Action::InsertMatrix => self.dlg_matrix = Some(MatrixDlg { rows: if self.active_matrix_cell() { 1 } else { 3 }, cols: if self.active_matrix_cell() { 1 } else { 3 }, delete: false }),
+            Action::InsertMatrix => self.dlg_matrix = Some(matrixdlg::MatrixDlg::new(self.active_matrix_cell())),
             Action::InsertFunction => self.dlg_function = Some(ListDlg { group: 0, item: 0 }),
             Action::InsertUnit => self.dlg_unit = Some(ListDlg { group: 0, item: 0 }),
             Action::InsertText => {
@@ -1165,6 +1160,9 @@ impl App {
     }
 
     fn shortcuts(&mut self, ctx: &Context) {
+        if self.dlg_matrix.is_some() {
+            return;
+        }
         self.zoom_input(ctx);
         let ctrl = |k| KeyboardShortcut::new(Modifiers::COMMAND, k);
         let ctrl_shift = |k| KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, k);
@@ -2939,48 +2937,6 @@ impl App {
     fn dialogs(&mut self, ctx: &Context) {
         let mut insert: Option<String> = None;
 
-        let in_matrix = self.active_matrix_cell();
-        let mut matrix_op: Option<(bool, usize, usize)> = None;
-        if let Some(d) = &mut self.dlg_matrix {
-            let mut open = true;
-            let mut done = false;
-            egui::Window::new("Вставить матрицу").collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
-                egui::Grid::new("mdlg").show(ui, |ui| {
-                    ui.label("Строк:");
-                    ui.add(egui::DragValue::new(&mut d.rows).range(1..=100));
-                    ui.end_row();
-                    ui.label("Столбцов:");
-                    ui.add(egui::DragValue::new(&mut d.cols).range(1..=100));
-                    ui.end_row();
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("Вставить").clicked() {
-                        done = true;
-                    }
-                    // with an active matrix cell: delete rows / columns starting at it
-                    if ui.add_enabled(in_matrix, egui::Button::new("Удалить")).clicked() {
-                        d.delete = true;
-                        done = true;
-                    }
-                    if ui.button("Отмена").clicked() {
-                        d.rows = 0;
-                        done = true;
-                    }
-                });
-            });
-            if done || !open {
-                if done && d.rows > 0 {
-                    if in_matrix {
-                        matrix_op = Some((!d.delete, d.rows, d.cols));
-                    } else {
-                        let row = vec!["■"; d.cols].join(", ");
-                        insert = Some(format!("[{}]", vec![row; d.rows].join("; ")));
-                    }
-                }
-                self.dlg_matrix = None;
-            }
-        }
-
         if let Some(d) = &mut self.dlg_function {
             let mut open = true;
             let mut done = false;
@@ -3345,20 +3301,8 @@ impl App {
             });
         }
 
-        if let Some((ins, r, c)) = matrix_op {
-            // Mathcad: rows and columns are counted separately; the cell stays active
-            self.matrix_edit(ctx, ins, r, c);
-        }
         if let Some(s) = insert {
-            let matrix = s.starts_with('[') && s.contains('■');
-            if matrix && self.editing_math().is_none() {
-                self.new_matrix_region(ctx, s);
-            } else {
-                self.insert(ctx, &s);
-                if matrix {
-                    self.linear_to_cells(ctx);
-                }
-            }
+            self.insert(ctx, &s);
         }
     }
 }
@@ -3609,6 +3553,7 @@ impl eframe::App for App {
         self.poll_dialog(ctx);
         self.shortcuts(ctx);
         self.sheet_keys(ctx);
+        let matrix_command = self.matrix_dialog(ctx);
 
         egui::TopBottomPanel::top("menu").frame(egui::Frame::default().fill(PANEL).inner_margin(2.0)).show(ctx, |ui| {
             self.menu_bar(ui);
@@ -3643,6 +3588,10 @@ impl eframe::App for App {
         self.dialogs(ctx);
         self.plot_dialogs(ctx);
         self.print_windows(ctx);
+
+        if let Some(command) = matrix_command {
+            self.apply_matrix_dialog(ctx, command);
+        }
 
         for a in std::mem::take(&mut self.pending) {
             self.run(ctx, a);
