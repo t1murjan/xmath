@@ -290,7 +290,7 @@ impl App {
             return;
         };
         ctx.memory_mut(|m| m.stop_text_input());
-        self.focus_pending = self.editing.is_some();
+        self.doc.focus_pending = self.doc.editing.is_some();
 
         if let Command::Apply { insert, rows, cols } = command {
             if dialog.editing {
@@ -364,7 +364,7 @@ mod tests {
         }
 
         fn math(&self) -> &str {
-            match &self.app.ws.regions[0].kind {
+            match &self.app.doc.ws.regions[0].kind {
                 xmath_core::RegionKind::Math { source } => source,
                 _ => panic!("expected a math region"),
             }
@@ -384,7 +384,7 @@ mod tests {
         t.tick(Vec::new());
         t.tick(vec![Event::Text("0".into()), key(Key::Enter)]);
         assert!(t.app.dlg_matrix.as_ref().unwrap().invalid);
-        assert!(t.app.ws.regions.is_empty());
+        assert!(t.app.doc.ws.regions.is_empty());
 
         // Navigate away and back to select the invalid value for replacement.
         t.tick(vec![key(Key::ArrowDown)]);

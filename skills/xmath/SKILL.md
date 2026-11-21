@@ -25,13 +25,13 @@ Tools of the `xmath` MCP server (`claude mcp add xmath -- xmath-mcp`):
 | `add_region {path, kind, source/text/x_expr+y_exprs, after_id? / beside_id?}` | Insert a math / text / plot region below (`after_id`) or to the right of (`beside_id`) an existing one. |
 | `update_region {path, id, ...}`, `delete_region {path, id}` | Edit or remove a region by id. |
 | `open_worksheet {path}` | Load and evaluate a file; lists all regions with ids, results, errors, plot summaries. |
-| `list_open_windows` | The xmath program windows the user has open; then use the selected `window:<pid>` for the whole task. |
+| `list_open_windows` | Lists open xmath documents and their `target`. Use the selected target for the whole task. |
 | `list_functions`, `list_units`, `syntax_help` | Catalogs and the syntax reference. |
 
 **The user's open xmath window.** If the user has the xmath program open and asks you to work "in the open
 window / in the open file / в открытом окне / в программе", do NOT start xmath, do NOT create or open a file:
-call `list_open_windows`, select the requested window by title/path (the first is the most recently focused), and use
-its `path: "window:<pid>"` for every call in this task. Read it with `open_worksheet`. Pass the returned
+call `list_open_windows`, select the requested document by title/path (the first is the most recently focused), and use
+its `target` as the `path` for every call in this task. Read it with `open_worksheet`. Pass the returned
 `revision` as `expected_revision` to the next edit, and use the new revision from each successful edit.
 For `create_worksheet` on a non-empty window, use `overwrite: true` only when asked to replace the whole sheet. The changes appear in that window immediately, also in an unsaved document, and the user can undo
 each of your edits with Ctrl+Z there. Saving stays the user's decision (Ctrl+S in the window).

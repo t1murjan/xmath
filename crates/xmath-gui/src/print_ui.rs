@@ -46,9 +46,9 @@ struct RefDlg {
 impl App {
     /// File access rules for evaluating the worksheet: its own directory when it is saved.
     pub(super) fn eval_env(&self) -> EvalEnv {
-        match self.path.as_ref().and_then(|p| p.parent()).filter(|d| !d.as_os_str().is_empty()) {
+        match self.doc.path.as_ref().and_then(|p| p.parent()).filter(|d| !d.as_os_str().is_empty()) {
             Some(d) => EvalEnv::in_dir(d),
-            None => match self.path.as_ref() {
+            None => match self.doc.path.as_ref() {
                 Some(_) => EvalEnv::in_dir("."),
                 None => EvalEnv::default(),
             },
@@ -57,17 +57,17 @@ impl App {
 
     /// Size of the printable area of the page in worksheet pixels.
     pub(super) fn page_px(&self) -> (f32, f32) {
-        self.ws.page.printable_px()
+        self.doc.ws.page.printable_px()
     }
 
     fn pdf_bytes(&self) -> Vec<u8> {
-        print::export_pdf(&self.ws, &self.outputs, &PdfOptions { title: self.doc_name().replace(':', "") })
+        print::export_pdf(&self.doc.ws, &self.doc.outputs, &PdfOptions { title: self.doc_name().replace(':', "") })
     }
 
     pub(super) fn export_pdf_to(&mut self, p: PathBuf) {
         let p = if p.extension().is_none() { p.with_extension("pdf") } else { p };
         let bytes = self.pdf_bytes();
-        self.status = match std::fs::write(&p, bytes) {
+        self.doc.status = match std::fs::write(&p, bytes) {
             Ok(()) => format!("PDF сохранён: {}", p.display()),
             Err(e) => format!("Не удалось сохранить PDF: {e}"),
         };
@@ -79,26 +79,26 @@ impl App {
     pub(super) fn save_xmcd(&mut self, p: &Path) {
         let mut env = self.eval_env();
         env.allow_write = false;
-        let outputs = self.ws.evaluate_with(true, &env);
-        let has_plots = self.ws.regions.iter().any(|r| matches!(r.kind, xmath_core::RegionKind::Plot { .. } | xmath_core::RegionKind::Plot3d { .. }));
-        let renderings = if has_plots { print::render_plot_pngs(&self.ws, &outputs) } else { Default::default() };
+        let outputs = self.doc.ws.evaluate_with(true, &env);
+        let has_plots = self.doc.ws.regions.iter().any(|r| matches!(r.kind, xmath_core::RegionKind::Plot { .. } | xmath_core::RegionKind::Plot3d { .. }));
+        let renderings = if has_plots { print::render_plot_pngs(&self.doc.ws, &outputs) } else { Default::default() };
         let opts = xmath_core::xmcd_export::ExportOptions { renderings, rendering_scale: print::PNG_SCALE, env: Some(env), outputs: Some(outputs) };
-        let r = xmath_core::xmcd_export::export_xmcd_with(&self.ws, &opts);
+        let r = xmath_core::xmcd_export::export_xmcd_with(&self.doc.ws, &opts);
         match std::fs::write(p, r.xml) {
             Ok(()) => {
-                self.path = Some(p.to_path_buf());
-                self.modified = false;
+                self.doc.path = Some(p.to_path_buf());
+                self.doc.modified = false;
                 if r.warnings.is_empty() {
-                    self.status = format!("Сохранено: {}", p.display());
+                    self.doc.status = format!("Сохранено: {}", p.display());
                 } else {
-                    self.status = format!("Сохранено: {} ({} замечаний при записи в Mathcad 15)", p.display(), r.warnings.len());
-                    if r.warnings != self.shown_warnings {
-                        self.shown_warnings = r.warnings.clone();
-                        self.save_warnings = Some(r.warnings);
+                    self.doc.status = format!("Сохранено: {} ({} замечаний при записи в Mathcad 15)", p.display(), r.warnings.len());
+                    if r.warnings != self.doc.shown_warnings {
+                        self.doc.shown_warnings = r.warnings.clone();
+                        self.doc.save_warnings = Some(r.warnings);
                     }
                 }
             }
-            Err(e) => self.status = format!("Ошибка сохранения: {e}"),
+            Err(e) => self.doc.status = format!("Ошибка сохранения: {e}"),
         }
     }
 
@@ -108,7 +108,7 @@ impl App {
         let bytes = self.pdf_bytes();
         let file = std::env::temp_dir().join(format!("xmath-print-{}.pdf", std::process::id()));
         if let Err(e) = std::fs::write(&file, bytes) {
-            self.status = format!("Не удалось подготовить печать: {e}");
+            self.doc.status = format!("Не удалось подготовить печать: {e}");
             return;
         }
         use std::process::Command;
@@ -116,28 +116,28 @@ impl App {
         {
             let lp = Command::new("lp").arg(&file).output();
             if matches!(&lp, Ok(o) if o.status.success()) {
-                self.status = "Документ отправлен на печать (lp)".into();
+                self.doc.status = "Документ отправлен на печать (lp)".into();
                 return;
             }
             let why = match lp {
                 Ok(o) => String::from_utf8_lossy(&o.stderr).trim().to_string(),
                 Err(e) => e.to_string(),
             };
-            self.status = match Command::new("xdg-open").arg(&file).spawn() {
+            self.doc.status = match Command::new("xdg-open").arg(&file).spawn() {
                 Ok(_) => format!("lp недоступен ({why}); PDF открыт в программе просмотра: {}", file.display()),
                 Err(e) => format!("Не удалось напечатать ({why}; xdg-open: {e}). PDF: {}", file.display()),
             };
         }
         #[cfg(target_os = "macos")]
         {
-            self.status = match Command::new("open").arg(&file).spawn() {
+            self.doc.status = match Command::new("open").arg(&file).spawn() {
                 Ok(_) => "PDF открыт в программе просмотра: распечатайте его оттуда".into(),
                 Err(e) => format!("Не удалось открыть PDF: {e}"),
             };
         }
         #[cfg(windows)]
         {
-            self.status = match Command::new("cmd").args(["/C", "start", ""]).arg(&file).spawn() {
+            self.doc.status = match Command::new("cmd").args(["/C", "start", ""]).arg(&file).spawn() {
                 Ok(_) => "PDF открыт в программе просмотра: распечатайте его оттуда".into(),
                 Err(e) => format!("Не удалось открыть PDF: {e}"),
             };
@@ -145,7 +145,7 @@ impl App {
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         {
             let _ = Command::new("xdg-open");
-            self.status = format!("PDF: {}", file.display());
+            self.doc.status = format!("PDF: {}", file.display());
         }
     }
 
@@ -155,7 +155,7 @@ impl App {
 
     /// The file chosen with «Обзор…» in the reference dialog (relative to the worksheet).
     pub(super) fn reference_chosen(&mut self, p: PathBuf) {
-        let rel = self
+        let rel = self.doc
             .path
             .as_ref()
             .and_then(|w| w.parent())
@@ -171,7 +171,7 @@ impl App {
     /// The actions of this module.
     pub(super) fn print_action(&mut self, ctx: &Context, a: Action) {
         match a {
-            Action::PageSetup => self.print.setup = Some(self.ws.page.clone()),
+            Action::PageSetup => self.print.setup = Some(self.doc.ws.page.clone()),
             Action::PrintPreview => {
                 self.finish_edit(false);
                 self.print.preview = Some(Preview { page: 0, zoom: 80, sheet: None });
@@ -192,9 +192,9 @@ impl App {
 
         // ------------------------------------------------------------ preview
         if let Some(pv) = self.print.preview.as_mut() {
-            let key = PreviewKey { gen: self.eval_gen, zoom: pv.zoom, page: self.ws.page.clone(), regions: self.ws.regions.len() };
+            let key = PreviewKey { gen: self.doc.eval_gen, zoom: pv.zoom, page: self.doc.ws.page.clone(), regions: self.doc.ws.regions.len() };
             if pv.sheet.as_ref().map_or(true, |(k, _)| *k != key) {
-                let sheet = Sheet::layout(ctx, &self.ws, &self.outputs, pv.zoom as f32 / 100.0, self.has_bold_font);
+                let sheet = Sheet::layout(ctx, &self.doc.ws, &self.doc.outputs, pv.zoom as f32 / 100.0, self.has_bold_font);
                 pv.page = pv.page.min(sheet.page_count() - 1);
                 pv.sheet = Some((key, sheet));
             }
@@ -304,9 +304,9 @@ impl App {
             if res.is_some() || !open {
                 if res == Some(true) {
                     if let Some(d) = self.print.setup.take() {
-                        if d != self.ws.page {
+                        if d != self.doc.ws.page {
                             self.checkpoint();
-                            self.ws.page = d;
+                            self.doc.ws.page = d;
                             self.changed();
                         }
                     }
@@ -318,8 +318,8 @@ impl App {
         // -------------------------------------------------------------- print
         if self.print.print_dlg {
             let mut res: Option<bool> = None;
-            let pages = Sheet::layout(ctx, &self.ws, &self.outputs, 1.0, self.has_bold_font).page_count();
-            let p = &self.ws.page;
+            let pages = Sheet::layout(ctx, &self.doc.ws, &self.doc.outputs, 1.0, self.has_bold_font).page_count();
+            let p = &self.doc.ws.page;
             egui::Window::new("Печать").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
                 ui.label(format!("Страниц: {pages}. Бумага: {}, {}.", p.paper.name(), if p.landscape { "альбомная" } else { "книжная" }));
                 ui.label("Документ будет отправлен на принтер по умолчанию (команда lp);");

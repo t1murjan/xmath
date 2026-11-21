@@ -39,7 +39,7 @@ fn setup_style(ctx: &egui::Context) {
 }
 
 fn main() -> eframe::Result<()> {
-    let mut path = None;
+    let mut paths = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         if a == "--ui-scale" {
@@ -48,8 +48,8 @@ fn main() -> eframe::Result<()> {
             }
         } else if let Some(v) = a.strip_prefix("--ui-scale=") {
             std::env::set_var("XMATH_UI_SCALE", v);
-        } else if path.is_none() {
-            path = Some(PathBuf::from(a));
+        } else {
+            paths.push(PathBuf::from(a));
         }
     }
     let options = eframe::NativeOptions {
@@ -66,7 +66,7 @@ fn main() -> eframe::Result<()> {
         Box::new(move |cc| {
             let bold = fonts::setup_fonts(&cc.egui_ctx);
             setup_style(&cc.egui_ctx);
-            Ok(Box::new(app::App::new(cc, path, bold)))
+            Ok(Box::new(app::App::new(cc, paths, bold)))
         }),
     )
 }
