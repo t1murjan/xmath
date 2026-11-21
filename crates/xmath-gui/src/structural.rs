@@ -137,17 +137,17 @@ impl App {
     /// Starts the structural editor on math region `id` (which must be the edited region).
     /// Returns false when the formula needs the line editor.
     pub(super) fn begin_structural(&mut self, id: u64, click: Option<Pos2>) -> bool {
-        if self.line_edit || self.text_mode {
+        if self.doc.line_edit || self.text_mode {
             return false;
         }
         let Some(src) = region_source(self, id) else { return false };
         let Some(ed) = Ed::from_source(&src) else {
-            self.line_edit = true;
-            self.focus_pending = true;
+            self.doc.line_edit = true;
+            self.doc.focus_pending = true;
             return false;
         };
-        self.ed = Some(EdState { region: id, ed });
-        self.edit_click = click;
+        self.doc.ed = Some(EdState { region: id, ed });
+        self.doc.edit_click = click;
         true
     }
 
@@ -163,16 +163,16 @@ impl App {
     /// Continues editing `text` in the line editor (the structural editor cannot express it).
     fn to_line_editor(&mut self, ctx: &Context, id: u64, text: &str) {
         self.store_source(id, text);
-        self.ed = None;
-        self.line_edit = true;
-        self.focus_pending = true;
+        self.doc.ed = None;
+        self.doc.line_edit = true;
+        self.doc.focus_pending = true;
         self.place_caret_end(ctx, id);
     }
 
     /// Palette / shortcut insertion into the structural editor. `false` when it is not active
     /// (or the text needs the line editor, which then takes over).
     pub(super) fn ed_insert(&mut self, ctx: &Context, s: &str) -> bool {
-        let Some(mut es) = self.ed.take() else { return false };
+        let Some(mut es) = self.doc.ed.take() else { return false };
         let id = es.region;
         if !es.ed.insert_str(s) {
             let src = es.ed.source();
@@ -181,12 +181,12 @@ impl App {
         }
         let src = es.ed.source();
         self.store_source(id, &src);
-        self.ed = Some(es);
+        self.doc.ed = Some(es);
         if s.starts_with('[') && s.contains('■') {
             // a fresh matrix: its cells are edited in place
-            self.ed = None;
+            self.doc.ed = None;
             self.linear_to_cells(ctx);
-            if self.cell.is_none() {
+            if self.doc.cell.is_none() {
                 self.begin_structural(id, None);
             }
         }
@@ -196,20 +196,20 @@ impl App {
     /// Toggles «Редактировать как текст» (F2).
     pub(super) fn toggle_text_mode(&mut self, ctx: &Context) {
         self.text_mode = !self.text_mode;
-        self.status = if self.text_mode { "Формулы редактируются как текст (F2)".into() } else { "Структурное редактирование формул".into() };
+        self.doc.status = if self.text_mode { "Формулы редактируются как текст (F2)".into() } else { "Структурное редактирование формул".into() };
         let Some(id) = self.editing_math() else { return };
-        if self.cell.is_some() {
+        if self.doc.cell.is_some() {
             return;
         }
         if self.text_mode {
-            if self.ed.take().is_some() {
-                self.line_edit = true;
-                self.focus_pending = true;
+            if self.doc.ed.take().is_some() {
+                self.doc.line_edit = true;
+                self.doc.focus_pending = true;
                 self.place_caret_end(ctx, id);
             }
         } else {
-            self.line_edit = false;
-            self.ed = None;
+            self.doc.line_edit = false;
+            self.doc.ed = None;
         }
     }
 
@@ -217,8 +217,8 @@ impl App {
     /// Returns the region rectangle (screen), the error text, and whether editing ended.
     pub(super) fn ed_canvas(&mut self, ui: &mut Ui, id: u64, pos: Pos2, fs: f32) -> Option<(Rect, Option<String>, bool)> {
         let ctx = ui.ctx().clone();
-        let mut es = self.ed.take().filter(|e| e.region == id)?;
-        let key_id = Id::new(("xmath-sed", id));
+        let mut es = self.doc.ed.take().filter(|e| e.region == id)?;
+        let key_id = self.region_ui_id(("structural", id));
         let dialogs = self.dialogs_open();
 
         // ---- keys
@@ -234,7 +234,7 @@ impl App {
         self.store_source(id, &src);
 
         // ---- layout
-        let out = self.outputs.get(&id);
+        let out = self.doc.outputs.get(&id);
         let raw_error = out.and_then(|o| o.error());
         let has_ph = es.ed.has_placeholder();
         let error = raw_error.clone().filter(|_| !has_ph);
@@ -287,20 +287,20 @@ impl App {
                 _ => {}
             }
         }
-        self.hits.insert(id, hits.clone());
+        self.doc.hits.insert(id, hits.clone());
         let region_rect = Rect::from_min_size(pos, Vec2::new(lay.w + 4.0, lay.h() + 6.0));
         // keep the evaluation anchor (baseline) current while editing: a tall formula
         // (radical, fraction) must not be evaluated before definitions to its left
-        let anchor = (lay.asc + 3.0) / self.zoom;
+        let anchor = (lay.asc + 3.0) / self.doc.zoom;
         let mut reorder = false;
-        if let Some(r) = self.ws.regions.iter_mut().find(|r| r.id == id) {
+        if let Some(r) = self.doc.ws.regions.iter_mut().find(|r| r.id == id) {
             if r.anchor[0] == 0.0 && (r.anchor[1] - anchor).abs() > 0.25 {
                 r.anchor = [0.0, anchor];
                 reorder = true;
             }
         }
         if reorder {
-            self.dirty = true;
+            self.doc.dirty = true;
         }
         let unit_h = ctx.fonts(|f| f.layout_no_wrap("x".into(), FontId::proportional(100.0), Color32::BLACK).size().y) / 100.0;
 
@@ -317,12 +317,12 @@ impl App {
         if resp.hovered() {
             ctx.set_cursor_icon(CursorIcon::Text);
         }
-        let click = self.edit_click.take().or_else(|| if resp.clicked() { resp.interact_pointer_pos() } else { None });
+        let click = self.doc.edit_click.take().or_else(|| if resp.clicked() { resp.interact_pointer_pos() } else { None });
         if let Some(p) = click {
             if let Some((Node::Cell { .. }, _)) = hits.iter().find(|(n, r)| matches!(n, Node::Cell { .. }) && r.expand(1.0).contains(p)) {
                 // a matrix cell: continue in the in-place cell editor
                 self.begin_inplace(&ctx, id, Some(p));
-                if self.cell.is_some() {
+                if self.doc.cell.is_some() {
                     return Some((region_rect, error, false));
                 }
             }
@@ -364,7 +364,7 @@ impl App {
             self.finish_edit(enter);
             return Some((region_rect, error, true));
         }
-        self.ed = Some(es);
+        self.doc.ed = Some(es);
         Some((region_rect, error, false))
     }
 }

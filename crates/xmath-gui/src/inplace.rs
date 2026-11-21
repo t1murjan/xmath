@@ -328,10 +328,6 @@ pub struct CellEdit {
     pub text: String,
 }
 
-fn cell_id(id: u64) -> Id {
-    Id::new(("xmath-cell", id))
-}
-
 fn math_source(app: &App, id: u64) -> Option<String> {
     match app.region(id).map(|r| &r.kind) {
         Some(RegionKind::Math { source }) => Some(source.clone()),
@@ -361,13 +357,13 @@ impl App {
     /// Selects the node to edit: loads its text and puts the caret in it.
     fn select_cell(&mut self, ctx: &Context, id: u64, kind: CellKind, st: &mut Stmt) {
         let Some(text) = text_of(st, kind) else { return };
-        let mut state = TextEditState::load(ctx, cell_id(id)).unwrap_or_default();
+        let mut state = TextEditState::load(ctx, self.region_ui_id(("cell", id))).unwrap_or_default();
         let n = text.chars().count();
         let range = if text == PLACEHOLDER { CCursorRange::two(CCursor::new(0), CCursor::new(n)) } else { CCursorRange::one(CCursor::new(n)) };
         state.cursor.set_char_range(Some(range));
-        state.store(ctx, cell_id(id));
-        self.cell = Some(CellEdit { region: id, kind, text });
-        self.focus_pending = true;
+        state.store(ctx, self.region_ui_id(("cell", id)));
+        self.doc.cell = Some(CellEdit { region: id, kind, text });
+        self.doc.focus_pending = true;
         ctx.request_repaint();
     }
 
@@ -378,15 +374,15 @@ impl App {
         let Some(src) = math_source(self, id) else { return false };
         let Ok(mut st) = parse_stmt(&src) else { return false };
         let kind = match at {
-            Some(p) => self.hits.get(&id).and_then(|h| pick(h, p, false)),
+            Some(p) => self.doc.hits.get(&id).and_then(|h| pick(h, p, false)),
             None => (matrix_count(&mut st) > 0).then_some(CellKind::Cell { mat: 0, row: 0, col: 0 }),
         };
         let Some(kind) = kind else { return false };
-        if self.editing != Some(id) {
+        if self.doc.editing != Some(id) {
             self.begin_edit(id, true);
         }
         self.select_cell(ctx, id, kind, &mut st);
-        self.cell.is_some()
+        self.doc.cell.is_some()
     }
 
     /// Writes the statement back into the region source.
@@ -402,7 +398,7 @@ impl App {
 
     /// A newly typed text of the active box: applies it when it parses.
     fn commit_cell(&mut self, id: u64, text: String, st: &mut Stmt) {
-        let Some(cell) = self.cell.as_mut() else { return };
+        let Some(cell) = self.doc.cell.as_mut() else { return };
         cell.text = text.clone();
         match cell.kind {
             CellKind::Cell { mat, row, col } => {
@@ -446,12 +442,12 @@ impl App {
 
     /// True when a cell of a matrix is the active box (Ctrl+M edits rows/columns).
     pub(super) fn active_matrix_cell(&self) -> bool {
-        matches!(&self.cell, Some(CellEdit { kind: CellKind::Cell { .. }, .. }))
+        matches!(&self.doc.cell, Some(CellEdit { kind: CellKind::Cell { .. }, .. }))
     }
 
     /// Rows/columns dialog: insert after / delete from the active cell.
     pub(super) fn matrix_edit(&mut self, ctx: &Context, insert: bool, rows: usize, cols: usize) {
-        let Some(CellEdit { region: id, kind: CellKind::Cell { mat, row, col }, .. }) = self.cell.clone() else { return };
+        let Some(CellEdit { region: id, kind: CellKind::Cell { mat, row, col }, .. }) = self.doc.cell.clone() else { return };
         let Some(src) = math_source(self, id) else { return };
         let Ok(mut st) = parse_stmt(&src) else { return };
         let (mut nr, mut nc) = (row, col);
@@ -483,9 +479,9 @@ impl App {
 
     /// Palette / shortcut insertion into the active box. Returns false when no box is active.
     pub(super) fn insert_in_cell(&mut self, ctx: &Context, s: &str) -> bool {
-        let Some(cell) = self.cell.clone() else { return false };
+        let Some(cell) = self.doc.cell.clone() else { return false };
         let id = cell.region;
-        let mut state = TextEditState::load(ctx, cell_id(id)).unwrap_or_default();
+        let mut state = TextEditState::load(ctx, self.region_ui_id(("cell", id))).unwrap_or_default();
         let mut text = cell.text.clone();
         let len = text.chars().count();
         let (a, b) = state
@@ -502,20 +498,20 @@ impl App {
             None => (a + s.chars().count(), a + s.chars().count()),
         };
         state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(sa), CCursor::new(sb))));
-        state.store(ctx, cell_id(id));
+        state.store(ctx, self.region_ui_id(("cell", id)));
         if let Some(src) = math_source(self, id) {
             if let Ok(mut st) = parse_stmt(&src) {
                 self.commit_cell(id, text, &mut st);
             }
         }
-        self.focus_pending = true;
+        self.doc.focus_pending = true;
         true
     }
 
     /// Ctrl+G inside the active box.
     fn greek_in_cell(&mut self, ctx: &Context, id: u64) {
-        let Some(cell) = self.cell.clone() else { return };
-        let mut state = TextEditState::load(ctx, cell_id(id)).unwrap_or_default();
+        let Some(cell) = self.doc.cell.clone() else { return };
+        let mut state = TextEditState::load(ctx, self.region_ui_id(("cell", id))).unwrap_or_default();
         let mut text = cell.text.clone();
         let len = text.chars().count();
         let pos = state.cursor.char_range().map(|r| r.primary.index.min(len)).unwrap_or(len);
@@ -525,36 +521,36 @@ impl App {
         let Some(g) = text.chars().nth(pos - 1).and_then(palettes::to_greek) else { return };
         text.replace_range(char_to_byte(&text, pos - 1)..char_to_byte(&text, pos), &g.to_string());
         state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(pos))));
-        state.store(ctx, cell_id(id));
+        state.store(ctx, self.region_ui_id(("cell", id)));
         if let Some(src) = math_source(self, id) {
             if let Ok(mut st) = parse_stmt(&src) {
                 self.commit_cell(id, text, &mut st);
             }
         }
-        self.focus_pending = true;
+        self.doc.focus_pending = true;
     }
 
     /// Draws the region with the active box and handles its keys.
     /// Returns the region rectangle (screen), the error text, and whether editing ended.
     pub(super) fn cell_canvas(&mut self, ui: &mut Ui, id: u64, pos: Pos2, fs: f32) -> Option<(Rect, Option<String>, bool)> {
         let ctx = ui.ctx().clone();
-        let cell = self.cell.clone().filter(|c| c.region == id)?;
+        let cell = self.doc.cell.clone().filter(|c| c.region == id)?;
         let Some(source) = math_source(self, id) else {
-            self.cell = None;
+            self.doc.cell = None;
             return None;
         };
         let Ok(mut st) = parse_stmt(&source) else {
-            self.cell = None;
+            self.doc.cell = None;
             return None;
         };
-        let te_id = cell_id(id);
+        let te_id = self.region_ui_id(("cell", id));
         let focused = ctx.memory(|m| m.has_focus(te_id));
 
         // ---- keys (consumed before the text box sees them)
         let mut mv: Option<Move> = None;
         let mut finish: Option<bool> = None;
         let mut greek = false;
-        if focused || self.focus_pending {
+        if focused || self.doc.focus_pending {
             let state = TextEditState::load(&ctx, te_id).unwrap_or_default();
             let n = cell.text.chars().count();
             let collapsed = state.cursor.char_range().map(|r| (r.primary.index == r.secondary.index).then_some(r.primary.index));
@@ -601,7 +597,7 @@ impl App {
                 self.select_cell(&ctx, id, k, &mut st);
             }
         }
-        let cell = self.cell.clone().filter(|c| c.region == id)?;
+        let cell = self.doc.cell.clone().filter(|c| c.region == id)?;
 
         // ---- layout with the active box reserved
         let font = FontId::proportional(fs);
@@ -611,14 +607,14 @@ impl App {
             CellKind::Cell { mat, row, col } => {
                 let addr = with_matrix(&mut st, mat, |m| m.get(row).and_then(|r| r.get(col)).map(|c| c as *const Expr as usize)).flatten();
                 if addr.is_none() {
-                    self.cell = None;
+                    self.doc.cell = None;
                     return None;
                 }
                 addr
             }
             CellKind::Target => Some(0),
         };
-        let out = self.outputs.get(&id);
+        let out = self.doc.outputs.get(&id);
         let error = out.and_then(|o| o.error());
         let mut lay = ctx.fonts(|f| {
             let mut ts = Ts::new(f);
@@ -647,15 +643,15 @@ impl App {
                 _ => false,
             })
             .map(|(_, r)| *r);
-        self.hits.insert(id, hits);
+        self.doc.hits.insert(id, hits);
         let region_rect = Rect::from_min_size(pos, Vec2::new(lay.w + 4.0, lay.h() + 4.0));
         let Some(slot) = slot else {
-            self.cell = None;
+            self.doc.cell = None;
             return None;
         };
 
         // clicks on the other parts of the formula (the box itself is on top)
-        let region_resp = ui.interact(region_rect, Id::new(("cellreg", id)), Sense::click());
+        let region_resp = ui.interact(region_rect, self.region_ui_id(("cell-region", id)), Sense::click());
 
         // ---- the box
         let er = Rect::from_center_size(slot.center(), Vec2::new(slot.width().max(box_w) + 2.0, slot.height().max(fs * 1.35) + 2.0));
@@ -675,9 +671,9 @@ impl App {
                 .text_color(if valid { Color32::BLACK } else { RED }),
         );
         ui.painter().rect_stroke(er, 0.0, Stroke::new(1.0_f32, SELECT_BLUE), egui::StrokeKind::Outside);
-        if self.focus_pending {
+        if self.doc.focus_pending {
             resp.request_focus();
-            self.focus_pending = false;
+            self.doc.focus_pending = false;
         }
         if text != cell.text {
             self.commit_cell(id, text, &mut st);
@@ -685,9 +681,9 @@ impl App {
         }
         if region_resp.clicked() {
             if let Some(p) = region_resp.interact_pointer_pos() {
-                let hits = self.hits.get(&id).cloned().unwrap_or_default();
+                let hits = self.doc.hits.get(&id).cloned().unwrap_or_default();
                 if let Some(k) = pick(&hits, p, true) {
-                    if Some(k) != self.cell.as_ref().map(|c| c.kind) {
+                    if Some(k) != self.doc.cell.as_ref().map(|c| c.kind) {
                         self.select_cell(&ctx, id, k, &mut st);
                     }
                 }

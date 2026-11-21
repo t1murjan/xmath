@@ -22,12 +22,18 @@ use xmath_core::{
 
 #[path = "inplace.rs"]
 mod inplace;
+#[path = "matrixdlg.rs"]
+mod matrixdlg;
 #[path = "plotdlg.rs"]
 mod plotdlg;
 #[path = "print_ui.rs"]
 mod print_ui;
 #[path = "structural.rs"]
 mod structural;
+#[path = "workspace.rs"]
+mod workspace;
+
+use workspace::{DocumentId, SplitAxis};
 
 const GRID: f32 = 8.0;
 const BASE_PT: f32 = 10.0;
@@ -43,10 +49,6 @@ fn snap(p: Pos2) -> Pos2 {
     Pos2::new((p.x / GRID).round() * GRID, (p.y / GRID).round() * GRID)
 }
 
-fn edit_id(id: u64) -> Id {
-    Id::new(("xmath-edit", id))
-}
-
 fn char_to_byte(s: &str, ci: usize) -> usize {
     s.char_indices().nth(ci).map(|(b, _)| b).unwrap_or(s.len())
 }
@@ -58,6 +60,11 @@ pub enum Action {
     Save,
     SaveAs,
     OpenExample(usize),
+    ShowDocument(DocumentId),
+    CloseDocument(DocumentId),
+    FloatDocument(DocumentId),
+    DockDocument(DocumentId),
+    CompareDocuments(DocumentId, DocumentId, SplitAxis),
     Exit,
     Undo,
     Redo,
@@ -102,13 +109,6 @@ pub static EXAMPLES: &[(&str, &str)] = &[
     ("Балка: прогиб и момент", include_str!("../../../examples/beam.xmath")),
     ("Графики: X-Y, полярные, 3D", include_str!("../../../examples/plots.xmath")),
 ];
-
-struct MatrixDlg {
-    rows: usize,
-    cols: usize,
-    /// Set by the «Удалить» button.
-    delete: bool,
-}
 
 struct ListDlg {
     group: usize,
@@ -183,47 +183,19 @@ struct Toolbars {
 }
 
 pub struct App {
-    ws: Worksheet,
-    outputs: HashMap<u64, RegionOutput>,
-    dirty: bool,
-    modified: bool,
-    path: Option<PathBuf>,
-    untitled_no: u32,
-
-    selection: Vec<u64>,
-    editing: Option<u64>,
-    focus_pending: bool,
-    /// Red crosshair (insertion point) in worksheet coordinates.
-    cursor: Pos2,
-    zoom: f32,
-    /// Region rectangles from the last frame, in worksheet coordinates.
-    rects: HashMap<u64, Rect>,
-    band_start: Option<Pos2>,
-    plot_buf: Option<(u64, String, String)>,
-    images: crate::image::ImageCache,
-
-    undo: Vec<Worksheet>,
-    redo: Vec<Worksheet>,
     clipboard: Vec<Region>,
 
     bars: Toolbars,
     palettes: HashSet<Palette>,
     auto_calc: bool,
 
-    dlg_matrix: Option<MatrixDlg>,
+    dlg_matrix: Option<matrixdlg::MatrixDlg>,
     dlg_function: Option<ListDlg>,
     dlg_unit: Option<ListDlg>,
     dlg_format: Option<FormatDlg>,
     dlg_plot: Option<plotdlg::PlotDlg>,
     dlg_plot3d: Option<Plot3dDlg>,
     dlg_options: Option<OptionsDlg>,
-    lim_buf: Option<LimBuf>,
-    eval_tx: mpsc::Sender<EvalDone>,
-    eval_rx: mpsc::Receiver<EvalDone>,
-    eval_gen: u64,
-    evaluating: bool,
-    force_calc: bool,
-    dirty_since: Option<Instant>,
     show_help: bool,
     show_about: bool,
     confirm: Option<Action>,
@@ -233,83 +205,37 @@ pub struct App {
     path_dlg: Option<PathDlg>,
     /// Context help of the hovered toolbar/palette button (shown in the status bar).
     hint: String,
-    edit_snapshot: bool,
-    /// Active box of in-place editing (matrix cell / definition target).
-    cell: Option<inplace::CellEdit>,
-    /// Structural (2D) editor of the region being edited.
-    ed: Option<structural::EdState>,
-    /// Click position (screen) that started editing: places the structural cursor.
-    edit_click: Option<Pos2>,
-    /// The edited formula is typed as a line of text (menu toggle, or the structural editor gave up).
-    line_edit: bool,
     /// «Правка → Редактировать как текст».
     text_mode: bool,
-    /// Hit boxes (screen coordinates) of the math regions laid out in the last frame.
-    hits: HashMap<u64, Vec<(Node, Rect)>>,
 
-    status: String,
     title: String,
     pending: Vec<Action>,
     has_bold_font: bool,
-    import_log: Vec<String>,
-    /// What the last save to .xmcd could not write (shown once in a dialog).
-    save_warnings: Option<Vec<String>>,
     /// The live link to AI assistants (MCP): this window's socket, see `xmath_core::live`.
     #[cfg(unix)]
     live: Option<crate::live::Server>,
-    /// A fresh hash key for each document, including untitled sheets with identical contents.
-    #[cfg(unix)]
-    live_document: std::hash::RandomState,
-    /// When the window last had the keyboard focus (seconds since 1970): the MCP server picks
-    /// the window used last.
-    focused_at: f64,
-    /// The Mathcad export notes last shown in the dialog (the same notes are not shown again on every Ctrl+S).
-    shown_warnings: Vec<String>,
     /// Debug harness (`XMATH_DUMP_RECTS=path`): writes the rendered region sizes and exits.
     dump_rects: Option<PathBuf>,
     dump_frames: u32,
-    /// Scroll state of the worksheet canvas (screen pixels), from the last frame.
-    scroll_off: Vec2,
-    view_min: Pos2,
-    view_size: Vec2,
-    content_size: Vec2,
-    /// New scroll offset requested by the keyboard / zoom (applied on the next frame).
-    scroll_req: Option<Vec2>,
-    /// Worksheet rectangle to scroll into view on the next frame.
-    reveal: Option<Rect>,
-    /// The rectangle of the edited region last time it was revealed.
-    last_edit_rect: Option<(u64, Rect)>,
     /// Print preview, page setup, reference dialog.
     print: print_ui::PrintUi,
     /// Interface scale choice (None = auto), cached auto factor, preferences dialog.
     ui_scale: crate::uiscale::Choice,
     ui_scale_auto: Option<f32>,
     show_prefs: bool,
+    doc: workspace::Document,
+    workspace: workspace::Workspace,
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, path: Option<PathBuf>, has_bold_font: bool) -> App {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        paths: impl IntoIterator<Item = PathBuf>,
+        has_bold_font: bool,
+    ) -> App {
         let mut palettes = HashSet::new();
-        let (eval_tx, eval_rx) = mpsc::channel();
         palettes.insert(Palette::Calculator);
         let mut app = App {
-            ws: Worksheet::default(),
-            outputs: HashMap::new(),
-            dirty: true,
-            modified: false,
-            path: None,
-            untitled_no: 1,
-            selection: Vec::new(),
-            editing: None,
-            focus_pending: false,
-            cursor: Pos2::new(24.0, 24.0),
-            zoom: 1.0,
-            rects: HashMap::new(),
-            band_start: None,
-            plot_buf: None,
-            images: Default::default(),
-            undo: Vec::new(),
-            redo: Vec::new(),
             clipboard: Vec::new(),
             bars: Toolbars { standard: true, formatting: true, math: true, status: true },
             palettes,
@@ -321,13 +247,6 @@ impl App {
             dlg_plot: None,
             dlg_plot3d: None,
             dlg_options: None,
-            lim_buf: None,
-            eval_tx,
-            eval_rx,
-            eval_gen: 0,
-            evaluating: false,
-            force_calc: false,
-            dirty_since: None,
             show_help: false,
             show_about: false,
             confirm: None,
@@ -335,44 +254,26 @@ impl App {
             file_job: None,
             path_dlg: None,
             hint: String::new(),
-            edit_snapshot: false,
-            cell: None,
-            ed: None,
-            edit_click: None,
-            line_edit: false,
             text_mode: false,
-            hits: HashMap::new(),
-            status: String::new(),
             title: String::new(),
             pending: Vec::new(),
             has_bold_font,
-            import_log: Vec::new(),
-            save_warnings: None,
             #[cfg(unix)]
             live: crate::live::start(cc.egui_ctx.clone()),
-            #[cfg(unix)]
-            live_document: std::hash::RandomState::new(),
-            focused_at: 0.0,
-            shown_warnings: Vec::new(),
             dump_rects: std::env::var_os("XMATH_DUMP_RECTS").map(PathBuf::from),
             dump_frames: 0,
-            scroll_off: Vec2::ZERO,
-            view_min: Pos2::ZERO,
-            view_size: Vec2::new(1000.0, 700.0),
-            content_size: Vec2::ZERO,
-            scroll_req: None,
-            reveal: None,
-            last_edit_rect: None,
             print: Default::default(),
             ui_scale: None,
             ui_scale_auto: None,
             show_prefs: false,
+            doc: workspace::Document::new(1),
+            workspace: workspace::Workspace::new(),
         };
         if let Some(st) = cc.storage.and_then(|s| s.get_string("xmath-ui")) {
             app.restore_ui(&st);
         }
-        if let Some(p) = path {
-            app.load(&p);
+        for path in paths {
+            app.load(&cc.egui_ctx, &path);
         }
         app
     }
@@ -417,7 +318,7 @@ impl App {
     /// becomes one undo step here.
     fn serve_live(&mut self, ctx: &Context) {
         if ctx.input(|i| i.focused) {
-            self.focused_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+            self.mark_document_focused();
         }
         #[cfg(unix)]
         {
@@ -434,39 +335,51 @@ impl App {
 
     #[cfg(unix)]
     fn handle_live(&mut self, cmd: &serde_json::Value) -> serde_json::Value {
-        let path = self.path.as_ref().and_then(|p| std::path::absolute(p).ok());
+        if cmd["cmd"] == "info" {
+            let mut info = self.doc.live_info(true);
+            info["documents"] = serde_json::json!(self.documents()
+                .map(|d| d.live_info(d.id == self.doc.id))
+                .collect::<Vec<_>>());
+            return info;
+        }
+        let id = match cmd.get("document_id") {
+            None => self.doc.id,
+            Some(value) => match value.as_u64() {
+                Some(id) => id,
+                None => return serde_json::json!({"error": "Некорректный идентификатор листа."}),
+            },
+        };
+        self.with_document(id, |app| app.handle_live_document(cmd))
+            .unwrap_or_else(|| serde_json::json!({"error": "Лист xmath уже закрыт."}))
+    }
+
+    #[cfg(unix)]
+    fn handle_live_document(&mut self, cmd: &serde_json::Value) -> serde_json::Value {
+        let path = self.doc.path.as_ref().and_then(|p| std::path::absolute(p).ok());
         match cmd["cmd"].as_str().unwrap_or("") {
-            "info" => serde_json::json!({
-                "pid": std::process::id(),
-                "title": self.doc_name(),
-                "path": path,
-                "modified": self.modified,
-                "regions": self.ws.regions.len(),
-                "focused_at": self.focused_at,
-            }),
             "get" => {
-                let snapshot = self.ws.to_json();
-                let revision = crate::live::revision(&self.live_document, path.as_deref(), &snapshot);
+                let snapshot = self.doc.ws.to_json();
+                let revision = crate::live::revision(&self.doc.live_document, path.as_deref(), &snapshot);
                 let ws: serde_json::Value = serde_json::from_str(&snapshot).unwrap_or_default();
                 serde_json::json!({"path": path, "title": self.doc_name(), "worksheet": ws, "revision": revision})
             }
-            "set_if_current" if self.editing.is_some() => {
+            "set_if_current" if self.doc.editing.is_some() => {
                 serde_json::json!({"error": "В окне редактируется область. Завершите правку и перечитайте лист."})
             }
-            "set_if_current" if cmd["revision"] != crate::live::revision(&self.live_document, path.as_deref(), &self.ws.to_json()) => {
+            "set_if_current" if cmd["revision"] != crate::live::revision(&self.doc.live_document, path.as_deref(), &self.doc.ws.to_json()) => {
                 serde_json::json!({"error": "Лист изменился после чтения. Перечитайте его и примените правку заново."})
             }
             "set" | "set_if_current" => match Worksheet::from_json(&cmd["worksheet"].to_string()) {
                 Ok(ws) => {
-                    if self.editing.is_some() {
+                    if self.doc.editing.is_some() {
                         self.finish_edit(false);
                     }
                     self.checkpoint();
-                    self.ws = ws;
-                    self.selection.clear();
+                    self.doc.ws = ws;
+                    self.doc.selection.clear();
                     self.changed();
-                    self.status = "Лист изменён ИИ-ассистентом (MCP); Ctrl+Z отменяет".into();
-                    let revision = crate::live::revision(&self.live_document, path.as_deref(), &self.ws.to_json());
+                    self.doc.status = "Лист изменён ИИ-ассистентом (MCP); Ctrl+Z отменяет".into();
+                    let revision = crate::live::revision(&self.doc.live_document, path.as_deref(), &self.doc.ws.to_json());
                     serde_json::json!({"ok": true, "revision": revision})
                 }
                 Err(e) => serde_json::json!({"error": e}),
@@ -476,36 +389,45 @@ impl App {
     }
 
     fn doc_name(&self) -> String {
-        match &self.path {
-            Some(p) => p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
-            None => format!("Без имени:{}", self.untitled_no),
-        }
+        self.doc.name()
+    }
+
+    fn region_ui_id(&self, name: impl std::hash::Hash) -> Id {
+        Id::new(("xmath-region", self.doc.id, name))
     }
 
     fn checkpoint(&mut self) {
-        self.undo.push(self.ws.clone());
-        if self.undo.len() > 300 {
-            self.undo.remove(0);
+        self.doc.undo.push(self.doc.ws.clone());
+        if self.doc.undo.len() > 300 {
+            self.doc.undo.remove(0);
         }
-        self.redo.clear();
+        self.doc.redo.clear();
     }
 
     fn changed(&mut self) {
-        self.dirty = true;
-        self.dirty_since = Some(Instant::now());
-        self.modified = true;
+        self.doc.dirty = true;
+        self.doc.dirty_since = Some(Instant::now());
+        self.doc.modified = true;
     }
 
     fn region_mut(&mut self, id: u64) -> Option<&mut Region> {
-        self.ws.regions.iter_mut().find(|r| r.id == id)
+        self.doc.ws.regions.iter_mut().find(|r| r.id == id)
     }
 
     fn region(&self, id: u64) -> Option<&Region> {
-        self.ws.regions.iter().find(|r| r.id == id)
+        self.doc.ws.regions.iter().find(|r| r.id == id)
     }
 
-    fn load(&mut self, p: &Path) {
+    fn load(&mut self, ctx: &Context, p: &Path) {
         let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        // Saving updates the same file that was opened, in its original format.
+        // Plain text imports start as unsaved worksheets.
+        let path = matches!(ext.as_str(), "xmath" | "xmcd").then(|| p.to_owned());
+        let open = path.as_deref().and_then(|p| self.document_for_path(p));
+        if let Some(id) = open {
+            self.show_document(ctx, id);
+            return;
+        }
         let result: Result<(Worksheet, Vec<String>), String> = std::fs::read_to_string(p)
             .map_err(|e| e.to_string())
             .and_then(|s| {
@@ -519,66 +441,60 @@ impl App {
             });
         match result {
             Ok((ws, warnings)) => {
-                self.ws = ws;
-                // Ctrl+S writes back to the file that was opened, in its own format (.xmcd or .xmath);
-                // plain-text imports have no document file yet
-                self.path = if ext == "xmath" || ext == "xmcd" { Some(p.to_path_buf()) } else { None };
-                self.after_load();
-                self.status = if warnings.is_empty() {
+                self.open_loaded_document(ctx, ws, path);
+                self.doc.status = if warnings.is_empty() {
                     format!("Открыт файл {}", p.display())
                 } else {
                     format!("Импорт: {} предупреждений (см. Справка → Журнал импорта)", warnings.len())
                 };
-                self.import_log = warnings;
+                self.doc.import_log = warnings;
             }
-            Err(e) => self.status = format!("Не удалось открыть {}: {e}", p.display()),
+            Err(e) => self.doc.status = format!("Не удалось открыть {}: {e}", p.display()),
         }
     }
 
-    fn after_load(&mut self) {
-        #[cfg(unix)]
-        {
-            self.live_document = std::hash::RandomState::new();
+    fn open_loaded_document(&mut self, ctx: &Context, ws: Worksheet, path: Option<PathBuf>) {
+        let placeholder = (self.documents().count() == 1 && !self.doc.modified
+            && self.doc.path.is_none() && self.doc.ws.regions.is_empty()).then_some(self.doc.id);
+        self.push_document(ctx, ws, path);
+        if let Some(id) = placeholder {
+            self.close_document(ctx, id);
         }
-        self.undo.clear();
-        self.redo.clear();
-        self.selection.clear();
-        self.editing = None;
-        self.ed = None;
-        self.modified = false;
-        self.dirty = true;
-        self.cursor = Pos2::new(24.0, 24.0);
     }
 
     /// Saves in the format of the extension: `.xmath` is xmath's own JSON, everything else is
     /// Mathcad 15's `.xmcd` (a name without extension gets `.xmcd`).
     fn save_to(&mut self, p: PathBuf) {
         let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        let p = match ext.as_str() {
+            "xmath" | "xmcd" => p,
+            "" => p.with_extension("xmcd"),
+            _ => {
+                let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                p.with_file_name(format!("{name}.xmcd"))
+            }
+        };
+        if self.document_for_path(&p).is_some_and(|id| id != self.doc.id) {
+            self.doc.status = format!("Файл уже открыт в другом листе: {}", p.display());
+            return;
+        }
         if ext == "xmath" {
-            match std::fs::write(&p, self.ws.to_json()) {
+            match std::fs::write(&p, self.doc.ws.to_json()) {
                 Ok(()) => {
-                    self.status = format!("Сохранено: {}", p.display());
-                    self.path = Some(p);
-                    self.modified = false;
+                    self.doc.status = format!("Сохранено: {}", p.display());
+                    self.doc.path = Some(p);
+                    self.doc.modified = false;
                 }
-                Err(e) => self.status = format!("Ошибка сохранения: {e}"),
+                Err(e) => self.doc.status = format!("Ошибка сохранения: {e}"),
             }
             return;
         }
-        let p = if ext == "xmcd" {
-            p
-        } else if ext.is_empty() {
-            p.with_extension("xmcd")
-        } else {
-            let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            p.with_file_name(format!("{name}.xmcd"))
-        };
         self.save_xmcd(&p);
     }
 
     /// Saves to the current path, or asks for one.
     fn save_doc(&mut self, ctx: &Context, then: Option<Action>) {
-        match self.path.clone() {
+        match self.doc.path.clone() {
             Some(p) => {
                 self.save_to(p);
                 self.continue_after_save(ctx, then);
@@ -589,8 +505,10 @@ impl App {
 
     fn continue_after_save(&mut self, ctx: &Context, then: Option<Action>) {
         if let Some(a) = then {
-            if !self.modified {
+            if !self.doc.modified {
                 self.do_action(ctx, a);
+            } else if a == Action::Exit {
+                self.workspace.exit_discarded.clear();
             }
         }
     }
@@ -623,7 +541,7 @@ impl App {
                 let _ = tx.send(r);
                 c.request_repaint();
             });
-            self.status = "Ожидание диалога выбора файла...".into();
+            self.doc.status = "Ожидание диалога выбора файла...".into();
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -648,8 +566,8 @@ impl App {
         // (no portal / backend), not the user pressing Cancel
         let failed = res.is_err() || (cfg!(target_os = "linux") && matches!(res, Ok(None)) && job.started.elapsed() < Duration::from_millis(400));
         if failed {
-            self.status = "Системный диалог выбора файла недоступен (нет xdg-desktop-portal?). Введите путь вручную.".into();
-            let text = match (&self.path, job.kind) {
+            self.doc.status = "Системный диалог выбора файла недоступен (нет xdg-desktop-portal?). Введите путь вручную.".into();
+            let text = match (&self.doc.path, job.kind) {
                 (Some(p), DlgKind::Save) => p.with_extension("xmcd").display().to_string(),
                 (None, DlgKind::Save) => std::env::current_dir().unwrap_or_default().join(file_stem_of(&self.doc_name().replace(':', "")) + ".xmcd").display().to_string(),
                 (_, DlgKind::Pdf) => std::env::current_dir().unwrap_or_default().join(file_stem_of(&self.doc_name().replace(':', "")) + ".pdf").display().to_string(),
@@ -658,15 +576,17 @@ impl App {
             self.path_dlg = Some(PathDlg { kind: job.kind, text, then: job.then });
             return;
         }
-        self.status.clear();
+        self.doc.status.clear();
         if let Some(p) = res.ok().flatten() {
             self.file_chosen(ctx, job.kind, p, job.then);
+        } else if job.then == Some(Action::Exit) {
+            self.workspace.exit_discarded.clear();
         }
     }
 
     fn file_chosen(&mut self, ctx: &Context, kind: DlgKind, p: PathBuf, then: Option<Action>) {
         match kind {
-            DlgKind::Open => self.load(&p),
+            DlgKind::Open => self.load(ctx, &p),
             DlgKind::Save => {
                 self.save_to(p);
                 self.continue_after_save(ctx, then);
@@ -679,56 +599,62 @@ impl App {
     // -----------------------------------------------------------------
     // Actions
 
-    fn needs_confirm(a: Action) -> bool {
-        matches!(a, Action::New | Action::Open | Action::OpenExample(_) | Action::Exit)
-    }
-
     pub fn run(&mut self, ctx: &Context, a: Action) {
-        if Self::needs_confirm(a) && self.modified && self.confirm.is_none() {
-            self.confirm = Some(a);
+        if self.dialogs_open() && matches!(a,
+            Action::New | Action::Open | Action::OpenExample(_) | Action::ShowDocument(_)
+            | Action::CloseDocument(_) | Action::FloatDocument(_) | Action::DockDocument(_)
+            | Action::CompareDocuments(..) | Action::Exit | Action::Save | Action::SaveAs)
+        {
             return;
         }
-        self.do_action(ctx, a);
+        match a {
+            Action::CloseDocument(id) => self.request_document_close(ctx, id),
+            Action::Exit => {
+                self.workspace.exit_discarded.clear();
+                self.advance_exit(ctx);
+            }
+            _ => self.do_action(ctx, a),
+        }
     }
 
     fn do_action(&mut self, ctx: &Context, a: Action) {
         match a {
-            Action::New => {
-                self.ws = Worksheet::default();
-                self.path = None;
-                self.untitled_no += 1;
-                self.after_load();
-            }
+            Action::New => self.push_document(ctx, Worksheet::default(), None),
             Action::Open => self.open_dialog(ctx),
             Action::Save => self.save_doc(ctx, None),
             Action::SaveAs => self.save_as(ctx, None),
             Action::OpenExample(i) => {
                 if let Some((name, src)) = EXAMPLES.get(i) {
                     if let Ok(ws) = Worksheet::from_json(src) {
-                        self.ws = ws;
-                        self.path = None;
-                        self.after_load();
-                        self.status = format!("Пример: {name}");
+                        self.open_loaded_document(ctx, ws, None);
+                        self.doc.status = format!("Пример: {name}");
                     }
                 }
             }
-            Action::Exit => {
-                self.allow_close = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            Action::ShowDocument(id) => self.show_document(ctx, id),
+            Action::CloseDocument(id) => self.close_document(ctx, id),
+            Action::FloatDocument(id) => self.float_document(ctx, id),
+            Action::DockDocument(id) => self.dock_document(ctx, id),
+            Action::CompareDocuments(id, other, axis) => {
+                self.show_document(ctx, id);
+                if self.doc.id == id {
+                    self.compare_documents(ctx, other, axis);
+                }
             }
+            Action::Exit => self.advance_exit(ctx),
             Action::Undo => {
                 self.finish_edit(false);
-                if let Some(prev) = self.undo.pop() {
-                    self.redo.push(std::mem::replace(&mut self.ws, prev));
-                    self.selection.clear();
+                if let Some(prev) = self.doc.undo.pop() {
+                    self.doc.redo.push(std::mem::replace(&mut self.doc.ws, prev));
+                    self.doc.selection.clear();
                     self.changed();
                 }
             }
             Action::Redo => {
                 self.finish_edit(false);
-                if let Some(next) = self.redo.pop() {
-                    self.undo.push(std::mem::replace(&mut self.ws, next));
-                    self.selection.clear();
+                if let Some(next) = self.doc.redo.pop() {
+                    self.doc.undo.push(std::mem::replace(&mut self.doc.ws, next));
+                    self.doc.selection.clear();
                     self.changed();
                 }
             }
@@ -742,7 +668,7 @@ impl App {
             Action::Delete => self.delete_selection(),
             Action::SelectAll => {
                 self.finish_edit(false);
-                self.selection = self.ws.regions.iter().map(|r| r.id).collect();
+                self.doc.selection = self.doc.ws.regions.iter().map(|r| r.id).collect();
             }
             Action::InsertPlot => {
                 let k = self.blank_plot(PlotKind::Xy);
@@ -764,7 +690,7 @@ impl App {
             Action::InsertScatter => {
                 self.new_region(RegionKind::new_plot3d(Plot3dKind::Scatter), true);
             }
-            Action::InsertMatrix => self.dlg_matrix = Some(MatrixDlg { rows: if self.active_matrix_cell() { 1 } else { 3 }, cols: if self.active_matrix_cell() { 1 } else { 3 }, delete: false }),
+            Action::InsertMatrix => self.dlg_matrix = Some(matrixdlg::MatrixDlg::new(self.active_matrix_cell())),
             Action::InsertFunction => self.dlg_function = Some(ListDlg { group: 0, item: 0 }),
             Action::InsertUnit => self.dlg_unit = Some(ListDlg { group: 0, item: 0 }),
             Action::InsertText => {
@@ -774,25 +700,25 @@ impl App {
                 self.new_region(RegionKind::Math { source: String::new() }, true);
             }
             Action::Calculate => {
-                self.dirty = true;
-                self.force_calc = true;
-                self.dirty_since = None;
+                self.doc.dirty = true;
+                self.doc.force_calc = true;
+                self.doc.dirty_since = None;
             }
             Action::ToggleAuto => {
                 self.auto_calc = !self.auto_calc;
-                self.dirty = true;
+                self.doc.dirty = true;
             }
-            Action::ResultFormat => self.dlg_format = Some(FormatDlg { opts: self.ws.format, tab: 0 }),
+            Action::ResultFormat => self.dlg_format = Some(FormatDlg { opts: self.doc.ws.format, tab: 0 }),
             Action::WorksheetOptions => {
                 let (origin, tol, ctol) = self.builtin_values();
-                self.dlg_options = Some(OptionsDlg { tab: 0, origin, tol, ctol, units: self.ws.format.unit_system });
+                self.dlg_options = Some(OptionsDlg { tab: 0, origin, tol, ctol, units: self.doc.ws.format.unit_system });
             }
             Action::PlotFormat => {
-                let target = self.editing.into_iter().chain(self.selection.iter().copied()).find(|id| matches!(self.region(*id).map(|r| &r.kind), Some(RegionKind::Plot { .. } | RegionKind::Plot3d { .. })));
+                let target = self.doc.editing.into_iter().chain(self.doc.selection.iter().copied()).find(|id| matches!(self.region(*id).map(|r| &r.kind), Some(RegionKind::Plot { .. } | RegionKind::Plot3d { .. })));
                 match target.and_then(|id| self.region(id).map(|r| (id, r.kind.clone()))) {
                     Some((id, RegionKind::Plot { .. })) => self.open_plot_dialog(id),
                     Some((id, RegionKind::Plot3d { .. })) => self.open_plot3d_dialog(id),
-                    _ => self.status = "Выберите график".into(),
+                    _ => self.doc.status = "Выберите график".into(),
                 }
             }
             Action::SeparateRegions => self.separate_regions(),
@@ -802,16 +728,16 @@ impl App {
             Action::PageSetup | Action::PrintPreview | Action::Print | Action::ExportPdf | Action::InsertReference => self.print_action(ctx, a),
             Action::Zoom(p) => self.zoom_to(p as f32 / 100.0, None),
             Action::ZoomFitWidth => {
-                let right = self.rects.values().map(|r| r.right()).fold(self.page_px().0, f32::max);
-                let old = self.zoom;
-                self.zoom = (((self.view_size.x - 8.0).max(200.0) / (right + 16.0)) * 100.0).floor().clamp(25.0, 400.0) / 100.0;
-                self.scroll_req = Some(Vec2::new(0.0, self.scroll_off.y / old * self.zoom));
+                let right = self.doc.rects.values().map(|r| r.right()).fold(self.page_px().0, f32::max);
+                let old = self.doc.zoom;
+                self.doc.zoom = (((self.doc.view_size.x - 8.0).max(200.0) / (right + 16.0)) * 100.0).floor().clamp(25.0, 400.0) / 100.0;
+                self.doc.scroll_req = Some(Vec2::new(0.0, self.doc.scroll_off.y / old * self.doc.zoom));
             }
         }
     }
 
     fn copy(&mut self, ctx: &Context) {
-        let regions: Vec<Region> = self.ws.regions.iter().filter(|r| self.selection.contains(&r.id)).cloned().collect();
+        let regions: Vec<Region> = self.doc.ws.regions.iter().filter(|r| self.doc.selection.contains(&r.id)).cloned().collect();
         if regions.is_empty() {
             return;
         }
@@ -837,29 +763,29 @@ impl App {
         self.finish_edit(false);
         self.checkpoint();
         let min = self.clipboard.iter().fold(Pos2::new(f32::MAX, f32::MAX), |m, r| Pos2::new(m.x.min(r.x), m.y.min(r.y)));
-        let mut next = self.ws.next_id();
-        self.selection.clear();
+        let mut next = self.doc.ws.next_id();
+        self.doc.selection.clear();
         for r in self.clipboard.clone() {
             let mut r = r;
             r.id = next;
             next += 1;
-            r.x = self.cursor.x + (r.x - min.x);
-            r.y = self.cursor.y + (r.y - min.y);
-            self.selection.push(r.id);
-            self.ws.regions.push(r);
+            r.x = self.doc.cursor.x + (r.x - min.x);
+            r.y = self.doc.cursor.y + (r.y - min.y);
+            self.doc.selection.push(r.id);
+            self.doc.ws.regions.push(r);
         }
         self.changed();
     }
 
     fn delete_selection(&mut self) {
-        if self.selection.is_empty() {
+        if self.doc.selection.is_empty() {
             return;
         }
         self.checkpoint();
-        let sel = std::mem::take(&mut self.selection);
-        self.ws.regions.retain(|r| !sel.contains(&r.id));
-        if self.editing.is_some_and(|e| sel.contains(&e)) {
-            self.editing = None;
+        let sel = std::mem::take(&mut self.doc.selection);
+        self.doc.ws.regions.retain(|r| !sel.contains(&r.id));
+        if self.doc.editing.is_some_and(|e| sel.contains(&e)) {
+            self.doc.editing = None;
         }
         self.changed();
     }
@@ -868,23 +794,23 @@ impl App {
     /// the evaluation order does not change).
     fn separate_regions(&mut self) {
         self.checkpoint();
-        let sizes: HashMap<u64, [f32; 2]> = self.ws.regions.iter().filter_map(|r| self.rects.get(&r.id).map(|q| (r.id, [q.width(), q.height()]))).collect();
-        if self.ws.separate_regions(&sizes, GRID) {
+        let sizes: HashMap<u64, [f32; 2]> = self.doc.ws.regions.iter().filter_map(|r| self.doc.rects.get(&r.id).map(|q| (r.id, [q.width(), q.height()]))).collect();
+        if self.doc.ws.separate_regions(&sizes, GRID) {
             self.changed();
         }
     }
 
     fn align(&mut self, across: bool) {
-        if self.selection.len() < 2 {
-            self.status = "Выделите несколько областей (рамкой или Ctrl+щелчок)".into();
+        if self.doc.selection.len() < 2 {
+            self.doc.status = "Выделите несколько областей (рамкой или Ctrl+щелчок)".into();
             return;
         }
         self.checkpoint();
-        let sel = self.selection.clone();
-        let rs: Vec<&Region> = self.ws.regions.iter().filter(|r| sel.contains(&r.id)).collect();
+        let sel = self.doc.selection.clone();
+        let rs: Vec<&Region> = self.doc.ws.regions.iter().filter(|r| sel.contains(&r.id)).collect();
         let top = rs.iter().map(|r| r.y).fold(f32::MAX, f32::min);
         let left = rs.iter().map(|r| r.x).fold(f32::MAX, f32::min);
-        for r in self.ws.regions.iter_mut().filter(|r| sel.contains(&r.id)) {
+        for r in self.doc.ws.regions.iter_mut().filter(|r| sel.contains(&r.id)) {
             if across {
                 r.y = top;
             } else {
@@ -897,7 +823,7 @@ impl App {
     /// A new empty plot with the document's default plot format.
     fn blank_plot(&self, kind: PlotKind) -> RegionKind {
         let mut k = if kind == PlotKind::Polar { RegionKind::new_polar_plot() } else { RegionKind::new_plot() };
-        if let (RegionKind::Plot { fmt, .. }, Some(d)) = (&mut k, &self.ws.plot_defaults) {
+        if let (RegionKind::Plot { fmt, .. }, Some(d)) = (&mut k, &self.doc.ws.plot_defaults) {
             *fmt = d.clone();
         } else if let RegionKind::Plot { fmt, .. } = &mut k {
             *fmt = PlotFormat::new_plot_default();
@@ -908,10 +834,10 @@ impl App {
     fn new_region(&mut self, kind: RegionKind, edit: bool) -> u64 {
         self.finish_edit(false);
         self.checkpoint();
-        let id = self.ws.next_id();
-        let pos = self.cursor;
-        self.ws.regions.push(Region::new(id, pos.x, pos.y, kind));
-        self.selection = vec![id];
+        let id = self.doc.ws.next_id();
+        let pos = self.doc.cursor;
+        self.doc.ws.regions.push(Region::new(id, pos.x, pos.y, kind));
+        self.doc.selection = vec![id];
         if edit {
             self.begin_edit(id, false);
         }
@@ -921,36 +847,36 @@ impl App {
 
     /// `snapshot`: push an undo state now (already done when the region was just created).
     fn begin_edit(&mut self, id: u64, snapshot: bool) {
-        if self.editing == Some(id) {
+        if self.doc.editing == Some(id) {
             return;
         }
         self.finish_edit(false);
-        self.editing = Some(id);
-        self.line_edit = self.text_mode;
-        self.ed = None;
-        self.focus_pending = true;
+        self.doc.editing = Some(id);
+        self.doc.line_edit = self.text_mode;
+        self.doc.ed = None;
+        self.doc.focus_pending = true;
         if snapshot {
-            self.undo.push(self.ws.clone());
-            self.edit_snapshot = true;
+            self.doc.undo.push(self.doc.ws.clone());
+            self.doc.edit_snapshot = true;
         }
-        self.redo.clear();
+        self.doc.redo.clear();
         match self.region(id).map(|r| &r.kind) {
-            Some(RegionKind::Plot { x, y, .. }) => self.plot_buf = Some((id, y.join(", "), x.clone())),
-            Some(RegionKind::Plot3d { expr, .. }) => self.plot_buf = Some((id, expr.clone(), String::new())),
+            Some(RegionKind::Plot { x, y, .. }) => self.doc.plot_buf = Some((id, y.join(", "), x.clone())),
+            Some(RegionKind::Plot3d { expr, .. }) => self.doc.plot_buf = Some((id, expr.clone(), String::new())),
             _ => {}
         }
     }
 
     /// Leaves edit mode; removes the region if it was left empty.
     fn finish_edit(&mut self, move_below: bool) {
-        let Some(id) = self.editing.take() else { return };
-        self.plot_buf = None;
-        self.cell = None;
-        self.ed = None;
-        self.edit_click = None;
+        let Some(id) = self.doc.editing.take() else { return };
+        self.doc.plot_buf = None;
+        self.doc.cell = None;
+        self.doc.ed = None;
+        self.doc.edit_click = None;
         // entering a region and leaving it unchanged must not leave an undo step behind
-        if std::mem::take(&mut self.edit_snapshot) && self.undo.last().is_some_and(|u| u.to_json() == self.ws.to_json()) {
-            self.undo.pop();
+        if std::mem::take(&mut self.doc.edit_snapshot) && self.doc.undo.last().is_some_and(|u| u.to_json() == self.doc.ws.to_json()) {
+            self.doc.undo.pop();
         }
         let empty = match self.region(id).map(|r| &r.kind) {
             Some(RegionKind::Math { source }) => source.trim().is_empty(),
@@ -958,18 +884,18 @@ impl App {
             _ => false,
         };
         if empty {
-            self.ws.regions.retain(|r| r.id != id);
-            self.selection.retain(|s| *s != id);
+            self.doc.ws.regions.retain(|r| r.id != id);
+            self.doc.selection.retain(|s| *s != id);
             // an edit that created and removed a region leaves nothing to undo
-            if self.undo.last().is_some_and(|u| u.regions.iter().all(|r| r.id != id)) {
-                self.undo.pop();
+            if self.doc.undo.last().is_some_and(|u| u.regions.iter().all(|r| r.id != id)) {
+                self.doc.undo.pop();
             }
-            self.dirty = true;
+            self.doc.dirty = true;
             return;
         }
         if move_below {
-            if let (Some(r), Some(rect)) = (self.region(id), self.rects.get(&id)) {
-                self.cursor = snap(Pos2::new(r.x, r.y + rect.height() + GRID * 2.0));
+            if let (Some(r), Some(rect)) = (self.region(id), self.doc.rects.get(&id)) {
+                self.doc.cursor = snap(Pos2::new(r.x, r.y + rect.height() + GRID * 2.0));
             }
         }
     }
@@ -981,12 +907,12 @@ impl App {
             return;
         }
         // structural editor: palettes and shortcuts insert templates at its cursor
-        if self.ed.is_some() {
+        if self.doc.ed.is_some() {
             if self.ed_insert(ctx, s) {
                 return;
             }
-        } else if !self.text_mode && !self.line_edit {
-            let id = match self.editing {
+        } else if !self.text_mode && !self.doc.line_edit {
+            let id = match self.doc.editing {
                 Some(id) if self.editing_math() == Some(id) => Some(id),
                 Some(_) => None,
                 None => Some(self.new_region(RegionKind::Math { source: String::new() }, true)),
@@ -997,11 +923,11 @@ impl App {
                 }
             }
         }
-        let id = match self.editing {
+        let id = match self.doc.editing {
             Some(id) if matches!(self.region(id).map(|r| &r.kind), Some(RegionKind::Math { .. } | RegionKind::Text { .. })) => id,
             _ => self.new_region(RegionKind::Math { source: String::new() }, true),
         };
-        let te = edit_id(id);
+        let te = self.region_ui_id(("edit", id));
         let mut st = TextEditState::load(ctx, te).unwrap_or_default();
         let Some(region) = self.region_mut(id) else { return };
         let text = match &mut region.kind {
@@ -1029,13 +955,13 @@ impl App {
         };
         st.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(sa), CCursor::new(sb))));
         st.store(ctx, te);
-        self.focus_pending = true;
+        self.doc.focus_pending = true;
         self.changed();
     }
 
     /// Tab: select the next `■` placeholder.
     fn next_placeholder(&mut self, ctx: &Context, id: u64, back: bool) {
-        let te = edit_id(id);
+        let te = self.region_ui_id(("edit", id));
         let Some(Region { kind: RegionKind::Math { source }, .. }) = self.region(id) else { return };
         let chars: Vec<char> = source.chars().collect();
         let mut st = TextEditState::load(ctx, te).unwrap_or_default();
@@ -1051,7 +977,7 @@ impl App {
         if let Some(p) = target {
             st.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(p), CCursor::new(p + 1))));
             st.store(ctx, te);
-            self.focus_pending = true;
+            self.doc.focus_pending = true;
         }
     }
 
@@ -1066,12 +992,12 @@ impl App {
                 _ => style.underline = !style.underline,
             }
         }
-        self.modified = true;
+        self.doc.modified = true;
     }
 
     /// Ctrl+G: converts the letter before the caret to Greek (and back).
     fn greek(&mut self, ctx: &Context, id: u64) {
-        let te = edit_id(id);
+        let te = self.region_ui_id(("edit", id));
         let mut st = TextEditState::load(ctx, te).unwrap_or_default();
         let Some(region) = self.region_mut(id) else { return };
         let text = match &mut region.kind {
@@ -1090,7 +1016,7 @@ impl App {
             text.replace_range(a..b, &g.to_string());
             st.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(pos))));
             st.store(ctx, te);
-            self.focus_pending = true;
+            self.doc.focus_pending = true;
             self.changed();
         }
     }
@@ -1099,7 +1025,7 @@ impl App {
     // Keyboard
 
     fn editing_math(&self) -> Option<u64> {
-        self.editing.filter(|id| matches!(self.region(*id).map(|r| &r.kind), Some(RegionKind::Math { .. })))
+        self.doc.editing.filter(|id| matches!(self.region(*id).map(|r| &r.kind), Some(RegionKind::Math { .. })))
     }
 
     fn dialogs_open(&self) -> bool {
@@ -1120,15 +1046,15 @@ impl App {
     /// default: the centre of the view) fixed.
     fn zoom_to(&mut self, new: f32, anchor: Option<Pos2>) {
         let new = new.clamp(0.25, 4.0);
-        if (new - self.zoom).abs() < 1e-4 {
+        if (new - self.doc.zoom).abs() < 1e-4 {
             return;
         }
-        let a = anchor.unwrap_or(self.view_min + self.view_size / 2.0);
-        let rel = a - self.view_min;
-        let p_ws = (rel + self.scroll_off) / self.zoom;
+        let a = anchor.unwrap_or(self.doc.view_min + self.doc.view_size / 2.0);
+        let rel = a - self.doc.view_min;
+        let p_ws = (rel + self.doc.scroll_off) / self.doc.zoom;
         let off = (p_ws * new - rel).max(Vec2::ZERO);
-        self.zoom = new;
-        self.scroll_req = Some(off);
+        self.doc.zoom = new;
+        self.doc.scroll_req = Some(off);
     }
 
     /// Ctrl+wheel, touchpad pinch, Ctrl+Plus / Ctrl+Minus / Ctrl+0 zoom the whole worksheet.
@@ -1140,7 +1066,7 @@ impl App {
         }
         if pinch != 1.0 || (ctrl && raw != 0.0) {
             let factor = if raw != 0.0 { 1.1f32.powf(raw.signum()) } else { pinch };
-            self.zoom_to(self.zoom * factor, pos.filter(|p| Rect::from_min_size(self.view_min, self.view_size).contains(*p)));
+            self.zoom_to(self.doc.zoom * factor, pos.filter(|p| Rect::from_min_size(self.doc.view_min, self.doc.view_size).contains(*p)));
         }
         if self.editing_math().is_none() && !ctx.wants_keyboard_input() {
             let (plus, minus, zero) = ctx.input_mut(|i| {
@@ -1151,11 +1077,11 @@ impl App {
                 )
             });
             if plus {
-                let n = LEVELS.iter().copied().find(|l| *l > self.zoom + 0.005).unwrap_or(4.0);
+                let n = LEVELS.iter().copied().find(|l| *l > self.doc.zoom + 0.005).unwrap_or(4.0);
                 self.zoom_to(n, None);
             }
             if minus {
-                let n = LEVELS.iter().rev().copied().find(|l| *l < self.zoom - 0.005).unwrap_or(0.25);
+                let n = LEVELS.iter().rev().copied().find(|l| *l < self.doc.zoom - 0.005).unwrap_or(0.25);
                 self.zoom_to(n, None);
             }
             if zero {
@@ -1165,6 +1091,16 @@ impl App {
     }
 
     fn shortcuts(&mut self, ctx: &Context) {
+        if self.dialogs_open() {
+            return;
+        }
+        let tab = ctx.input_mut(|i| {
+            let backwards = i.modifiers.shift;
+            i.consume_key(Modifiers::COMMAND, Key::Tab).then_some(backwards)
+        });
+        if let Some(backwards) = tab {
+            self.next_document(ctx, backwards);
+        }
         self.zoom_input(ctx);
         let ctrl = |k| KeyboardShortcut::new(Modifiers::COMMAND, k);
         let ctrl_shift = |k| KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, k);
@@ -1172,9 +1108,12 @@ impl App {
         let mut acts = Vec::new();
         let mut fmt: Vec<u8> = Vec::new();
         let kbd_focus = ctx.wants_keyboard_input();
-        let in_text_region = self.editing.is_some_and(|id| matches!(self.region(id).map(|r| &r.kind), Some(RegionKind::Text { .. })));
-        let editing_text = self.editing.is_some_and(|id| !matches!(self.region(id).map(|r| &r.kind), Some(RegionKind::Plot { .. } | RegionKind::Plot3d { .. })));
+        let in_text_region = self.doc.editing.is_some_and(|id| matches!(self.region(id).map(|r| &r.kind), Some(RegionKind::Text { .. })));
+        let editing_text = self.doc.editing.is_some_and(|id| !matches!(self.region(id).map(|r| &r.kind), Some(RegionKind::Plot { .. } | RegionKind::Plot3d { .. })));
         ctx.input_mut(|i| {
+            if i.consume_shortcut(&ctrl(Key::W)) {
+                acts.push(Action::CloseDocument(self.doc.id));
+            }
             if i.consume_shortcut(&ctrl_shift(Key::S)) {
                 acts.push(Action::SaveAs);
             }
@@ -1249,7 +1188,7 @@ impl App {
 
         // Mathcad keystrokes inside a math region
         if let Some(id) = self.editing_math() {
-            if !ctx.memory(|m| m.has_focus(edit_id(id))) {
+            if !ctx.memory(|m| m.has_focus(self.region_ui_id(("edit", id)))) {
                 return;
             }
             let src = match self.region(id).map(|r| &r.kind) {
@@ -1367,8 +1306,8 @@ impl App {
             if tab || tab_back {
                 self.next_placeholder(ctx, id, tab_back);
             }
-        } else if let Some(id) = self.editing {
-            if ctx.memory(|m| m.has_focus(edit_id(id))) && ctx.input_mut(|i| i.consume_shortcut(&ctrl(Key::G))) {
+        } else if let Some(id) = self.doc.editing {
+            if ctx.memory(|m| m.has_focus(self.region_ui_id(("edit", id)))) && ctx.input_mut(|i| i.consume_shortcut(&ctrl(Key::G))) {
                 self.greek(ctx, id);
             }
         }
@@ -1376,7 +1315,7 @@ impl App {
 
     /// Typing on the empty worksheet creates regions, like in Mathcad.
     fn sheet_keys(&mut self, ctx: &Context) {
-        if self.editing.is_some() || self.dialogs_open() || ctx.wants_keyboard_input() {
+        if self.doc.editing.is_some() || self.dialogs_open() || ctx.wants_keyboard_input() {
             return;
         }
         let events = ctx.input(|i| i.events.clone());
@@ -1385,38 +1324,38 @@ impl App {
             match ev {
                 Event::Text(t) => typed.push_str(&t),
                 Event::Key { key, pressed: true, modifiers, .. } if modifiers.is_none() => {
-                    let moved = self.cursor;
+                    let moved = self.doc.cursor;
                     match key {
                         Key::Delete | Key::Backspace => self.delete_selection(),
-                        Key::ArrowUp => self.cursor.y = (self.cursor.y - GRID).max(0.0),
-                        Key::ArrowDown => self.cursor.y += GRID,
-                        Key::ArrowLeft => self.cursor.x = (self.cursor.x - GRID).max(0.0),
-                        Key::ArrowRight => self.cursor.x += GRID,
-                        Key::Enter => self.cursor.y += GRID * 3.0,
+                        Key::ArrowUp => self.doc.cursor.y = (self.doc.cursor.y - GRID).max(0.0),
+                        Key::ArrowDown => self.doc.cursor.y += GRID,
+                        Key::ArrowLeft => self.doc.cursor.x = (self.doc.cursor.x - GRID).max(0.0),
+                        Key::ArrowRight => self.doc.cursor.x += GRID,
+                        Key::Enter => self.doc.cursor.y += GRID * 3.0,
                         Key::PageUp | Key::PageDown => {
                             // scroll by (almost) a screen; the crosshair travels with the view
-                            let dy = (self.view_size.y * 0.9 / self.zoom / GRID).round() * GRID;
+                            let dy = (self.doc.view_size.y * 0.9 / self.doc.zoom / GRID).round() * GRID;
                             let dy = if key == Key::PageUp { -dy } else { dy };
-                            let new_y = (self.cursor.y + dy).max(0.0);
-                            let off = (self.scroll_off.y + (new_y - self.cursor.y) * self.zoom).max(0.0);
-                            self.scroll_req = Some(Vec2::new(self.scroll_off.x, off));
-                            self.cursor.y = new_y;
+                            let new_y = (self.doc.cursor.y + dy).max(0.0);
+                            let off = (self.doc.scroll_off.y + (new_y - self.doc.cursor.y) * self.doc.zoom).max(0.0);
+                            self.doc.scroll_req = Some(Vec2::new(self.doc.scroll_off.x, off));
+                            self.doc.cursor.y = new_y;
                         }
                         _ => {}
                     }
-                    if self.cursor != moved && !matches!(key, Key::PageUp | Key::PageDown) {
-                        self.reveal = Some(Rect::from_center_size(self.cursor, Vec2::splat(GRID * 2.0)));
+                    if self.doc.cursor != moved && !matches!(key, Key::PageUp | Key::PageDown) {
+                        self.doc.reveal = Some(Rect::from_center_size(self.doc.cursor, Vec2::splat(GRID * 2.0)));
                     }
                 }
                 Event::Key { key: key @ (Key::Home | Key::End), pressed: true, modifiers, .. } if modifiers.command && !modifiers.shift => {
                     if key == Key::End {
-                        let last = self.rects.values().map(|r| r.bottom()).fold(0.0, f32::max);
-                        self.cursor = snap(Pos2::new(24.0, last + 16.0));
+                        let last = self.doc.rects.values().map(|r| r.bottom()).fold(0.0, f32::max);
+                        self.doc.cursor = snap(Pos2::new(24.0, last + 16.0));
                     } else {
-                        self.cursor = Pos2::new(24.0, 24.0);
-                        self.scroll_req = Some(Vec2::ZERO);
+                        self.doc.cursor = Pos2::new(24.0, 24.0);
+                        self.doc.scroll_req = Some(Vec2::ZERO);
                     }
-                    self.reveal = Some(Rect::from_center_size(self.cursor, Vec2::splat(GRID * 2.0)));
+                    self.doc.reveal = Some(Rect::from_center_size(self.doc.cursor, Vec2::splat(GRID * 2.0)));
                 }
                 Event::Copy => self.run(ctx, Action::Copy),
                 Event::Cut => self.run(ctx, Action::Cut),
@@ -1459,9 +1398,9 @@ impl App {
             Some(RegionKind::Text { text, .. }) => text.chars().count(),
             _ => 0,
         };
-        let mut st = TextEditState::load(ctx, edit_id(id)).unwrap_or_default();
+        let mut st = TextEditState::load(ctx, self.region_ui_id(("edit", id))).unwrap_or_default();
         st.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(len))));
-        st.store(ctx, edit_id(id));
+        st.store(ctx, self.region_ui_id(("edit", id)));
     }
 }
 
@@ -1744,7 +1683,7 @@ impl App {
     fn menu_bar(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         let mut act: Option<Action> = None;
-        let sel = !self.selection.is_empty();
+        let sel = !self.doc.selection.is_empty();
         egui::menu::bar(ui, |ui| {
             ui.menu_button("Файл", |ui| {
                 if menu_item(ui, "Создать", "Ctrl+N", true) {
@@ -1752,6 +1691,9 @@ impl App {
                 }
                 if menu_item(ui, "Открыть...", "Ctrl+O", true) {
                     act = Some(Action::Open);
+                }
+                if menu_item(ui, "Закрыть лист", "Ctrl+W", true) {
+                    act = Some(Action::CloseDocument(self.doc.id));
                 }
                 ui.menu_button("Примеры", |ui| {
                     for (i, (name, _)) in EXAMPLES.iter().enumerate() {
@@ -1787,10 +1729,10 @@ impl App {
                 }
             });
             ui.menu_button("Правка", |ui| {
-                if menu_item(ui, "Отменить", "Ctrl+Z", !self.undo.is_empty()) {
+                if menu_item(ui, "Отменить", "Ctrl+Z", !self.doc.undo.is_empty()) {
                     act = Some(Action::Undo);
                 }
-                if menu_item(ui, "Повторить", "Ctrl+Y", !self.redo.is_empty()) {
+                if menu_item(ui, "Повторить", "Ctrl+Y", !self.doc.redo.is_empty()) {
                     act = Some(Action::Redo);
                 }
                 ui.separator();
@@ -1961,8 +1903,11 @@ impl App {
                 ui.label(RichText::new("Символьный движок в разработке").italics().weak());
             });
             ui.menu_button("Окно", |ui| {
-                let name = self.doc_name();
-                ui.add_enabled(false, egui::Button::new(format!("1 {name}")));
+                ui.add_enabled_ui(!self.dialogs_open(), |ui| {
+                    if let Some(command) = self.window_menu(ui) {
+                        act = Some(command);
+                    }
+                });
             });
             ui.menu_button("Справка", |ui| {
                 if menu_item(ui, "Справка xmath", "F1", true) {
@@ -1981,7 +1926,7 @@ impl App {
 
     fn standard_toolbar(&mut self, ui: &mut Ui) {
         let mut act = None;
-        let sel = !self.selection.is_empty();
+        let sel = !self.doc.selection.is_empty();
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 1.0;
             if icon_button(ui, "Создать (Ctrl+N)", true, icon_page) {
@@ -2012,10 +1957,10 @@ impl App {
                 act = Some(Action::Paste);
             }
             separator(ui);
-            if icon_button(ui, "Отменить (Ctrl+Z)", !self.undo.is_empty(), |p, r, c| icon_undo(p, r, c, false)) {
+            if icon_button(ui, "Отменить (Ctrl+Z)", !self.doc.undo.is_empty(), |p, r, c| icon_undo(p, r, c, false)) {
                 act = Some(Action::Undo);
             }
-            if icon_button(ui, "Повторить (Ctrl+Y)", !self.redo.is_empty(), |p, r, c| icon_undo(p, r, c, true)) {
+            if icon_button(ui, "Повторить (Ctrl+Y)", !self.doc.redo.is_empty(), |p, r, c| icon_undo(p, r, c, true)) {
                 act = Some(Action::Redo);
             }
             separator(ui);
@@ -2036,7 +1981,7 @@ impl App {
                 act = Some(Action::Calculate);
             }
             separator(ui);
-            let mut z = (self.zoom * 100.0).round() as u32;
+            let mut z = (self.doc.zoom * 100.0).round() as u32;
             egui::ComboBox::from_id_salt("zoom")
                 .width(64.0)
                 .selected_text(format!("{z}%"))
@@ -2045,7 +1990,7 @@ impl App {
                         ui.selectable_value(&mut z, v, format!("{v}%"));
                     }
                 });
-            if z != (self.zoom * 100.0).round() as u32 {
+            if z != (self.doc.zoom * 100.0).round() as u32 {
                 act = Some(Action::Zoom(z));
             }
             separator(ui);
@@ -2060,7 +2005,7 @@ impl App {
 
     /// The text region the formatting toolbar acts on.
     fn format_target(&self) -> Option<u64> {
-        let id = self.editing.or_else(|| (self.selection.len() == 1).then(|| self.selection[0]))?;
+        let id = self.doc.editing.or_else(|| (self.doc.selection.len() == 1).then(|| self.doc.selection[0]))?;
         matches!(self.region(id).map(|r| &r.kind), Some(RegionKind::Text { .. })).then_some(id)
     }
 
@@ -2109,7 +2054,7 @@ impl App {
                 if let Some(Region { kind: RegionKind::Text { style: s, .. }, .. }) = self.region_mut(id) {
                     *s = style;
                 }
-                self.modified = true;
+                self.doc.modified = true;
             }
         }
     }
@@ -2216,16 +2161,16 @@ impl App {
         ui.horizontal(|ui| {
             let msg = if !self.hint.is_empty() {
                 &self.hint
-            } else if self.evaluating || (self.dirty && self.auto_calc) {
+            } else if self.doc.evaluating || (self.doc.dirty && self.auto_calc) {
                 "Вычисление…"
-            } else if self.status.is_empty() {
+            } else if self.doc.status.is_empty() {
                 "Нажмите F1 для справки."
             } else {
-                &self.status
+                &self.doc.status
             };
             ui.label(RichText::new(msg).size(12.0));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let page = (self.scroll_off.y / self.zoom / self.page_px().1).floor().max(0.0) as i32 + 1;
+                let page = (self.doc.scroll_off.y / self.doc.zoom / self.page_px().1).floor().max(0.0) as i32 + 1;
                 status_box(ui, &format!("Страница {page}"), 84.0);
                 status_box(ui, "NUM", 40.0);
                 status_box(ui, if self.auto_calc { "АВТО" } else { "ВРУЧН." }, 56.0);
@@ -2237,12 +2182,12 @@ impl App {
     // Worksheet canvas
 
     fn text_galley(&self, ctx: &Context, text: &str, style: &xmath_core::worksheet::TextStyle, wrap: f32) -> std::sync::Arc<egui::Galley> {
-        crate::print::text_galley(ctx, text, style, wrap, self.zoom, self.has_bold_font)
+        crate::print::text_galley(ctx, text, style, wrap, self.doc.zoom, self.has_bold_font)
     }
 
     fn math_layout(&self, ctx: &Context, id: u64, source: &str) -> (Lay, Option<String>) {
-        let fs = px(BASE_PT, self.zoom);
-        let out = self.outputs.get(&id);
+        let fs = px(BASE_PT, self.doc.zoom);
+        let out = self.doc.outputs.get(&id);
         ctx.fonts(|f| {
             let mut ts = Ts::new(f);
             let err = out.and_then(|o| o.error());
@@ -2275,30 +2220,30 @@ impl App {
 
     fn canvas(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
-        if self.ed.as_ref().is_some_and(|e| Some(e.region) != self.editing) {
-            self.ed = None;
+        if self.doc.ed.as_ref().is_some_and(|e| Some(e.region) != self.doc.editing) {
+            self.doc.ed = None;
         }
-        let z = self.zoom;
+        let z = self.doc.zoom;
         let fs = px(BASE_PT, z);
         // the canvas reaches just past the last region in both directions
-        let bottom = self
+        let bottom = self.doc
             .ws
             .regions
             .iter()
-            .map(|r| r.y + self.rects.get(&r.id).map_or(40.0, |q| q.height()))
-            .fold(self.cursor.y, f32::max);
-        let right = self
+            .map(|r| r.y + self.doc.rects.get(&r.id).map_or(40.0, |q| q.height()))
+            .fold(self.doc.cursor.y, f32::max);
+        let right = self.doc
             .ws
             .regions
             .iter()
-            .map(|r| r.x + self.rects.get(&r.id).map_or(40.0, |q| q.width()))
-            .fold(self.cursor.x, f32::max);
+            .map(|r| r.x + self.doc.rects.get(&r.id).map_or(40.0, |q| q.width()))
+            .fold(self.doc.cursor.x, f32::max);
         let orig_style = ui.style().clone();
         classic_scrollbars(ui);
-        let mut area = ScrollArea::both().id_salt("sheet").auto_shrink([false, false]).scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible);
-        if let Some(o) = self.scroll_req.take() {
-            area = area.scroll_offset(o);
-        }
+        // The same sheet can move between the central pane, a split and a floating window.
+        let offset = self.doc.scroll_req.take().unwrap_or(self.doc.scroll_off);
+        let area = ScrollArea::both().id_salt("sheet").auto_shrink([false, false])
+            .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible).scroll_offset(offset);
         let inner_style = orig_style.clone();
         let out = area.show(ui, |ui| {
             ui.set_style(inner_style);
@@ -2326,8 +2271,8 @@ impl App {
             let mut anchor_updates: Vec<(u64, [f32; 2])> = Vec::new();
             let mut clicked_region = false;
             // the region being edited is drawn last, so its live preview covers regions below
-            let mut ids: Vec<u64> = self.ws.regions.iter().map(|r| r.id).collect();
-            if let Some(e) = self.editing {
+            let mut ids: Vec<u64> = self.doc.ws.regions.iter().map(|r| r.id).collect();
+            if let Some(e) = self.doc.editing {
                 if let Some(i) = ids.iter().position(|x| *x == e) {
                     let v = ids.remove(i);
                     ids.push(v);
@@ -2336,11 +2281,11 @@ impl App {
             for id in ids {
                 let Some(region) = self.region(id).cloned() else { continue };
                 let pos = to_screen(Pos2::new(region.x, region.y));
-                let editing = self.editing == Some(id);
-                let selected = self.selection.contains(&id);
+                let editing = self.doc.editing == Some(id);
+                let selected = self.doc.selection.contains(&id);
                 // regions far outside the viewport are not laid out again (large worksheets)
                 if !editing && !selected && self.dump_rects.is_none() {
-                    if let Some(r) = self.rects.get(&id).copied() {
+                    if let Some(r) = self.doc.rects.get(&id).copied() {
                         let sr = Rect::from_min_max(to_screen(r.min), to_screen(r.max));
                         if !sr.expand(64.0).intersects(visible) {
                             new_rects.insert(id, r);
@@ -2352,18 +2297,18 @@ impl App {
                 let mut error: Option<String> = None;
                 match &region.kind {
                     RegionKind::Math { source } => {
-                        let in_cell = if editing && self.cell.as_ref().is_some_and(|c| c.region == id) {
+                        let in_cell = if editing && self.doc.cell.as_ref().is_some_and(|c| c.region == id) {
                             let r = self.cell_canvas(ui, id, pos, fs);
                             if r.is_none() {
-                                self.focus_pending = true;
+                                self.doc.focus_pending = true;
                             }
                             r
-                        } else if editing && self.cell.is_none() && !self.line_edit {
-                            if self.ed.is_none() {
-                                let click = self.edit_click.take();
+                        } else if editing && self.doc.cell.is_none() && !self.doc.line_edit {
+                            if self.doc.ed.is_none() {
+                                let click = self.doc.edit_click.take();
                                 self.begin_structural(id, click);
                             }
-                            if self.ed.is_some() { self.ed_canvas(ui, id, pos, fs) } else { None }
+                            if self.doc.ed.is_some() { self.ed_canvas(ui, id, pos, fs) } else { None }
                         } else {
                             None
                         };
@@ -2387,7 +2332,7 @@ impl App {
                             let resp = ui.put(
                                 te_rect,
                                 TextEdit::singleline(&mut src)
-                                    .id(edit_id(id))
+                                    .id(self.region_ui_id(("edit", id)))
                                     .font(font)
                                     .desired_width(w)
                                     .margin(Vec2::new(2.0, 1.0))
@@ -2396,9 +2341,9 @@ impl App {
                                     .text_color(Color32::from_rgb(0, 0, 140)),
                             );
                             painter.rect_stroke(te_rect, 0.0, Stroke::new(1.0_f32, SELECT_BLUE), egui::StrokeKind::Outside);
-                            if self.focus_pending {
+                            if self.doc.focus_pending {
                                 resp.request_focus();
-                                self.focus_pending = false;
+                                self.doc.focus_pending = false;
                             }
                             if src != *source {
                                 if let Some(Region { kind: RegionKind::Math { source }, .. }) = self.region_mut(id) {
@@ -2415,7 +2360,7 @@ impl App {
                                 painter.rect_stroke(prev_rect, 0.0, Stroke::new(1.0_f32, Color32::from_gray(190)), egui::StrokeKind::Inside);
                                 lay.paint(&painter, prev_origin);
                                 // swallow clicks so they do not reach regions under the preview
-                                ui.interact(prev_rect, Id::new(("preview", id)), Sense::CLICK);
+                                ui.interact(prev_rect, self.region_ui_id(("preview", id)), Sense::CLICK);
                             }
                             region_rect = te_rect.union(prev_rect);
                             let enter = ctx.input(|i| i.key_pressed(Key::Enter));
@@ -2432,7 +2377,7 @@ impl App {
                             region_rect = Rect::from_min_size(pos, Vec2::new(lay.w + 4.0, lay.h() + 6.0));
                             let origin = pos + Vec2::new(2.0, 3.0 + lay.asc);
                             lay.paint(&painter, origin);
-                            self.hits.insert(id, lay.boxes.iter().map(|(n, r)| (*n, r.translate(origin.to_vec2()))).collect());
+                            self.doc.hits.insert(id, lay.boxes.iter().map(|(n, r)| (*n, r.translate(origin.to_vec2()))).collect());
                         }
                     }
                     RegionKind::Text { text, style, width, lock_width } => {
@@ -2445,7 +2390,7 @@ impl App {
                             let resp = ui.put(
                                 r,
                                 TextEdit::multiline(&mut t)
-                                    .id(edit_id(id))
+                                    .id(self.region_ui_id(("edit", id)))
                                     .font(FontId::new(px(style.size, z), family))
                                     .desired_width(r.width())
                                     .desired_rows(1)
@@ -2453,15 +2398,15 @@ impl App {
                                     .margin(Vec2::new(2.0, 2.0)),
                             );
                             painter.rect_stroke(resp.rect, 0.0, Stroke::new(1.0_f32, SELECT_BLUE), egui::StrokeKind::Outside);
-                            if self.focus_pending {
+                            if self.doc.focus_pending {
                                 resp.request_focus();
-                                self.focus_pending = false;
+                                self.doc.focus_pending = false;
                             }
                             if t != *text {
                                 if let Some(Region { kind: RegionKind::Text { text, .. }, .. }) = self.region_mut(id) {
                                     *text = t;
                                 }
-                                self.modified = true;
+                                self.doc.modified = true;
                             }
                             region_rect = resp.rect;
                             if resp.lost_focus() && ctx.input(|i| i.key_pressed(Key::Escape)) {
@@ -2484,19 +2429,19 @@ impl App {
                     }
                     RegionKind::Image { png_base64, width, height } => {
                         region_rect = Rect::from_min_size(pos, Vec2::new(width * z, height * z));
-                        let tex = self.images.texture(&ctx, id, png_base64);
+                        let tex = self.doc.images.texture(&ctx, id, png_base64);
                         crate::image::paint(&painter, region_rect, tex);
                     }
                     RegionKind::Plot { x, y, width, height, x_min, x_max, y_min, y_max, fmt, kind: pkind, .. } => {
                         let polar = *pkind == PlotKind::Polar;
                         // like in Mathcad the region size includes the label placeholders around the plot
-                        let data = match self.outputs.get(&id).map(|o| &o.output) {
+                        let data = match self.doc.outputs.get(&id).map(|o| &o.output) {
                             Some(Output::Plot(d)) => d.clone(),
                             _ => Default::default(),
                         };
                         let text_w = |t: &str| painter.layout_no_wrap(t.to_string(), FontId::proportional(fs), Color32::BLACK).size().x;
                         let mut y_text_w = if fmt.hide_args && !editing { 0.0 } else { y.iter().map(|l| text_w(if l.is_empty() { "■" } else { l })).fold(0.0, f32::max) };
-                        if let (true, Some((_, yb, _))) = (editing, &self.plot_buf) {
+                        if let (true, Some((_, yb, _))) = (editing, &self.doc.plot_buf) {
                             y_text_w = y_text_w.max(text_w(yb) + 10.0);
                         }
                         let geom = plot::plot_geom(fmt, &data, polar, width * z, height * z, fs, z, y_text_w);
@@ -2544,7 +2489,7 @@ impl App {
                         }
                         region_rect = region_rect.union(Rect::from_min_max(pos, Pos2::new(plot_rect.right() + m.right, bottom)));
                         // move / select
-                        let resp = ui.interact(region_rect, Id::new(("region", id)), Sense::click_and_drag());
+                        let resp = ui.interact(region_rect, self.region_ui_id(("region", id)), Sense::click_and_drag());
                         self.region_interaction(&ctx, id, &resp, z);
                         clicked_region |= resp.clicked();
                         if resp.double_clicked() {
@@ -2563,9 +2508,9 @@ impl App {
                             }
                         }
                         if editing {
-                            if let Some((bid, mut ybuf, mut xbuf)) = self.plot_buf.clone().filter(|b| b.0 == id) {
+                            if let Some((bid, mut ybuf, mut xbuf)) = self.doc.plot_buf.clone().filter(|b| b.0 == id) {
                                 let yr = Rect::from_min_size(Pos2::new(pos.x, plot_rect.center().y - fs), Vec2::new(legend_w - 6.0, fs * 1.6));
-                                let r1 = ui.put(yr, TextEdit::singleline(&mut ybuf).id(edit_id(id)).font(FontId::proportional(fs)).lock_focus(true).hint_text(RichText::new("■").color(Color32::BLACK)));
+                                let r1 = ui.put(yr, TextEdit::singleline(&mut ybuf).id(self.region_ui_id(("edit", id))).font(FontId::proportional(fs)).lock_focus(true).hint_text(RichText::new("■").color(Color32::BLACK)));
                                 let xr = Rect::from_center_size(Pos2::new(plot_rect.center().x, label_row + fs * 0.8), Vec2::new(140.0 * z, fs * 1.6));
                                 // QuickPlot's variable in grey, otherwise Mathcad's placeholder
                                 let xhint = match &data.x_var {
@@ -2575,7 +2520,7 @@ impl App {
                                 let r2 = ui.put(
                                     xr,
                                     TextEdit::singleline(&mut xbuf)
-                                        .id(Id::new(("xmath-plot-x", id)))
+                                        .id(self.region_ui_id(("xmath-plot-x", id)))
                                         .font(FontId::proportional(fs))
                                         .lock_focus(true)
                                         .horizontal_align(Align::Center)
@@ -2597,9 +2542,9 @@ impl App {
                                         r2.request_focus();
                                     }
                                 }
-                                if self.focus_pending {
+                                if self.doc.focus_pending {
                                     r1.request_focus();
-                                    self.focus_pending = false;
+                                    self.doc.focus_pending = false;
                                 }
                                 if r1.changed() || r2.changed() {
                                     let ys: Vec<String> = plot::split_traces(&ybuf);
@@ -2609,14 +2554,14 @@ impl App {
                                     }
                                     self.changed();
                                 }
-                                self.plot_buf = Some((bid, ybuf, xbuf));
+                                self.doc.plot_buf = Some((bid, ybuf, xbuf));
                             }
                         }
                         if selected || editing {
                             // resize handle
                             let h = Rect::from_center_size(plot_rect.right_bottom() + Vec2::new(m.right, m.bottom), Vec2::splat(8.0));
                             painter.rect_filled(h, 0.0, Color32::BLACK);
-                            let hr = ui.interact(h.expand(2.0), Id::new(("plot-resize", id)), Sense::drag());
+                            let hr = ui.interact(h.expand(2.0), self.region_ui_id(("plot-resize", id)), Sense::drag());
                             if hr.hovered() || hr.dragged() {
                                 ctx.set_cursor_icon(CursorIcon::ResizeNwSe);
                             }
@@ -2629,18 +2574,18 @@ impl App {
                                     *width = (*width + d.x).max(120.0);
                                     *height = (*height + d.y).max(80.0);
                                 }
-                                self.modified = true;
+                                self.doc.modified = true;
                             }
                         }
                     }
                     RegionKind::Plot3d { kind: k3, expr, width, height, view: v3, fmt: f3 } => {
                         let plot_rect = Rect::from_min_size(pos, Vec2::new((*width * z).max(80.0), (*height * z - fs * 2.0).max(60.0)));
-                        let data = match self.outputs.get(&id).map(|o| &o.output) {
+                        let data = match self.doc.outputs.get(&id).map(|o| &o.output) {
                             Some(Output::Plot3d(d)) => d.clone(),
                             _ => Plot3dData { kind: *k3, ..Default::default() },
                         };
                         painter.rect_filled(plot_rect, 0.0, Color32::WHITE);
-                        let thr = self.ws.format.exp_threshold;
+                        let thr = self.doc.ws.format.exp_threshold;
                         let size = [plot_rect.width(), plot_rect.height()];
                         let scene = if *k3 == Plot3dKind::Contour {
                             xmath_core::plot3d::contour_scene(&data, f3, size, fs, thr)
@@ -2661,7 +2606,7 @@ impl App {
                             let (txt, col) = if expr.is_empty() { ("■".to_string(), Color32::BLACK) } else { (expr.clone(), Color32::BLACK) };
                             painter.text(Pos2::new(plot_rect.left() + 4.0, label_row), Align2::LEFT_TOP, txt, FontId::proportional(fs), col);
                         }
-                        let resp = ui.interact(region_rect, Id::new(("region", id)), Sense::click_and_drag());
+                        let resp = ui.interact(region_rect, self.region_ui_id(("region", id)), Sense::click_and_drag());
                         self.region_interaction(&ctx, id, &resp, z);
                         clicked_region |= resp.clicked();
                         if resp.double_clicked() {
@@ -2669,17 +2614,17 @@ impl App {
                             self.open_plot3d_dialog(id);
                         }
                         if editing {
-                            if let Some((bid, mut buf, _)) = self.plot_buf.clone().filter(|b| b.0 == id) {
+                            if let Some((bid, mut buf, _)) = self.doc.plot_buf.clone().filter(|b| b.0 == id) {
                                 let r = Rect::from_min_size(Pos2::new(plot_rect.left(), label_row - 2.0), Vec2::new((plot_rect.width() - 20.0).min(320.0 * z), fs * 1.6));
                                 let hint = match k3 {
                                     Plot3dKind::Scatter => "X, Y, Z",
                                     Plot3dKind::Contour => "M или f",
                                     _ => "M или f",
                                 };
-                                let r1 = ui.put(r, TextEdit::singleline(&mut buf).id(edit_id(id)).font(FontId::proportional(fs)).lock_focus(true).hint_text(hint));
-                                if self.focus_pending {
+                                let r1 = ui.put(r, TextEdit::singleline(&mut buf).id(self.region_ui_id(("edit", id))).font(FontId::proportional(fs)).lock_focus(true).hint_text(hint));
+                                if self.doc.focus_pending {
                                     r1.request_focus();
-                                    self.focus_pending = false;
+                                    self.doc.focus_pending = false;
                                 }
                                 if r1.changed() {
                                     if let Some(Region { kind: RegionKind::Plot3d { expr, .. }, .. }) = self.region_mut(id) {
@@ -2687,13 +2632,13 @@ impl App {
                                     }
                                     self.changed();
                                 }
-                                self.plot_buf = Some((bid, buf, String::new()));
+                                self.doc.plot_buf = Some((bid, buf, String::new()));
                             }
                         }
                         if *k3 != Plot3dKind::Contour {
                             // rotate with the left mouse button (selected plot), zoom with the plain wheel
                             let live = selected || editing;
-                            let rot = ui.interact(plot_rect, Id::new(("plot3d-rot", id)), if live { Sense::drag() } else { Sense::hover() });
+                            let rot = ui.interact(plot_rect, self.region_ui_id(("plot3d-rot", id)), if live { Sense::drag() } else { Sense::hover() });
                             if live && (rot.hovered() || rot.dragged()) {
                                 ctx.set_cursor_icon(CursorIcon::Grab);
                             }
@@ -2715,13 +2660,13 @@ impl App {
                                     view.zoom = (view.zoom * zoom).clamp(0.3, 4.0);
                                     *view = view.clamped();
                                 }
-                                self.modified = true;
+                                self.doc.modified = true;
                             }
                         }
                         if selected || editing {
                             let h = Rect::from_center_size(plot_rect.right_bottom(), Vec2::splat(8.0));
                             painter.rect_filled(h, 0.0, Color32::BLACK);
-                            let hr = ui.interact(h.expand(2.0), Id::new(("plot-resize", id)), Sense::drag());
+                            let hr = ui.interact(h.expand(2.0), self.region_ui_id(("plot-resize", id)), Sense::drag());
                             if hr.hovered() || hr.dragged() {
                                 ctx.set_cursor_icon(CursorIcon::ResizeNwSe);
                             }
@@ -2734,14 +2679,14 @@ impl App {
                                     *width = (*width + d.x).max(120.0);
                                     *height = (*height + d.y).max(100.0);
                                 }
-                                self.modified = true;
+                                self.doc.modified = true;
                             }
                         }
                     }
                 }
 
                 if !matches!(region.kind, RegionKind::Plot { .. } | RegionKind::Plot3d { .. }) && !editing {
-                    let resp = ui.interact(region_rect, Id::new(("region", id)), Sense::click_and_drag());
+                    let resp = ui.interact(region_rect, self.region_ui_id(("region", id)), Sense::click_and_drag());
                     self.region_interaction(&ctx, id, &resp, z);
                     clicked_region |= resp.clicked();
                     if resp.double_clicked() {
@@ -2774,28 +2719,28 @@ impl App {
                 }
                 new_rects.insert(id, Rect::from_min_max(to_ws(region_rect.min), to_ws(region_rect.max)));
             }
-            self.rects = new_rects;
+            self.doc.rects = new_rects;
             // keep the edited region in view while it is created or grows
-            if let Some(e) = self.editing {
-                if let Some(r) = self.rects.get(&e).copied() {
-                    if self.last_edit_rect != Some((e, r)) {
-                        self.last_edit_rect = Some((e, r));
-                        self.reveal = Some(r);
+            if let Some(e) = self.doc.editing {
+                if let Some(r) = self.doc.rects.get(&e).copied() {
+                    if self.doc.last_edit_rect != Some((e, r)) {
+                        self.doc.last_edit_rect = Some((e, r));
+                        self.doc.reveal = Some(r);
                     }
                 }
             } else {
-                self.last_edit_rect = None;
+                self.doc.last_edit_rect = None;
             }
-            if let Some(r) = self.reveal.take() {
+            if let Some(r) = self.doc.reveal.take() {
                 let sr = Rect::from_min_max(to_screen(r.min), to_screen(r.max)).expand(24.0);
                 ui.scroll_to_rect(sr, None);
             }
-            self.images.retain(|id| self.ws.regions.iter().any(|r| r.id == id));
+            self.doc.images.retain(|id| self.doc.ws.regions.iter().any(|r| r.id == id));
             // the baseline of the math regions decides the evaluation order (like in Mathcad);
             // this is layout bookkeeping, so the document is not marked as modified
             let mut order_changed = false;
             for (id, a) in anchor_updates {
-                if let Some(r) = self.ws.regions.iter_mut().find(|r| r.id == id) {
+                if let Some(r) = self.doc.ws.regions.iter_mut().find(|r| r.id == id) {
                     if (r.anchor[1] - a[1]).abs() > 0.25 && r.anchor[0] == 0.0 {
                         r.anchor = a;
                         order_changed = true;
@@ -2803,12 +2748,12 @@ impl App {
                 }
             }
             if order_changed {
-                self.dirty = true;
+                self.doc.dirty = true;
             }
 
             // crosshair
-            if self.editing.is_none() {
-                let c = to_screen(self.cursor);
+            if self.doc.editing.is_none() {
+                let c = to_screen(self.doc.cursor);
                 let s = Stroke::new(1.0_f32, Color32::RED);
                 painter.line_segment([c - Vec2::X * 6.0, c + Vec2::X * 6.0], s);
                 painter.line_segment([c - Vec2::Y * 6.0, c + Vec2::Y * 6.0], s);
@@ -2817,17 +2762,17 @@ impl App {
             // background: click places the crosshair, drag selects with a rubber band
             if bg.clicked() && !clicked_region {
                 self.finish_edit(false);
-                self.selection.clear();
+                self.doc.selection.clear();
                 if let Some(p) = bg.interact_pointer_pos() {
-                    self.cursor = snap(to_ws(p));
+                    self.doc.cursor = snap(to_ws(p));
                 }
                 ctx.memory_mut(|m| m.stop_text_input());
             }
             if bg.drag_started() {
                 self.finish_edit(false);
-                self.band_start = bg.interact_pointer_pos();
+                self.doc.band_start = bg.interact_pointer_pos();
             }
-            if let (Some(a), Some(b)) = (self.band_start, bg.interact_pointer_pos().or(ctx.pointer_latest_pos())) {
+            if let (Some(a), Some(b)) = (self.doc.band_start, bg.interact_pointer_pos().or(ctx.pointer_latest_pos())) {
                 let band = Rect::from_two_pos(a, b);
                 if bg.dragged() {
                     painter.rect_filled(band, 0.0, Color32::from_rgba_unmultiplied(49, 106, 197, 30));
@@ -2836,15 +2781,15 @@ impl App {
                 }
                 if bg.drag_stopped() {
                     let wsband = Rect::from_two_pos(to_ws(band.min), to_ws(band.max));
-                    self.selection = self.rects.iter().filter(|(_, r)| r.intersects(wsband)).map(|(id, _)| *id).collect();
-                    self.band_start = None;
+                    self.doc.selection = self.doc.rects.iter().filter(|(_, r)| r.intersects(wsband)).map(|(id, _)| *id).collect();
+                    self.doc.band_start = None;
                 }
             }
         });
-        self.scroll_off = out.state.offset;
-        self.view_min = out.inner_rect.min;
-        self.view_size = out.inner_rect.size();
-        self.content_size = out.content_size;
+        self.doc.scroll_off = out.state.offset;
+        self.doc.view_min = out.inner_rect.min;
+        self.doc.view_size = out.inner_rect.size();
+        self.doc.content_size = out.content_size;
         ui.set_style(orig_style);
     }
 
@@ -2853,7 +2798,7 @@ impl App {
     fn dump_rects_tick(&mut self, ctx: &Context) {
         let Some(path) = self.dump_rects.clone() else { return };
         ctx.request_repaint();
-        if self.ws.regions.is_empty() || self.dirty || self.evaluating || self.rects.len() != self.ws.regions.len() {
+        if self.doc.ws.regions.is_empty() || self.doc.dirty || self.doc.evaluating || self.doc.rects.len() != self.doc.ws.regions.len() {
             return;
         }
         self.dump_frames += 1;
@@ -2861,8 +2806,8 @@ impl App {
             return;
         }
         let mut out = String::new();
-        for r in &self.ws.regions {
-            if let Some(q) = self.rects.get(&r.id) {
+        for r in &self.doc.ws.regions {
+            if let Some(q) = self.doc.rects.get(&r.id) {
                 let src = match &r.kind {
                     RegionKind::Math { source } => source.replace(['\n', '\t'], " "),
                     _ => String::new(),
@@ -2889,10 +2834,10 @@ impl App {
     fn region_interaction(&mut self, ctx: &Context, id: u64, resp: &egui::Response, z: f32) {
         let ctrl = ctx.input(|i| i.modifiers.command);
         if resp.drag_started() {
-            if !self.selection.contains(&id) {
-                self.selection = vec![id];
+            if !self.doc.selection.contains(&id) {
+                self.doc.selection = vec![id];
             }
-            if self.editing != Some(id) {
+            if self.doc.editing != Some(id) {
                 self.finish_edit(false);
             }
             self.checkpoint();
@@ -2900,16 +2845,16 @@ impl App {
         if resp.dragged() {
             ctx.set_cursor_icon(CursorIcon::Grabbing);
             let d = resp.drag_delta() / z;
-            let sel = self.selection.clone();
-            for r in self.ws.regions.iter_mut().filter(|r| sel.contains(&r.id)) {
+            let sel = self.doc.selection.clone();
+            for r in self.doc.ws.regions.iter_mut().filter(|r| sel.contains(&r.id)) {
                 r.x = (r.x + d.x).max(0.0);
                 r.y = (r.y + d.y).max(0.0);
             }
             self.changed();
         }
         if resp.drag_stopped() {
-            let sel = self.selection.clone();
-            for r in self.ws.regions.iter_mut().filter(|r| sel.contains(&r.id)) {
+            let sel = self.doc.selection.clone();
+            for r in self.doc.ws.regions.iter_mut().filter(|r| sel.contains(&r.id)) {
                 let p = snap(Pos2::new(r.x, r.y));
                 r.x = p.x;
                 r.y = p.y;
@@ -2918,16 +2863,16 @@ impl App {
         }
         if resp.clicked() {
             if ctrl {
-                if let Some(i) = self.selection.iter().position(|s| *s == id) {
-                    self.selection.remove(i);
+                if let Some(i) = self.doc.selection.iter().position(|s| *s == id) {
+                    self.doc.selection.remove(i);
                 } else {
-                    self.selection.push(id);
+                    self.doc.selection.push(id);
                 }
             } else {
-                self.selection = vec![id];
+                self.doc.selection = vec![id];
                 self.begin_edit(id, true);
                 // matrix cells are edited in place, cell by cell; the rest structurally
-                self.edit_click = resp.interact_pointer_pos();
+                self.doc.edit_click = resp.interact_pointer_pos();
                 self.begin_inplace(ctx, id, resp.interact_pointer_pos());
             }
         }
@@ -2938,48 +2883,6 @@ impl App {
 
     fn dialogs(&mut self, ctx: &Context) {
         let mut insert: Option<String> = None;
-
-        let in_matrix = self.active_matrix_cell();
-        let mut matrix_op: Option<(bool, usize, usize)> = None;
-        if let Some(d) = &mut self.dlg_matrix {
-            let mut open = true;
-            let mut done = false;
-            egui::Window::new("Вставить матрицу").collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
-                egui::Grid::new("mdlg").show(ui, |ui| {
-                    ui.label("Строк:");
-                    ui.add(egui::DragValue::new(&mut d.rows).range(1..=100));
-                    ui.end_row();
-                    ui.label("Столбцов:");
-                    ui.add(egui::DragValue::new(&mut d.cols).range(1..=100));
-                    ui.end_row();
-                });
-                ui.horizontal(|ui| {
-                    if ui.button("Вставить").clicked() {
-                        done = true;
-                    }
-                    // with an active matrix cell: delete rows / columns starting at it
-                    if ui.add_enabled(in_matrix, egui::Button::new("Удалить")).clicked() {
-                        d.delete = true;
-                        done = true;
-                    }
-                    if ui.button("Отмена").clicked() {
-                        d.rows = 0;
-                        done = true;
-                    }
-                });
-            });
-            if done || !open {
-                if done && d.rows > 0 {
-                    if in_matrix {
-                        matrix_op = Some((!d.delete, d.rows, d.cols));
-                    } else {
-                        let row = vec!["■"; d.cols].join(", ");
-                        insert = Some(format!("[{}]", vec![row; d.rows].join("; ")));
-                    }
-                }
-                self.dlg_matrix = None;
-            }
-        }
 
         if let Some(d) = &mut self.dlg_function {
             let mut open = true;
@@ -3152,11 +3055,11 @@ impl App {
                 });
             });
             if result.is_some() || !open {
-                if result == Some(true) && d.opts != self.ws.format {
+                if result == Some(true) && d.opts != self.doc.ws.format {
                     let opts = d.opts;
                     self.dlg_format = None;
                     self.checkpoint();
-                    self.ws.format = opts;
+                    self.doc.ws.format = opts;
                     self.changed();
                 } else {
                     self.dlg_format = None;
@@ -3257,6 +3160,8 @@ impl App {
                 let text = d.text.trim().to_string();
                 if ok && !text.is_empty() {
                     self.file_chosen(ctx, d.kind, PathBuf::from(text), d.then);
+                } else if d.then == Some(Action::Exit) {
+                    self.workspace.exit_discarded.clear();
                 }
             }
         }
@@ -3289,15 +3194,20 @@ impl App {
                 }
                 Some(1) => {
                     self.confirm = None;
-                    self.modified = false;
+                    if a == Action::Exit {
+                        self.workspace.exit_discarded.push(self.doc.id);
+                    }
                     self.do_action(ctx, a);
                 }
-                Some(_) => self.confirm = None,
+                Some(_) => {
+                    self.confirm = None;
+                    self.workspace.exit_discarded.clear();
+                }
                 None => {}
             }
         }
 
-        if let Some(list) = &self.save_warnings {
+        if let Some(list) = &self.doc.save_warnings {
             let mut close = false;
             egui::Window::new("Сохранение в Mathcad 15")
                 .collapsible(false)
@@ -3317,7 +3227,7 @@ impl App {
                     }
                 });
             if close {
-                self.save_warnings = None;
+                self.doc.save_warnings = None;
             }
         }
 
@@ -3325,10 +3235,10 @@ impl App {
             egui::Window::new("Справка xmath").open(&mut self.show_help).default_size([560.0, 520.0]).show(ctx, |ui| {
                 ScrollArea::vertical().show(ui, |ui| {
                     ui.label(RichText::new(HELP).size(13.0));
-                    if !self.import_log.is_empty() {
+                    if !self.doc.import_log.is_empty() {
                         ui.separator();
                         ui.label(RichText::new("Журнал импорта").strong());
-                        for w in &self.import_log {
+                        for w in &self.doc.import_log {
                             ui.label(w);
                         }
                     }
@@ -3345,20 +3255,8 @@ impl App {
             });
         }
 
-        if let Some((ins, r, c)) = matrix_op {
-            // Mathcad: rows and columns are counted separately; the cell stays active
-            self.matrix_edit(ctx, ins, r, c);
-        }
         if let Some(s) = insert {
-            let matrix = s.starts_with('[') && s.contains('■');
-            if matrix && self.editing_math().is_none() {
-                self.new_matrix_region(ctx, s);
-            } else {
-                self.insert(ctx, &s);
-                if matrix {
-                    self.linear_to_cells(ctx);
-                }
-            }
+            self.insert(ctx, &s);
         }
     }
 }
@@ -3377,7 +3275,7 @@ impl App {
     /// Current ORIGIN / TOL / CTOL as defined by regions of the worksheet.
     fn builtin_values(&self) -> (i32, String, String) {
         let find = |name: &str| {
-            self.ws.regions.iter().find_map(|r| match &r.kind {
+            self.doc.ws.regions.iter().find_map(|r| match &r.kind {
                 RegionKind::Math { source } => builtin_def(source, name).map(str::to_string),
                 _ => None,
             })
@@ -3390,7 +3288,7 @@ impl App {
     /// or inserts a global definition at the top (not needed for default values).
     fn set_builtin(&mut self, name: &str, value: &str, default: &str) {
         let src = format!("{name} ≡ {value}");
-        if let Some(r) = self.ws.regions.iter_mut().find(|r| matches!(&r.kind, RegionKind::Math { source } if builtin_def(source, name).is_some())) {
+        if let Some(r) = self.doc.ws.regions.iter_mut().find(|r| matches!(&r.kind, RegionKind::Math { source } if builtin_def(source, name).is_some())) {
             if let RegionKind::Math { source } = &mut r.kind {
                 *source = src;
             }
@@ -3399,17 +3297,17 @@ impl App {
         if value == default {
             return;
         }
-        let min_y = self.ws.regions.iter().map(|r| r.y).fold(f32::MAX, f32::min);
+        let min_y = self.doc.ws.regions.iter().map(|r| r.y).fold(f32::MAX, f32::min);
         let mut y = if min_y == f32::MAX { 8.0 } else { min_y - 28.0 };
         if y < 4.0 {
             let d = 4.0 - y;
-            for r in &mut self.ws.regions {
+            for r in &mut self.doc.ws.regions {
                 r.y += d;
             }
             y = 4.0;
         }
-        let id = self.ws.next_id();
-        self.ws.regions.push(Region::new(id, 24.0, y, RegionKind::Math { source: src }));
+        let id = self.doc.ws.next_id();
+        self.doc.ws.regions.push(Region::new(id, 24.0, y, RegionKind::Math { source: src }));
     }
 
     fn apply_options(&mut self, d: &OptionsDlg) {
@@ -3418,7 +3316,7 @@ impl App {
         let ctol = d.ctol.trim().replace(',', ".");
         let tol_ok = tol.parse::<f64>().is_ok_and(|v| v > 0.0);
         let ctol_ok = ctol.parse::<f64>().is_ok_and(|v| v > 0.0);
-        let changed = d.origin != o || (tol_ok && tol != t) || (ctol_ok && ctol != c) || d.units != self.ws.format.unit_system;
+        let changed = d.origin != o || (tol_ok && tol != t) || (ctol_ok && ctol != c) || d.units != self.doc.ws.format.unit_system;
         if !changed {
             return;
         }
@@ -3430,7 +3328,7 @@ impl App {
         if ctol_ok {
             self.set_builtin("CTOL", &ctol, "0.001");
         }
-        self.ws.format.unit_system = d.units;
+        self.doc.ws.format.unit_system = d.units;
         self.changed();
     }
 
@@ -3453,9 +3351,9 @@ impl App {
             if polar && k < 2 {
                 continue;
             }
-            let tid = Id::new(("plot-lim", id, k));
-            let mine = self.lim_buf.as_ref().is_some_and(|b| b.id == id && b.k == k);
-            let mut text = match &self.lim_buf {
+            let tid = self.region_ui_id(("plot-lim", id, k));
+            let mine = self.doc.lim_buf.as_ref().is_some_and(|b| b.id == id && b.k == k);
+            let mut text = match &self.doc.lim_buf {
                 Some(b) if mine => b.text.clone(),
                 _ => user[k].map(plot::fmt_limit).unwrap_or_default(),
             };
@@ -3477,13 +3375,13 @@ impl App {
             }
             if r.has_focus() {
                 if !mine {
-                    self.lim_buf = Some(LimBuf { id, k, text: text.clone(), changed: false });
+                    self.doc.lim_buf = Some(LimBuf { id, k, text: text.clone(), changed: false });
                 }
                 if r.changed() {
                     let t = text.trim().replace(',', ".");
                     let parsed: Option<Option<f64>> = if t.is_empty() { Some(None) } else { t.parse::<f64>().ok().filter(|v| v.is_finite()).map(Some) };
                     let mut first = false;
-                    if let Some(b) = &mut self.lim_buf {
+                    if let Some(b) = &mut self.doc.lim_buf {
                         b.text = text.clone();
                         if parsed.is_some() {
                             first = !std::mem::replace(&mut b.changed, true);
@@ -3505,38 +3403,38 @@ impl App {
                 }
                 if ui.input(|i| i.key_pressed(Key::Enter) || i.key_pressed(Key::Escape)) {
                     r.surrender_focus();
-                    self.lim_buf = None;
+                    self.doc.lim_buf = None;
                 }
             } else if mine {
-                self.lim_buf = None;
+                self.doc.lim_buf = None;
             }
         }
     }
 
     /// Starts a background evaluation once typing has paused (debounce).
     fn drive_evaluation(&mut self, ctx: &Context) {
-        while let Ok(done) = self.eval_rx.try_recv() {
-            if done.gen == self.eval_gen {
-                self.outputs = done.outputs;
-                self.evaluating = false;
+        while let Ok(done) = self.doc.eval_rx.try_recv() {
+            if done.gen == self.doc.eval_gen {
+                self.doc.outputs = done.outputs;
+                self.doc.evaluating = false;
                 ctx.request_repaint();
             }
         }
-        let wanted = self.dirty && (self.auto_calc || self.force_calc);
+        let wanted = self.doc.dirty && (self.auto_calc || self.doc.force_calc);
         if wanted {
-            let since = *self.dirty_since.get_or_insert_with(|| Instant::now() - Duration::from_secs(1));
+            let since = *self.doc.dirty_since.get_or_insert_with(|| Instant::now() - Duration::from_secs(1));
             let wait = Duration::from_millis(150);
             if since.elapsed() >= wait {
-                self.eval_gen += 1;
-                let gen = self.eval_gen;
-                let ws = self.ws.clone();
+                self.doc.eval_gen += 1;
+                let gen = self.doc.eval_gen;
+                let ws = self.doc.ws.clone();
                 let env = self.eval_env();
-                let tx = self.eval_tx.clone();
+                let tx = self.doc.eval_tx.clone();
                 let c = ctx.clone();
-                self.dirty = false;
-                self.force_calc = false;
-                self.dirty_since = None;
-                self.evaluating = true;
+                self.doc.dirty = false;
+                self.doc.force_calc = false;
+                self.doc.dirty_since = None;
+                self.doc.evaluating = true;
                 std::thread::spawn(move || {
                     let outputs = xmath_core::evaluate_worksheet_with(&ws, false, &env);
                     let _ = tx.send(EvalDone { gen, outputs });
@@ -3595,9 +3493,9 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.serve_live(ctx);
-        if ctx.input(|i| i.viewport().close_requested()) && self.modified && !self.allow_close {
+        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.confirm = Some(Action::Exit);
+            self.run(ctx, Action::Exit);
         }
 
         self.hint = ctx.data_mut(|d| d.remove_temp::<String>(Id::new("xmath-hint"))).unwrap_or_default();
@@ -3607,8 +3505,10 @@ impl eframe::App for App {
         let f = crate::uiscale::effective(ctx, self.ui_scale, &mut self.ui_scale_auto);
         crate::uiscale::apply(ctx, f);
         self.poll_dialog(ctx);
+        self.focus_clicked_sheet(ctx);
         self.shortcuts(ctx);
         self.sheet_keys(ctx);
+        let matrix_command = self.matrix_dialog(ctx);
 
         egui::TopBottomPanel::top("menu").frame(egui::Frame::default().fill(PANEL).inner_margin(2.0)).show(ctx, |ui| {
             self.menu_bar(ui);
@@ -3636,22 +3536,25 @@ impl eframe::App for App {
                 self.status_bar(ui);
             });
         }
-        egui::CentralPanel::default().frame(egui::Frame::default().fill(Color32::WHITE)).show(ctx, |ui| {
-            self.canvas(ui);
-        });
+        self.document_bar(ctx);
+        self.draw_workspace(ctx);
         self.palette_windows(ctx);
         self.dialogs(ctx);
         self.plot_dialogs(ctx);
         self.print_windows(ctx);
 
+        if let Some(command) = matrix_command {
+            self.apply_matrix_dialog(ctx, command);
+        }
+
         for a in std::mem::take(&mut self.pending) {
             self.run(ctx, a);
         }
 
-        self.drive_evaluation(ctx);
+        self.evaluate_documents(ctx);
         self.dump_rects_tick(ctx);
 
-        let title = format!("xmath - [{}{}]", self.doc_name(), if self.modified { " *" } else { "" });
+        let title = format!("xmath - [{}{}]", self.doc_name(), if self.doc.modified { " *" } else { "" });
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
@@ -3697,29 +3600,29 @@ mod live_tests {
         let cc = eframe::CreationContext::_new_kittest(Context::default());
         let mut app = App::new(&cc, None, false);
         let original = Worksheet::from_lines("x := 1");
-        app.ws = original.clone();
+        app.doc.ws = original.clone();
         let read = app.handle_live(&json!({"cmd": "get"}));
         let edit = json!({"cmd": "set_if_current", "revision": read["revision"], "worksheet": Worksheet::from_lines("x := 2")});
 
-        app.editing = Some(1);
+        app.doc.editing = Some(1);
         assert!(app.handle_live(&edit)["error"].is_string());
-        assert_eq!(app.editing, Some(1));
-        app.editing = None;
+        assert_eq!(app.doc.editing, Some(1));
+        app.doc.editing = None;
 
-        app.ws = Worksheet::from_lines("x := 3");
+        app.doc.ws = Worksheet::from_lines("x := 3");
         assert!(app.handle_live(&edit)["error"].is_string());
-        assert_eq!(app.ws.to_json(), Worksheet::from_lines("x := 3").to_json());
-        assert!(app.undo.is_empty());
+        assert_eq!(app.doc.ws.to_json(), Worksheet::from_lines("x := 3").to_json());
+        assert!(app.doc.undo.is_empty());
 
-        app.ws = original.clone();
-        app.after_load(); // Another document with identical contents.
+        // Another open document with identical contents has its own revision.
+        app.push_document(&cc.egui_ctx, original.clone(), None);
         assert!(app.handle_live(&edit)["error"].is_string());
         let read = app.handle_live(&json!({"cmd": "get"}));
         let mut fresh = edit.clone();
         fresh["revision"] = read["revision"].clone();
         assert_eq!(app.handle_live(&fresh)["ok"], true);
-        assert_eq!(app.undo.len(), 1);
-        assert_eq!(app.undo[0].to_json(), original.to_json());
+        assert_eq!(app.doc.undo.len(), 1);
+        assert_eq!(app.doc.undo[0].to_json(), original.to_json());
         assert!(app.handle_live(&fresh)["error"].is_string());
     }
 }

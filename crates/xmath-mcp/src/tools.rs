@@ -18,7 +18,7 @@ const GAP: f32 = 0.0;
 const LEFT: f32 = 20.0;
 
 pub fn tool_list() -> Value {
-    let path = json!({"type":"string","description":"Path to a .xmath or Mathcad 15 .xmcd file (absolute, or relative to the server's working directory), or \"window\" for the worksheet open in the xmath program window the user works in (select a window with list_open_windows and keep its window:<pid> for the whole task). With \"window\" the changes appear in that window at once (one Ctrl+Z step there); do not start xmath or open a new file then."});
+    let path = json!({"type":"string","description":"Path to a .xmath or Mathcad 15 .xmcd file (absolute, or relative to the server's working directory), or \"window\" for the worksheet open in the xmath program window the user works in (select a document with list_open_windows and keep its target for the whole task). With \"window\" the changes appear in that window at once (one Ctrl+Z step there); do not start xmath or open a new file then."});
     let revision = json!({"type":"string","description":"For a window, pass the revision returned by the last open or edit. A changed document must be read again."});
     json!([
         {
@@ -34,7 +34,7 @@ pub fn tool_list() -> Value {
         },
         {
             "name": "list_open_windows",
-            "description": "List the xmath program windows the user has open (pid, document title, file path or null if unsaved, modified flag, number of regions), the most recently used first. When the user asks to work in the open xmath / the open window / \"в открытом окне\", call this and then use the selected window:<pid> for all calls in this task.",
+            "description": "List open xmath documents with their stable target, title, file path, modified flag and region count. The most recently used document comes first. When the user asks to work in the open xmath / the open window / \"в открытом окне\", call this and then use the selected target for all calls in this task.",
             "inputSchema": {"type":"object","properties":{}}
         },
         {
@@ -843,12 +843,13 @@ fn list_open_windows() -> ToolResult {
             data: json!({"windows": []}),
         });
     }
-    let mut text = String::from("open xmath windows (use the selected window:<pid> for the whole task):");
+    let mut text = String::from("open xmath documents (use the selected target for the whole task):");
     let mut list = Vec::new();
     for (i, (_, info)) in ws.iter().enumerate() {
         text.push_str(&format!(
-            "\n{}. pid {}: {} ({} regions{}{})",
+            "\n{}. {} (pid {}): {} ({} regions{}{})",
             i + 1,
+            info["target"].as_str().unwrap_or("window"),
             info["pid"],
             info["title"].as_str().unwrap_or("?"),
             info["regions"],

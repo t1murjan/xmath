@@ -8,6 +8,9 @@
 //! * `{"cmd":"set_if_current","revision": <from get>, "worksheet": <worksheet JSON>}` → `{"ok": true, "revision": <new revision>}` if the document still matches
 //! * Legacy clients: `{"cmd":"set","worksheet": <worksheet JSON>}` → `{"ok": true}` (one undo step in the window)
 //!
+//! `info` also lists the open worksheets in `documents`. Pass the selected `document_id`
+//! to `get` or `set_if_current` to address that worksheet regardless of focus.
+//!
 //! Errors are replied as `{"error": "..."}`.
 
 use std::path::PathBuf;

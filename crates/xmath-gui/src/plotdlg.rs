@@ -716,7 +716,7 @@ impl App {
         let mut d = PlotDlg::new(id, fmt.clone(), kind);
         d.limits = [x_min, x_max, y_min, y_max];
         d.applied = (fmt.clone(), d.limits);
-        let data = match self.outputs.get(&id).map(|o| &o.output) {
+        let data = match self.doc.outputs.get(&id).map(|o| &o.output) {
             Some(Output::Plot(p)) => p.clone(),
             _ => Default::default(),
         };
@@ -725,7 +725,7 @@ impl App {
         let l = ax.limits();
         let l2 = ax.limits2();
         d.auto = [l[0], l[1], l[2], l[3], l2[0], l2[1]];
-        self.selection = vec![id];
+        self.doc.selection = vec![id];
         self.dlg_plot = Some(d);
     }
 
@@ -738,7 +738,7 @@ impl App {
             return;
         }
         let Some(Region { kind: RegionKind::Plot3d { fmt, view, .. }, .. }) = self.region(id).cloned() else { return };
-        self.selection = vec![id];
+        self.doc.selection = vec![id];
         self.dlg_plot3d = Some(Plot3dDlg { id, fmt, view });
     }
 
@@ -756,7 +756,7 @@ impl App {
             (*x_min, *x_max, *y_min, *y_max) = (lim[0], lim[1], lim[2], lim[3]);
         }
         if d.use_as_default {
-            self.ws.plot_defaults = Some(d.fmt.clone());
+            self.doc.ws.plot_defaults = Some(d.fmt.clone());
             d.use_as_default = false;
         }
         d.applied = (d.fmt.clone(), d.limits);
@@ -771,7 +771,7 @@ impl App {
                 return; // the plot is gone
             }
             let title = if d.kind == PlotKind::Polar { "Форматирование выбранного полярного графика" } else { "Форматирование выбранного графика X-Y" };
-            let defaults = self.ws.plot_defaults.clone();
+            let defaults = self.doc.ws.plot_defaults.clone();
             let can_apply = d.changed() || d.use_as_default;
             let res = dialog_window(ctx, "plot-format", title, can_apply, DLG_W, |ui| {
                 ui.set_width(DLG_W);
