@@ -743,7 +743,8 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
         })(),
         "Φ" | "heaviside" => (|| {
             arity(name, args, 1)?;
-            map1(&args[0], |n| Ok(Num::real(if n.v.re >= 0.0 { 1.0 } else { 0.0 })))
+            // Mathcad 14+ defines the Heaviside step at zero as one half
+            map1(&args[0], |n| Ok(Num::real(if n.v.re > 0.0 { 1.0 } else if n.v.re == 0.0 { 0.5 } else { 0.0 })))
         })(),
         "δ" | "kronecker" => (|| {
             arity(name, args, 2)?;

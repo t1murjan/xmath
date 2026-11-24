@@ -250,7 +250,8 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
         "asin" => one(&|v| real_or_complex(v, f64::asin, |z| z.asin())),
         "acos" => one(&|v| real_or_complex(v, f64::acos, |z| z.acos())),
         "atan" => one(&|v| real_or_complex(v, f64::atan, |z| z.atan())),
-        "acot" => one(&|v| real_or_complex(v, |x| (1.0 / x).atan(), |z| (1.0 / z).atan())),
+        // Mathcad's acot has the range (0, π): atan2(1, x), not atan(1/x)
+        "acot" => one(&|v| real_or_complex(v, |x| 1.0f64.atan2(x), |z| (C64::new(1.0, 0.0) / z).atan())),
         "sinh" => one(&|v| complex_fn(v, |z| z.sinh())),
         "cosh" => one(&|v| complex_fn(v, |z| z.cosh())),
         "tanh" => one(&|v| complex_fn(v, |z| z.tanh())),

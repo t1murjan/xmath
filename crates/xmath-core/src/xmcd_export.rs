@@ -789,7 +789,10 @@ impl Exporter<'_> {
         }
         match (name, args.len()) {
             ("sqrt", 1) => self.apply("ml:sqrt", &refs(args), o, d),
-            ("nthroot", 2) => self.apply("ml:nthRoot", &refs(args), o, d),
+            ("nthroot", 2) => {
+                // the built-in takes (radicand, index); Mathcad stores (root index, radicand)
+                self.apply("ml:nthRoot", &[&args[1], &args[0]], o, d)
+            }
             ("transpose", 1) => self.apply("ml:transpose", &refs(args), o, d),
             ("conj", 1) => self.apply("ml:conjugate", &refs(args), o, d),
             ("polyroots", 1) => self.apply("ml:polyroots", &refs(args), o, d),

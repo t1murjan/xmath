@@ -896,8 +896,9 @@ fn conv_apply(cx: &mut Cx, n: Node) -> R<Expr> {
             Ok(Expr::Call("sqrt".into(), vec![conv(cx, args[0])?]))
         }
         "nthRoot" => {
+            // Mathcad stores (root index, radicand); the built-in takes (radicand, index)
             need(args, 2, "nthRoot")?;
-            Ok(Expr::Call("nthroot".into(), vec![conv(cx, args[0])?, conv(cx, args[1])?]))
+            Ok(Expr::Call("nthroot".into(), vec![conv(cx, args[1])?, conv(cx, args[0])?]))
         }
         "absval" => {
             need(args, 1, "absval")?;

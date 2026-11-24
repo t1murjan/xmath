@@ -8,7 +8,7 @@
 <region region-id="5" left="36" top="180" width="90" height="40"><math><ml:eval><ml:apply><ml:product/><ml:lambda><ml:boundVars><ml:id>k</ml:id></ml:boundVars><ml:id>k</ml:id></ml:lambda><ml:bounds><ml:real>1</ml:real><ml:real>5</ml:real></ml:bounds></ml:apply></ml:eval></math></region>
 <region region-id="6" left="36" top="230" width="90" height="21"><math><ml:define><ml:id>j</ml:id><ml:range><ml:real>1</ml:real><ml:real>4</ml:real></ml:range></ml:define></math></region>
 <region region-id="7" left="36" top="260" width="90" height="40"><math><ml:eval><ml:apply><ml:rangeSum/><ml:lambda><ml:boundVars><ml:id>j</ml:id></ml:boundVars><ml:apply><ml:pow/><ml:id>j</ml:id><ml:real>2</ml:real></ml:apply></ml:lambda></ml:apply></ml:eval></math></region>
-<region region-id="8" left="36" top="310" width="90" height="21"><math><ml:eval><ml:apply><ml:nthRoot/><ml:real>27</ml:real><ml:real>3</ml:real></ml:apply></ml:eval></math></region>
+<region region-id="8" left="36" top="310" width="90" height="21"><math><ml:eval><ml:apply><ml:nthRoot/><ml:real>3</ml:real><ml:real>27</ml:real></ml:apply></ml:eval></math></region>
 <region region-id="9" left="36" top="337" width="90" height="21"><math><ml:eval><ml:apply><ml:factorial/><ml:real>5</ml:real></ml:apply></ml:eval></math></region>
 </regions>
 </worksheet>

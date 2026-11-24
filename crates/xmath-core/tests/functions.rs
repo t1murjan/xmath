@@ -329,7 +329,9 @@ fn scalar_helpers() {
     close(num(&["lcm(4, 6)"]), 12.0, 0.0);
     close(num(&["lcm(4, 6, 10)"]), 60.0, 0.0);
     close(num(&["Φ(-1)"]), 0.0, 0.0);
-    close(num(&["Φ(0)"]), 1.0, 0.0);
+    // Mathcad 14+ defines the step at zero as one half (mg_function.xmcd stores Φ(0) = 0.5)
+    close(num(&["Φ(0)"]), 0.5, 0.0);
+    close(num(&["Φ(-1)"]), 0.0, 0.0);
     close(num(&["heaviside(3 m)"]), 1.0, 0.0);
     close(num(&["δ(2, 2)"]), 1.0, 0.0);
     close(num(&["kronecker(1, 2)"]), 0.0, 0.0);
