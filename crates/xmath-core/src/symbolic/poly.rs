@@ -47,6 +47,35 @@ pub fn pmul(a: &P, b: &P) -> P {
     trim(out)
 }
 
+thread_local! {
+    /// Deadline of the current symbolic attempt and whether it was hit (see [`start_budget`]).
+    static BUDGET: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+    static EXPIRED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Limits one symbolic attempt to `d`. Exact gcds of polynomials whose coefficients came from
+/// floating-point numbers grow without bound (a 177 kB Mathcad sample drove one for minutes), so
+/// the attempt gives up and the caller falls back to a numeric method.
+pub fn start_budget(d: std::time::Duration) {
+    BUDGET.with(|b| b.set(Some(std::time::Instant::now() + d)));
+    EXPIRED.with(|e| e.set(false));
+}
+
+/// True when the attempt has run out of time; sticky for the duration of the attempt.
+pub fn budget_expired() -> bool {
+    let hit = BUDGET.with(|b| b.get().is_some_and(|t| std::time::Instant::now() >= t));
+    if hit {
+        EXPIRED.with(|e| e.set(true));
+    }
+    hit
+}
+
+/// Ends the budget and reports whether it was hit.
+pub fn end_budget() -> bool {
+    BUDGET.with(|b| b.set(None));
+    EXPIRED.with(|e| e.replace(false))
+}
+
 pub fn pscale(a: &P, c: &Rat) -> P {
     trim(a.iter().map(|x| x * c).collect())
 }
@@ -61,6 +90,9 @@ pub fn pdivrem(a: &P, b: &P) -> (P, P) {
     let mut q = vec![Rat::zero(); r.len() - db + 1];
     let lb = b.last().unwrap().clone();
     while r.len() >= db {
+        if budget_expired() {
+            return (Vec::new(), r);
+        }
         let c = r.last().unwrap() / &lb;
         let shift = r.len() - db;
         for (i, y) in b.iter().enumerate() {
@@ -98,6 +130,9 @@ pub fn pmonic(a: &P) -> P {
 pub fn pgcd(a: &P, b: &P) -> P {
     let (mut a, mut b) = (a.clone(), b.clone());
     while !b.is_empty() {
+        if budget_expired() {
+            return vec![Rat::one()];
+        }
         let (_, r) = pdivrem(&a, &b);
         a = b;
         b = r;

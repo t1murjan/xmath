@@ -907,10 +907,28 @@ fn conv_apply(cx: &mut Cx, n: Node) -> R<Expr> {
         "integral" | "derivative" | "summation" | "product" | "rangeSum" | "rangeProduct" => {
             binding(cx, head, args)
         }
+        // the symbolic limit: lim(f, x, a), the engine's own form (see symbolic::calculus)
+        "limit" => {
+            need(args, 2, "limit")?;
+            let lam = args.iter().find(|a| lname(**a) == "lambda").ok_or("<limit> без lambda")?;
+            let lk = kids(*lam);
+            let var_node = lk
+                .iter()
+                .filter(|k| lname(**k) == "boundVars")
+                .flat_map(|bv| kids(*bv))
+                .next()
+                .ok_or("lambda без связанной переменной")?;
+            let var = id_name(var_node)?;
+            let body_node = lk.iter().rev().find(|k| lname(**k) != "boundVars").ok_or("lambda без тела")?;
+            Ok(Expr::Call("lim".into(), vec![conv(cx, *body_node)?, Expr::Var(var), conv(cx, args[1])?]))
+        }
         "id" => {
             let name = id_name(head)?;
             Ok(Expr::Call(name, conv_all(cx, args)?))
         }
+        // `genfit`, `Odesolve`, ... are written as operation elements, but they are ordinary
+        // function calls of Mathcad: any head with the name of a built-in becomes a call.
+        other if crate::builtins::NAMES.contains(&other) => Ok(Expr::Call(other.to_string(), conv_all(cx, args)?)),
         other => Err(format!("неподдерживаемая операция <{other}>")),
     }
 }
