@@ -82,8 +82,15 @@ pub const FUNCTION_DOCS: &[(&str, &str)] = &[
 
     ("dchisq", "dchisq(x, d): chi-square probability density, d degrees of freedom"),
 
-    ("cfft", "cfft(v): complex discrete Fourier transform of a vector, normalized by 1/N"),
-    ("icfft", "icfft(v): inverse of cfft (no extra normalization)"),
+    ("cfft", "cfft(v) / CFFT(v): complex discrete Fourier transform of a vector, normalized by 1/N"),
+
+    ("rgb_to_hsv", "rgb_to_hsv([r, g, b]): hue in degrees, saturation and value 0..255"),
+    ("hsv_to_rgb", "hsv_to_rgb([h, s, v]): the RGB triple for a hue (degrees) and 0..255 s, v"),
+    ("rgb_to_hls", "rgb_to_hls([r, g, b]): hue in degrees, lightness and saturation 0..255"),
+    ("hls_to_rgb", "hls_to_rgb([h, l, s]): the RGB triple for a hue (degrees) and 0..255 l, s"),
+    ("icfft", "icfft(v) / ICFFT(v): inverse of cfft (no extra normalization)"),
+    ("CFFT", "CFFT(v): Mathcad's spelling of cfft, the complex discrete Fourier transform"),
+    ("ICFFT", "ICFFT(v): Mathcad's spelling of icfft, the inverse complex transform"),
     ("FFT", "FFT(v): packed spectrum (N/2+1 bins) of a real vector, normalized by 1/N"),
     ("IFFT", "IFFT(u): real signal behind a packed FFT spectrum"),
     ("pchisq", "pchisq(x, d): chi-square cumulative distribution"),

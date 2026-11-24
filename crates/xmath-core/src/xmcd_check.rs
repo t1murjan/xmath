@@ -93,7 +93,7 @@ pub fn check_import(r: &ImportResult) -> CheckReport {
 /// saved, because the draw is not reproduced.
 const RANDOM_FNS: &[&str] = &[
     "rnd", "runif", "rnorm", "rexp", "rpois", "rbinom", "rgamma", "rchisq", "rbeta", "rt", "rlnorm", "rweibull",
-    "rcauchy", "rlogis", "rgeom",
+    "rcauchy", "rlogis", "rgeom", "whiten", "rnd", "noise",
 ];
 
 /// Regions whose value comes from a random generator, directly or through a variable defined

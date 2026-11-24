@@ -779,7 +779,17 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
                 Ok(mu + sigma * special::qnorm_std(p))
             })
         })(),
-        "cfft" | "icfft" | "FFT" | "IFFT" => (|| {
+        "rgb_to_hsv" | "hsv_to_rgb" | "rgb_to_hls" | "hls_to_rgb" => (|| {
+            arity(name, args, 1)?;
+            let v = crate::color::arg(&args[0])?;
+            Ok(crate::color::out(match name {
+                "rgb_to_hsv" => crate::color::rgb_to_hsv(v),
+                "hsv_to_rgb" => crate::color::hsv_to_rgb(v),
+                "rgb_to_hls" => crate::color::rgb_to_hls(v),
+                _ => crate::color::hls_to_rgb(v),
+            }))
+        })(),
+        "cfft" | "CFFT" | "icfft" | "ICFFT" | "FFT" | "IFFT" => (|| {
             arity(name, args, 1)?;
             let v = crate::fft::as_vector(&args[0])?;
             if v.is_empty() {
@@ -791,8 +801,8 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
                 return Err("FFT: длина должна быть чётной (в Mathcad — степень двойки)".into());
             }
             let out = match name {
-                "cfft" => crate::fft::cfft(&v),
-                "icfft" => crate::fft::icfft(&v),
+                "cfft" | "CFFT" => crate::fft::cfft(&v),
+                "icfft" | "ICFFT" => crate::fft::icfft(&v),
                 "FFT" => crate::fft::fft(&v),
                 _ => crate::fft::ifft(&v),
             };

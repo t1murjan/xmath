@@ -7,6 +7,7 @@ pub mod live;
 pub mod ast;
 pub mod builtins;
 mod builtins_ext;
+pub mod color;
 pub mod eval;
 pub mod fft;
 mod fitting;
