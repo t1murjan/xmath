@@ -27,7 +27,12 @@ fn same_region(a: &Region, b: &Region) -> Result<(), String> {
     }
     match (&a.kind, &b.kind) {
         (RegionKind::Math { source: s }, RegionKind::Math { source: t }) => {
-            let canon = |x: &str| parse_statement(x).map(|s| s.to_string()).unwrap_or_else(|_| x.to_string());
+            // a one-statement program is the statement itself: Mathcad's schema requires two
+            // statements, so the exporter drops the braces
+            let canon = |x: &str| {
+                let x = single_statement(x);
+                parse_statement(&x).map(|s| s.to_string()).unwrap_or(x)
+            };
             if canon(s) != canon(t) {
                 return Err(format!("math «{s}» != «{t}»"));
             }
@@ -365,4 +370,18 @@ fn debug_eval() {
     let ia: Vec<u64> = a.evaluation_order().iter().map(|&i| a.regions[i].id).collect();
     let ic: Vec<u64> = c.evaluation_order().iter().map(|&i| c.regions[i].id).collect();
     println!("order same: {}", ia == ic);
+}
+
+/// `name(x) := { stmt } -> name(x) := stmt`, and the same for a bare `{ stmt }`.
+fn single_statement(s: &str) -> String {
+    let Some(open) = s.find("{ ") else { return s.to_string() };
+    let Some(close) = s.rfind(" }") else { return s.to_string() };
+    if close + 2 != s.len() || close <= open {
+        return s.to_string();
+    }
+    let inner = &s[open + 2..close];
+    if inner.contains(';') || inner.contains('{') {
+        return s.to_string();
+    }
+    format!("{}{}", &s[..open], inner)
 }
