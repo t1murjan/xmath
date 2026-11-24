@@ -73,6 +73,7 @@ pub fn import_xmcd(xml: &str) -> Result<ImportResult, String> {
         items: HashMap::new(),
         styles: HashMap::new(),
         used: HashSet::new(),
+        tables: Vec::new(),
         regions: Vec::new(),
         expected: HashMap::new(),
     };
@@ -147,6 +148,14 @@ pub fn import_xmcd(xml: &str) -> Result<ImportResult, String> {
     }
 
     ws.regions = std::mem::take(&mut cx.regions);
+    // data tables feed the worksheet's math: their values become global definitions, so every
+    // region sees them regardless of where the component sits on the page
+    for (name, values) in std::mem::take(&mut cx.tables) {
+        if let Some(lit) = crate::component::literal(&values) {
+            let id = ws.next_id();
+            ws.regions.push(Region::new(id, 20.0, 20.0, RegionKind::Math { source: format!("{name} ≡ {lit}") }));
+        }
+    }
     if let Some(o) = origin.filter(|&o| o != 0) {
         let top = ws.regions.iter().map(|r| r.y).fold(0.0f32, f32::min);
         let id = cx.used.iter().max().map_or(1, |m| m + 1);
@@ -170,6 +179,8 @@ struct Cx {
     /// Paragraph styles from the worksheet settings.
     styles: HashMap<String, TextStyle>,
     used: HashSet<u64>,
+    /// Data-table values found in `<component>` payloads: (output name, values).
+    tables: Vec<(String, Vec<f64>)>,
     regions: Vec<Region>,
     expected: HashMap<u64, Expected>,
 }
@@ -397,6 +408,18 @@ fn note(text: &str, w: Option<f32>) -> RegionKind {
 }
 
 /// A picture region from the rendering Mathcad stored, if any.
+/// A data component's output name (from `<outputs>`) and the table values of its OLE payload.
+fn component_table(cx: &Cx, body: Node) -> Option<(String, Vec<f64>)> {
+    let id = body.attribute("item-idref")?;
+    let name = kids(child(body, "outputs")?)
+        .into_iter()
+        .find(|n| lname(*n) == "id")
+        .map(|n| n.text().unwrap_or("").trim().to_string())
+        .filter(|n| !n.is_empty())?;
+    let values = crate::component::table_values(&cx.item_bytes(id)?)?;
+    Some((name, values))
+}
+
 fn image_kind(cx: &Cx, reg: Node, raw: (Option<f32>, Option<f32>)) -> Option<RegionKind> {
     let png = cx.picture(reg)?;
     Some(RegionKind::Image { png_base64: png, width: raw.0.unwrap_or(200.0).max(4.0), height: raw.1.unwrap_or(120.0).max(4.0) })
@@ -425,6 +448,11 @@ fn convert_region(cx: &mut Cx, reg: Node, body: Node, w: Option<f32>, h: Option<
         "reference" if reference_href(reg, body).is_some() => RegionKind::Reference { href: reference_href(reg, body).unwrap_or_default() },
         // `<png>`, `<jpeg>`: Mathcad's own picture regions; the image is the region's payload
         name @ ("picture" | "image" | "png" | "jpeg" | "jpg" | "gif" | "bmp" | "ole" | "component" | "reference") => {
+            if name == "component" {
+                if let Some((output, values)) = component_table(cx, body) {
+                    cx.tables.push((output, values));
+                }
+            }
             match image_kind(cx, reg, raw) {
                 Some(img) => {
                     if !matches!(name, "picture" | "image" | "png" | "jpeg" | "jpg" | "gif" | "bmp") {

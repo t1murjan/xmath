@@ -19,6 +19,7 @@ num-rational = "0.4"
 num-integer = "0.1"
 num-traits = "0.2"
 calamine = "0.38.0"
+cfb = "0.16.0"
 
 [dev-dependencies]
 zip = { version = "9", default-features = false }
