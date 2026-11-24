@@ -80,7 +80,9 @@ pub fn import_xmcd(xml: &str) -> Result<ImportResult, String> {
     let mut origin: Option<i64> = None;
 
     if let Some(settings) = child(root, "settings") {
-        if let Some(v) = find_setting(settings, &["arrayorigin", "origin"]) {
+        if let Some(v) = find_setting(settings, &["arrayorigin", "origin"])
+            .or_else(|| find_setting_attr(settings, &["array-origin", "arrayorigin", "origin"]))
+        {
             origin = v.trim().parse::<f64>().ok().map(|x| x as i64);
         }
         if let Some(p) = find_setting(settings, &["displayedprecision", "decimalplaces", "precision"])
@@ -258,6 +260,16 @@ fn num_attr(n: Node, name: &str) -> Option<f32> {
 
 fn norm(s: &str) -> String {
     s.chars().filter(|c| c.is_alphanumeric()).flat_map(|c| c.to_lowercase()).collect()
+}
+
+/// A setting stored as an attribute of a settings element, as Mathcad 15 writes
+/// `<builtInVariables array-origin="1" .../>`.
+fn find_setting_attr(settings: Node, names: &[&str]) -> Option<String> {
+    settings.descendants().filter(|n| n.is_element()).find_map(|n| {
+        n.attributes()
+            .find(|a| names.contains(&norm(a.name()).as_str()) && !a.value().trim().is_empty())
+            .map(|a| a.value().to_string())
+    })
 }
 
 fn find_setting(settings: Node, names: &[&str]) -> Option<String> {
