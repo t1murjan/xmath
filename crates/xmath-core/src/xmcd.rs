@@ -150,8 +150,8 @@ pub fn import_xmcd(xml: &str) -> Result<ImportResult, String> {
     ws.regions = std::mem::take(&mut cx.regions);
     // data tables feed the worksheet's math: their values become global definitions, so every
     // region sees them regardless of where the component sits on the page
-    for (name, values) in std::mem::take(&mut cx.tables) {
-        if let Some(lit) = crate::component::literal(&values) {
+    for (name, table) in std::mem::take(&mut cx.tables) {
+        if let Some(lit) = crate::component::literal(&table) {
             let id = ws.next_id();
             ws.regions.push(Region::new(id, 20.0, 20.0, RegionKind::Math { source: format!("{name} ≡ {lit}") }));
         }
@@ -180,7 +180,7 @@ struct Cx {
     styles: HashMap<String, TextStyle>,
     used: HashSet<u64>,
     /// Data-table values found in `<component>` payloads: (output name, values).
-    tables: Vec<(String, Vec<f64>)>,
+    tables: Vec<(String, crate::component::Table)>,
     regions: Vec<Region>,
     expected: HashMap<u64, Expected>,
 }
@@ -407,17 +407,16 @@ fn note(text: &str, w: Option<f32>) -> RegionKind {
     text_kind(text.to_string(), w, TextStyle::default(), false)
 }
 
-/// A picture region from the rendering Mathcad stored, if any.
 /// A data component's output name (from `<outputs>`) and the table values of its OLE payload.
-fn component_table(cx: &Cx, body: Node) -> Option<(String, Vec<f64>)> {
+fn component_table(cx: &Cx, body: Node) -> Option<(String, crate::component::Table)> {
     let id = body.attribute("item-idref")?;
     let name = kids(child(body, "outputs")?)
         .into_iter()
         .find(|n| lname(*n) == "id")
         .map(|n| n.text().unwrap_or("").trim().to_string())
         .filter(|n| !n.is_empty())?;
-    let values = crate::component::table_values(&cx.item_bytes(id)?)?;
-    Some((name, values))
+    let table = crate::component::table(&cx.item_bytes(id)?)?;
+    Some((name, table))
 }
 
 fn image_kind(cx: &Cx, reg: Node, raw: (Option<f32>, Option<f32>)) -> Option<RegionKind> {
