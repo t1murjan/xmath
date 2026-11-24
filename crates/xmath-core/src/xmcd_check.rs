@@ -10,6 +10,11 @@ use std::collections::{HashMap, HashSet};
 /// Relative tolerance of the comparison.
 pub const REL_TOL: f64 = 1e-6;
 
+/// Relative tolerance for solve blocks. Mathcad's numerical solver stops at its own `TOL`
+/// (1e-3 by default), so `Maximize`/`Minimize`/`Find` results are approximate by construction;
+/// in one sample Mathcad's own answer misses an equality constraint by 0.15 while xmath's meets it.
+pub const SOLVER_TOL: f64 = 1e-3;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Verdict {
     Ok,
@@ -269,10 +274,17 @@ fn verdict_of(
         (Expected::Value(_), Some(e)) => Verdict::NotEvaluated(e),
         (Expected::Value(ev), None) => match &out.value {
             None => Verdict::NotEvaluated("нет значения".into()),
-            Some(s) => match in_display_unit(&r.worksheet, source, ev) {
-                Some(scaled) => compare(s, &scaled),
-                None => compare(s, ev),
-            },
+            Some(s) => {
+                // A solve block's answer is approximate: components that should be exactly zero
+                // come back as 1e-3-sized numbers, so they are compared against the vector's own
+                // magnitude instead of element by element.
+                let solver = is_solver_result(source);
+                let tol = if solver { SOLVER_TOL } else { REL_TOL };
+                match in_display_unit(&r.worksheet, source, ev) {
+                    Some(scaled) => compare(s, &scaled, tol, solver),
+                    None => compare(s, ev, tol, solver),
+                }
+            }
         },
     }
 }
@@ -302,12 +314,17 @@ fn overflowed(s: &Snapshot) -> bool {
     !s.data.is_empty() && s.data.iter().all(|n| !n.v.re.is_finite() || !n.v.im.is_finite())
 }
 
-fn close(a: f64, b: f64, scale: f64) -> bool {
+/// A region whose value comes from a Mathcad solve block (see [`SOLVER_TOL`]).
+fn is_solver_result(source: &str) -> bool {
+    ["Maximize(", "Minimize(", "Find(", "Minerr("].iter().any(|k| source.contains(k))
+}
+
+fn close(a: f64, b: f64, scale: f64, tol: f64) -> bool {
     if a == b || (a.is_nan() && b.is_nan()) {
         return true;
     }
     let d = (a - b).abs();
-    d <= REL_TOL * a.abs().max(b.abs()) || d <= 1e-12 * scale
+    d <= tol * a.abs().max(b.abs()) || d <= 1e-12 * scale
 }
 
 fn show(z: (f64, f64)) -> String {
@@ -318,7 +335,7 @@ fn show(z: (f64, f64)) -> String {
     }
 }
 
-fn compare(ours: &Snapshot, exp: &ExpectedValue) -> Verdict {
+fn compare(ours: &Snapshot, exp: &ExpectedValue, tol: f64, solver: bool) -> Verdict {
     if let Some(u) = &exp.unknown_unit {
         return Verdict::Skipped(format!("неизвестная единица «{u}»"));
     }
@@ -342,7 +359,8 @@ fn compare(ours: &Snapshot, exp: &ExpectedValue) -> Verdict {
         if dim != exp.dim && !zero {
             return Verdict::Mismatch(format!("размерность {dim:?}, у Mathcad {:?}", exp.dim));
         }
-        if !close(v.re, e.0, scale) || !close(v.im, e.1, scale) {
+        let near_zero = solver && (v.re - e.0).abs() <= tol * scale && (v.im - e.1).abs() <= tol * scale;
+        if !near_zero && (!close(v.re, e.0, scale, tol) || !close(v.im, e.1, scale, tol)) {
             let pos = if ours.data.len() > 1 { format!(" [элемент {}]", k + 1) } else { String::new() };
             return Verdict::Mismatch(format!("{}{pos}, у Mathcad {}", show((v.re, v.im)), show(*e)));
         }
