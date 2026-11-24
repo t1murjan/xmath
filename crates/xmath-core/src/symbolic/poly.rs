@@ -53,12 +53,25 @@ thread_local! {
     static EXPIRED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Limits one symbolic attempt to `d`. Exact gcds of polynomials whose coefficients came from
-/// floating-point numbers grow without bound (a 177 kB Mathcad sample drove one for minutes), so
-/// the attempt gives up and the caller falls back to a numeric method.
-pub fn start_budget(d: std::time::Duration) {
+/// Starts a fresh budget for one worksheet evaluation. Exact gcds of polynomials whose
+/// coefficients came from floating-point numbers grow without bound (a 177 kB Mathcad sample
+/// drove one for minutes), so the symbolic attempts give up and the caller falls back to a
+/// numeric method.
+///
+/// The budget belongs to the evaluation, not to a single call: a worksheet whose function is an
+/// integral evaluated at hundreds of points would otherwise pay the full budget every time.
+pub fn reset_budget(d: std::time::Duration) {
     BUDGET.with(|b| b.set(Some(std::time::Instant::now() + d)));
     EXPIRED.with(|e| e.set(false));
+}
+
+/// Starts the budget if the evaluation did not (symbolic evaluation outside a worksheet).
+pub fn ensure_budget() {
+    BUDGET.with(|b| {
+        if b.get().is_none() {
+            b.set(Some(std::time::Instant::now() + std::time::Duration::from_millis(1500)));
+        }
+    });
 }
 
 /// True when the attempt has run out of time; sticky for the duration of the attempt.
@@ -70,7 +83,7 @@ pub fn budget_expired() -> bool {
     hit
 }
 
-/// Ends the budget and reports whether it was hit.
+/// Ends the budget (the evaluation is over) and reports whether it was hit.
 pub fn end_budget() -> bool {
     BUDGET.with(|b| b.set(None));
     EXPIRED.with(|e| e.replace(false))
@@ -241,11 +254,19 @@ pub fn rational_roots(p: &P) -> Vec<Rat> {
     let a0 = prim[0].numer().clone();
     let an = prim.last().unwrap().numer().clone();
     let (Some(dn), Some(dd)) = (divisors(&a0), divisors(&an)) else { return roots };
-    if dn.len() * dd.len() > 200_000 {
+    // coefficients that came from floating-point numbers have enormous numerators, so the
+    // candidate set explodes; the budget keeps this bounded like the gcd above
+    if dn.len().saturating_mul(dd.len()) > 20_000 {
         return roots;
     }
     for n in &dn {
+        if budget_expired() {
+            break;
+        }
         for d in &dd {
+            if budget_expired() {
+                break;
+            }
             if !n.gcd(d).is_one() {
                 continue;
             }

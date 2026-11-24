@@ -678,12 +678,11 @@ fn pole_inside(f: &Sx, x: &Sx, a: f64, b: f64) -> bool {
 /// Antiderivative evaluated between the bounds. The exact attempt is bounded in time: it is a
 /// fast path, not the only way to integrate.
 pub fn definite(f: &Sx, x: &Sx, lo: &Sx, hi: &Sx) -> Option<Sx> {
-    crate::symbolic::poly::start_budget(std::time::Duration::from_millis(1500));
-    let r = definite_inner(f, x, lo, hi);
-    if crate::symbolic::poly::end_budget() {
+    if crate::symbolic::poly::budget_expired() {
         return None;
     }
-    r
+    crate::symbolic::poly::ensure_budget();
+    definite_inner(f, x, lo, hi)
 }
 
 fn definite_inner(f: &Sx, x: &Sx, lo: &Sx, hi: &Sx) -> Option<Sx> {

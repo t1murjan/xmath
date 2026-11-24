@@ -846,6 +846,8 @@ impl Worksheet {
     /// Like [`evaluate_opts`](Self::evaluate_opts) in a worksheet directory `env`: relative file
     /// names of `READPRN`/`WRITEPRN`/`READEXCEL` and references are resolved there.
     pub fn evaluate_with(&self, snapshots: bool, env: &EvalEnv) -> HashMap<u64, RegionOutput> {
+        // the exact (symbolic) attempts share one budget for the whole sheet, see poly::reset_budget
+        crate::symbolic::poly::reset_budget(std::time::Duration::from_millis(2000));
         let mut ev = Evaluator::new();
         ev.env = env.clone();
         self.run_regions(&mut ev, snapshots)
