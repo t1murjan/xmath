@@ -60,7 +60,7 @@ pub fn export_xmcd_with(ws: &Worksheet, opts: &ExportOptions) -> ExportResult {
         // otherwise overflow the main thread's stack and abort the export
         _ => crate::evaluate_worksheet_with(ws, true, &opts.env.clone().unwrap_or_default()),
     };
-    let mut x = Exporter { warnings: Vec::new(), items: Vec::new(), outputs, renderings: &opts.renderings, rendering_scale: if opts.rendering_scale > 0.0 { opts.rendering_scale } else { 1.0 }, pending_result: None, pending_sym: None };
+    let mut x = Exporter { warnings: Vec::new(), items: Vec::new(), outputs, renderings: &opts.renderings, rendering_scale: if opts.rendering_scale > 0.0 { opts.rendering_scale } else { 1.0 }, pending_result: None, result_scale: None, pending_sym: None };
     let mut out = String::new();
     out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n");
     out.push_str(
@@ -138,6 +138,9 @@ struct Exporter<'a> {
     rendering_scale: f32,
     /// `<result>` of the math region being written, consumed by its first `ml:eval`.
     pending_result: Option<Snapshot>,
+    /// SI factor of the display unit of the current eval: a stored `<result>` must be the number
+    /// in that unit (90 with `%`, not 0.9).
+    result_scale: Option<f64>,
     /// Symbolic result of the region being written (`<ml:symResult>`).
     pending_sym: Option<Expr>,
 }
@@ -343,7 +346,7 @@ impl Exporter<'_> {
                 self.region_open(r, 300.0, 12.0, out);
                 let _ = writeln!(
                     out,
-                    "\t\t\t<reference>\n\t\t\t\t<originRef doc-id=\"00000000-0000-0000-0000-000000000000\" version-id=\"00000000-0000-0000-0000-000000000000\" branch-id=\"00000000-0000-0000-0000-000000000000\" revision-num=\"1\" is-modified=\"false\" region-id=\"0\" href=\"{0}\" xmlns=\"http://schemas.mathsoft.com/provenance10\">\n\t\t\t\t\t<hash/>\n\t\t\t\t</originRef>\n\t\t\t</reference>\n\t\t\t<link href=\"./{0}\"/>\n\t\t</region>",
+                    "\t\t\t<reference>\n\t\t\t\t<originRef doc-id=\"00000000-0000-0000-0000-000000000000\" version-id=\"00000000-0000-0000-0000-000000000000\" branch-id=\"00000000-0000-0000-0000-000000000000\" revision-num=\"1\" is-modified=\"false\" region-id=\"0\" href=\"{0}\" xmlns=\"http://schemas.mathsoft.com/provenance10\">\n\t\t\t\t\t<hash/>\n\t\t\t\t</originRef>\n\t\t\t\t<parentRef doc-id=\"00000000-0000-0000-0000-000000000000\" version-id=\"00000000-0000-0000-0000-000000000000\" branch-id=\"00000000-0000-0000-0000-000000000000\" revision-num=\"1\" is-modified=\"false\" region-id=\"0\" href=\"{0}\" xmlns=\"http://schemas.mathsoft.com/provenance10\">\n\t\t\t\t\t<hash/>\n\t\t\t\t</parentRef>\n\t\t\t\t<comment xmlns=\"http://schemas.mathsoft.com/provenance10\"/>\n\t\t\t\t<originComment xmlns=\"http://schemas.mathsoft.com/provenance10\"/>\n\t\t\t\t<contentHash xmlns=\"http://schemas.mathsoft.com/provenance10\"/>\n\t\t\t</reference>\n\t\t\t<link href=\"./{0}\"/>\n\t\t</region>",
                     esc(&h)
                 );
             }
@@ -538,7 +541,8 @@ impl Exporter<'_> {
     /// The stored result of the region, inside its `ml:eval`.
     fn result(&mut self, o: &mut String, d: usize) {
         if let Some(sn) = self.pending_result.take() {
-            if let Some(x) = result_xml(&sn, d) {
+            let scale = self.result_scale.take();
+            if let Some(x) = result_xml(&sn, d, scale) {
                 o.push_str(&x);
             }
         }
@@ -550,6 +554,13 @@ impl Exporter<'_> {
         self.expr(u, o, d + 1)?;
         ind(o, d);
         o.push_str("</ml:unitOverride>\n");
+        if let Expr::Var(name) = u {
+            if let Some(ud) = crate::units::lookup(name) {
+                if ud.factor != 0.0 && ud.offset == 0.0 {
+                    self.result_scale = Some(ud.factor);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1135,7 +1146,19 @@ fn scalar(n: &crate::value::Num, o: &mut String, d: usize) -> bool {
 }
 
 /// `<result>` for a computed value; `None` when Mathcad could not store it (NaN, infinity).
-fn result_xml(s: &Snapshot, d: usize) -> Option<String> {
+fn result_xml(s: &Snapshot, d: usize, scale: Option<f64>) -> Option<String> {
+    // the stored number is the value shown, i.e. in the display unit of the region
+    let scaled;
+    let s = match scale {
+        Some(f) if f != 0.0 => {
+            scaled = Snapshot {
+                data: s.data.iter().map(|n| crate::value::Num::new(n.v / f, crate::units::Dim::NONE)).collect(),
+                ..s.clone()
+            };
+            &scaled
+        }
+        _ => s,
+    };
     let mut o = String::new();
     ind(&mut o, d);
     o.push_str("<result xmlns=\"http://schemas.mathsoft.com/math30\">\n");
