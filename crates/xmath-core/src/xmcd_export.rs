@@ -820,8 +820,10 @@ impl Exporter<'_> {
                 self.binding(head, v, &args[3], &[&args[1], &args[2]], o, d)
             }
             ("sum" | "prod", 2) if matches!(args[0], Expr::Var(_)) => {
+                // a sum over a range variable: Mathcad writes the same `summation`/`product`
+                // operator with a lambda and no bounds
                 let Expr::Var(v) = &args[0] else { unreachable!() };
-                let head = if name == "sum" { "ml:rangeSum" } else { "ml:rangeProduct" };
+                let head = if name == "sum" { "ml:summation" } else { "ml:product" };
                 self.binding(head, v, &args[1], &[], o, d)
             }
             ("Find" | "Minerr" | "Maximize" | "Minimize", _) => {

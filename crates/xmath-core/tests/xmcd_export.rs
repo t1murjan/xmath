@@ -234,3 +234,58 @@ fn corpus_roundtrip() {
     assert_eq!(bad_files, 0);
     assert_eq!(bad, 0);
 }
+
+/// The XML a worksheet is exported to has to be what Mathcad 15 writes, or Mathcad will show an
+/// error instead of the formula. A range sum is the `summation` operator with a lambda and no
+/// bounds there, not a private `rangeSum` element.
+#[test]
+fn exported_xml_uses_mathcad_spellings() {
+    let mut ws = Worksheet::default();
+    for (source, y) in [
+        ("v := 0..5", 10.0),
+        ("s := sum(k, 1, 10, k^2)", 40.0),
+        ("t := sum(x, x^2)", 70.0),
+        ("p := prod(x, x)", 100.0),
+    ] {
+        let id = ws.next_id();
+        ws.regions.push(xmath_core::worksheet::Region::new(id, 20.0, y, RegionKind::Math { source: source.to_string() }));
+    }
+    let xml = export_xmcd(&ws).xml;
+    assert!(!xml.contains("rangeSum"), "a private element would not open in Mathcad");
+    assert!(!xml.contains("rangeProduct"), "a private element would not open in Mathcad");
+    assert!(xml.contains("<ml:summation"), "range sums are summations with a lambda");
+    assert!(xml.contains("<ml:product"), "range products are products with a lambda");
+
+    // and the file reads back to the same worksheet
+    let back = import_xmcd(&xml).expect("import");
+    let sources: Vec<String> = back
+        .worksheet
+        .regions
+        .iter()
+        .filter_map(|r| match &r.kind {
+            RegionKind::Math { source } => Some(source.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(sources.iter().any(|s| s.contains("sum(k, 1, 10")), "{sources:?}");
+    assert!(sources.iter().any(|s| s.contains("sum(x")), "{sources:?}");
+}
+
+/// The sections Mathcad 15 writes have to be there, in its order.
+#[test]
+fn exported_structure_matches_mathcad() {
+    let ws = Worksheet::default();
+    let xml = export_xmcd(&ws).xml;
+    let order = ["<pointReleaseData", "<metadata", "<settings", "<regions", "<binaryContent"];
+    let mut at = 0;
+    for tag in order {
+        let pos = xml.find(tag).unwrap_or_else(|| panic!("no {tag}"));
+        assert!(pos >= at, "{tag} is out of order");
+        at = pos;
+    }
+    assert!(xml.starts_with("<?xml"));
+    assert!(xml.contains("xmlns=\"http://schemas.mathsoft.com/worksheet30\""));
+    assert!(xml.contains("<presentation"));
+    assert!(xml.contains("<pageModel"));
+    assert!(xml.contains("<calculation"));
+}
