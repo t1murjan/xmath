@@ -34,6 +34,10 @@ pub const MAX_LOOP_ITERATIONS: u64 = 10_000_000;
 pub struct Evaluator {
     /// All worksheet definitions, in evaluation order (append-only).
     pub defs: Vec<(String, Value)>,
+    /// Names whose definition failed. Mathcad leaves such a name undefined, while xmath used to
+    /// fall back to a built-in constant or unit of the same name (`N` became the newton after a
+    /// failed definition of `N`), which silently produced a plausible wrong value.
+    pub failed: std::collections::HashSet<String>,
     depth: Cell<usize>,
     /// Loop iteration limit of a single program run.
     pub max_iterations: u64,
@@ -65,6 +69,7 @@ impl Default for Evaluator {
     fn default() -> Self {
         Evaluator {
             defs: Vec::new(),
+            failed: Default::default(),
             depth: Cell::new(0),
             max_iterations: MAX_LOOP_ITERATIONS,
             sym: Default::default(),
@@ -167,6 +172,9 @@ impl Evaluator {
         }
         if let Some((_, v)) = self.defs[..sc.limit].iter().rev().find(|(n, _)| n == name) {
             return Some(v.clone());
+        }
+        if self.failed.contains(name) {
+            return None;
         }
         if let Some(c) = constant(name) {
             return Some(Value::Num(c));
@@ -1008,6 +1016,17 @@ impl Evaluator {
     /// Like [`define`](Self::define), returns the defined value (for a vector
     /// definition: the whole right-hand side).
     pub fn define_value(&mut self, target: &Target, expr: &Expr) -> EResult<Value> {
+        let r = self.define_value_inner(target, expr);
+        let name = defined_name(target);
+        if r.is_ok() {
+            self.failed.remove(&name);
+        } else {
+            self.failed.insert(name);
+        }
+        r
+    }
+
+    fn define_value_inner(&mut self, target: &Target, expr: &Expr) -> EResult<Value> {
         let sc = self.top_scope();
         // `WRITEPRN("file") := M`: writes a file instead of defining a function
         if let Target::Func(name, params) = target {
@@ -1213,5 +1232,13 @@ fn block_free_vars(stmts: &[PStmt], bound: &mut Vec<String>, out: &mut Vec<Strin
             }
             PStmt::Break | PStmt::Continue => {}
         }
+    }
+}
+
+/// The name a target defines (`v[i] := …` and `v(x) := …` both define `v`).
+fn defined_name(t: &Target) -> String {
+    match t {
+        Target::Var(n) | Target::Func(n, _) | Target::Indexed(n, _) => n.clone(),
+        Target::Vector(ns) => ns.first().cloned().unwrap_or_default(),
     }
 }
