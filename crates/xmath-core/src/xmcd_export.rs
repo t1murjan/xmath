@@ -789,6 +789,11 @@ impl Exporter<'_> {
         }
         match (name, args.len()) {
             ("sqrt", 1) => self.apply("ml:sqrt", &refs(args), o, d),
+            // a limit: lim(f, x, a) is Mathcad's limit operator with a lambda and the point
+            ("lim", 3) => {
+                let Expr::Var(v) = &args[1] else { return Err("переменная предела должна быть именем".into()) };
+                self.apply_with_point("ml:limit", v, &args[0], &args[2], o, d)
+            }
             ("nthroot", 2) => {
                 // the built-in takes (radicand, index); Mathcad stores (root index, radicand)
                 self.apply("ml:nthRoot", &[&args[1], &args[0]], o, d)
@@ -856,6 +861,28 @@ impl Exporter<'_> {
                 Ok(())
             }
         }
+    }
+
+    /// The limit operator: a lambda and the point it approaches.
+    fn apply_with_point(&mut self, head: &str, var: &str, body: &Expr, point: &Expr, o: &mut String, d: usize) -> Result<(), String> {
+        ind(o, d);
+        o.push_str("<ml:apply>\n");
+        ind(o, d + 1);
+        let _ = writeln!(o, "<{head}/>");
+        ind(o, d + 1);
+        o.push_str("<ml:lambda>\n");
+        ind(o, d + 2);
+        o.push_str("<ml:boundVars>\n");
+        id(var, o, d + 3);
+        ind(o, d + 2);
+        o.push_str("</ml:boundVars>\n");
+        self.expr(body, o, d + 2)?;
+        ind(o, d + 1);
+        o.push_str("</ml:lambda>\n");
+        self.expr(point, o, d + 1)?;
+        ind(o, d);
+        o.push_str("</ml:apply>\n");
+        Ok(())
     }
 
     /// A derivative of order `n`: the same lambda as [`binding`], plus `<ml:degree>`.
