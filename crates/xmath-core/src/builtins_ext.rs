@@ -779,6 +779,25 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
                 Ok(mu + sigma * special::qnorm_std(p))
             })
         })(),
+        "cfft" | "icfft" | "FFT" | "IFFT" => (|| {
+            arity(name, args, 1)?;
+            let v = crate::fft::as_vector(&args[0])?;
+            if v.is_empty() {
+                return Err(format!("{name}: пустой вектор"));
+            }
+            // FFT takes a real signal of even length; IFFT takes the packed spectrum of length
+            // N/2+1, which is odd for the power-of-two lengths Mathcad requires.
+            if name == "FFT" && v.len() % 2 != 0 {
+                return Err("FFT: длина должна быть чётной (в Mathcad — степень двойки)".into());
+            }
+            let out = match name {
+                "cfft" => crate::fft::cfft(&v),
+                "icfft" => crate::fft::icfft(&v),
+                "FFT" => crate::fft::fft(&v),
+                _ => crate::fft::ifft(&v),
+            };
+            Ok(crate::fft::to_column(out))
+        })(),
         "dchisq" | "pchisq" | "qchisq" => (|| {
             arity(name, args, 2)?;
             let k = args[1].as_real()?;

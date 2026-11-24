@@ -8,6 +8,7 @@ pub mod ast;
 pub mod builtins;
 mod builtins_ext;
 pub mod eval;
+pub mod fft;
 mod fitting;
 pub mod fileio;
 pub mod format;

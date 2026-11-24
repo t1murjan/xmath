@@ -81,6 +81,11 @@ pub const FUNCTION_DOCS: &[(&str, &str)] = &[
     ("dnorm", "dnorm(x, mu, sigma): normal probability density"),
 
     ("dchisq", "dchisq(x, d): chi-square probability density, d degrees of freedom"),
+
+    ("cfft", "cfft(v): complex discrete Fourier transform of a vector, normalized by 1/N"),
+    ("icfft", "icfft(v): inverse of cfft (no extra normalization)"),
+    ("FFT", "FFT(v): packed spectrum (N/2+1 bins) of a real vector, normalized by 1/N"),
+    ("IFFT", "IFFT(u): real signal behind a packed FFT spectrum"),
     ("pchisq", "pchisq(x, d): chi-square cumulative distribution"),
     ("qchisq", "qchisq(p, d): inverse of pchisq, the chi-square quantile"),
     ("pnorm", "pnorm(x, mu, sigma): normal cumulative distribution"),
