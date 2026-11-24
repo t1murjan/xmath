@@ -1059,11 +1059,18 @@ fn binding(cx: &mut Cx, op: Node, args: &[Node]) -> R<Expr> {
     let body_node = lk.iter().rev().find(|k| lname(**k) != "boundVars").ok_or("lambda без тела")?;
     let body = conv(cx, *body_node)?;
     let mut rest: Vec<Node> = Vec::new();
+    // the order of a derivative is either an attribute or a `<degree>` element
+    let mut degree: Option<f64> = None;
     for a in args.iter().filter(|a| lname(**a) != "lambda") {
-        if lname(*a) == "bounds" {
-            rest.extend(kids(*a));
-        } else {
-            rest.push(*a);
+        match lname(*a) {
+            "bounds" => rest.extend(kids(*a)),
+            "degree" => {
+                degree = kids(*a)
+                    .first()
+                    .and_then(|n| n.text())
+                    .and_then(|t| t.trim().parse::<f64>().ok());
+            }
+            _ => rest.push(*a),
         }
     }
     let mut bounds = conv_all(cx, &rest)?;
@@ -1088,7 +1095,11 @@ fn binding(cx: &mut Cx, op: Node, args: &[Node]) -> R<Expr> {
                     cx.warn("значение производной в точке заменено производной по переменной");
                 }
             }
-            let order = op.attribute("order").and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(1.0);
+            let order = op
+                .attribute("order")
+                .and_then(|s| s.trim().parse::<f64>().ok())
+                .or(degree)
+                .unwrap_or(1.0);
             // d^n/dx^n is a nest of first derivatives (the third argument of `diff` is a point)
             let mut e = body;
             for _ in 0..(order.max(1.0) as usize).min(12) {

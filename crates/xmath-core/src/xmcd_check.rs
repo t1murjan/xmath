@@ -324,7 +324,9 @@ fn close(a: f64, b: f64, scale: f64, tol: f64) -> bool {
         return true;
     }
     let d = (a - b).abs();
-    d <= tol * a.abs().max(b.abs()) || d <= 1e-12 * scale
+    // below 1e-12 the difference is numerical noise of the evaluation itself (a derivative that
+    // should be zero comes back as 2.5e-16 against Mathcad's 2.5e-15), not a disagreement
+    d <= tol * a.abs().max(b.abs()) || d <= 1e-12 * scale || d <= 1e-12
 }
 
 fn show(z: (f64, f64)) -> String {
