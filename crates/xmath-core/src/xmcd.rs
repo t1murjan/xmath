@@ -907,7 +907,16 @@ fn conv_apply(cx: &mut Cx, n: Node) -> R<Expr> {
         "indexer" => {
             let (b, idx) = args.split_first().ok_or("индексация без аргументов")?;
             let base = conv(cx, *b)?;
-            let idx = conv_all(cx, idx)?;
+            // a multi-index `M[J, k]` comes as a <sequence> of the indices
+            let mut flat: Vec<Node> = Vec::new();
+            for a in idx {
+                if lname(*a) == "sequence" {
+                    flat.extend(kids(*a));
+                } else {
+                    flat.push(*a);
+                }
+            }
+            let idx = conv_all(cx, &flat)?;
             if idx.is_empty() {
                 return Err("индексация без индекса".into());
             }

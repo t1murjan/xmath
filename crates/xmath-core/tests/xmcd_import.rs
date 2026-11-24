@@ -205,3 +205,18 @@ fn text_region_size_font_and_width() {
     assert_eq!(st.font, TextFont::Sans);
     assert!((w - 120.0).abs() < 0.01, "{w}");
 }
+
+/// A multi-index `M[J, k]` arrives as an `<ml:sequence>` of the indices inside the indexer.
+#[test]
+fn multi_index_from_a_sequence() {
+    let xml = r#"<worksheet xmlns="http://schemas.mathsoft.com/worksheet30" xmlns:ml="http://schemas.mathsoft.com/math30"><regions>
+<region region-id="1" left="0" top="0" width="100" height="20"><math><ml:define><ml:id>M</ml:id><ml:matrix rows="2" cols="2"><ml:real>1</ml:real><ml:real>2</ml:real><ml:real>3</ml:real><ml:real>4</ml:real></ml:matrix></ml:define></math></region>
+<region region-id="2" left="0" top="30" width="100" height="20"><math><ml:define><ml:id>J</ml:id><ml:real>0</ml:real></ml:define></math></region>
+<region region-id="3" left="0" top="60" width="100" height="20"><math><ml:define><ml:id>k</ml:id><ml:real>1</ml:real></ml:define></math></region>
+<region region-id="4" left="0" top="90" width="100" height="20"><math><ml:eval><ml:apply><ml:indexer/><ml:id>M</ml:id><ml:sequence><ml:id>J</ml:id><ml:id>k</ml:id></ml:sequence></ml:apply></ml:eval></math></region>
+</regions></worksheet>"#;
+    let r = import_xmcd(xml).expect("import");
+    assert_eq!(source(&r.worksheet, 4), "M[J, k] =");
+    // Mathcad stores matrix elements column by column: [[1, 3], [2, 4]], so M[0, 1] is 3
+    assert_eq!(shown(&r.worksheet, 4), "3");
+}
