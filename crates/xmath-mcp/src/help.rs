@@ -103,6 +103,10 @@ pub const FUNCTION_DOCS: &[(&str, &str)] = &[
     ("dF", "dF(x, d1, d2): F probability density with d1, d2 degrees of freedom"),
     ("pF", "pF(x, d1, d2): F cumulative distribution"),
     ("qF", "qF(p, d1, d2): inverse of pF, the F quantile"),
+
+    ("percentile", "percentile(v, p): p-th percentile of a vector, CDF = i/(n+1) plotting position"),
+    ("correl2d", "correl2d(M, K): correlate an image with a centred kernel, zero padded"),
+    ("walsh", "walsh(n, k): the k-th Walsh function of order n, 2^n signs of +1/-1"),
     ("pnorm", "pnorm(x, mu, sigma): normal cumulative distribution"),
     ("UnitsOf", "UnitsOf(x): the unit of x as a value (divide x by it to strip units)"),
     ("concat", "concat(s1, s2, ...): joins strings"),

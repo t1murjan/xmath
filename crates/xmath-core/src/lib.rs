@@ -8,6 +8,7 @@ pub mod ast;
 pub mod builtins;
 mod builtins_ext;
 pub mod color;
+pub mod data_analysis;
 pub mod component;
 pub mod eval;
 pub mod fft;

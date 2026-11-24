@@ -713,17 +713,24 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
         "mode" => (|| {
             let (mut x, d) = real_values(args)?;
             x.sort_by(f64::total_cmp);
-            let (mut best, mut best_n, mut i) = (0.0, 0, 0);
+            let (mut best, mut best_n, mut modes, mut i) = (0.0, 0, 0, 0);
             while i < x.len() {
                 let j = x[i..].iter().take_while(|&&v| v == x[i]).count();
                 if j > best_n {
                     best = x[i];
                     best_n = j;
+                    modes = 1;
+                } else if j == best_n {
+                    modes += 1;
                 }
                 i += j;
             }
             if best_n < 2 {
                 return Err("в данных нет моды".into());
+            }
+            // Mathcad refuses data with more than one mode instead of picking one
+            if modes > 1 {
+                return Err("multimodal".into());
             }
             Ok(Value::Num(Num::with_dim(best, d)))
         })(),
@@ -808,6 +815,33 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
                 _ => crate::fft::ifft(&v),
             };
             Ok(crate::fft::to_column(out))
+        })(),
+        "percentile" => (|| {
+            arity(name, args, 2)?;
+            let v = crate::data_analysis::vector(&args[0])?;
+            let p = args[1].as_real()?;
+            Ok(Value::Num(Num::real(crate::data_analysis::percentile(&v, p)?)))
+        })(),
+        "walsh" => (|| {
+            arity(name, args, 2)?;
+            let n = int_arg(&args[0])?;
+            let k = int_arg(&args[1])?;
+            Ok(crate::data_analysis::values(&crate::data_analysis::walsh(n, k)?))
+        })(),
+        "correl2d" => (|| {
+            arity(name, args, 2)?;
+            let m = match &args[0] {
+                Value::Matrix(m) => m.clone(),
+                other => return Err(format!("correl2d: ожидалась матрица, найдено: {}", other.type_name())),
+            };
+            let k = match &args[1] {
+                Value::Matrix(k) => k.clone(),
+                other => return Err(format!("correl2d: ожидалась матрица ядра, найдено: {}", other.type_name())),
+            };
+            if k.rows > m.rows || k.cols > m.cols {
+                return Err("correl2d: ядро больше изображения".into());
+            }
+            Ok(Value::Matrix(crate::data_analysis::correl2d(&m, &k)))
         })(),
         "dF" | "pF" | "qF" => (|| {
             arity(name, args, 3)?;
