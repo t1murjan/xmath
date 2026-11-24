@@ -56,7 +56,9 @@ pub fn export_xmcd(ws: &Worksheet) -> ExportResult {
 pub fn export_xmcd_with(ws: &Worksheet, opts: &ExportOptions) -> ExportResult {
     let outputs = match &opts.outputs {
         Some(o) if o.values().any(|r| r.value.is_some()) => o.clone(),
-        _ => ws.evaluate_with(true, &opts.env.clone().unwrap_or_default()),
+        // the evaluation runs on the large-stack thread: a deeply recursive user function would
+        // otherwise overflow the main thread's stack and abort the export
+        _ => crate::evaluate_worksheet_with(ws, true, &opts.env.clone().unwrap_or_default()),
     };
     let mut x = Exporter { warnings: Vec::new(), items: Vec::new(), outputs, renderings: &opts.renderings, rendering_scale: if opts.rendering_scale > 0.0 { opts.rendering_scale } else { 1.0 }, pending_result: None, pending_sym: None };
     let mut out = String::new();
@@ -661,7 +663,7 @@ impl Exporter<'_> {
             Expr::Var(n) => id(n, o, d),
             Expr::Unary(op, a) => {
                 let (head, paren) = match op {
-                    UnOp::Neg => ("ml:minus", a.precedence() < 6),
+                    UnOp::Neg => ("ml:neg", a.precedence() < 6),
                     UnOp::Not => ("ml:not", a.precedence() < 4),
                     UnOp::Factorial => ("ml:factorial", a.precedence() < 9),
                 };
@@ -755,19 +757,26 @@ impl Exporter<'_> {
             }
             Expr::Abs(a) => self.apply("ml:absval", &[a], o, d)?,
             Expr::Program(stmts) => {
-                ind(o, d);
-                o.push_str("<ml:program>\n");
-                self.pstmts(stmts, o, d + 1)?;
-                ind(o, d);
-                o.push_str("</ml:program>\n");
+                // Mathcad's schema requires at least two statements in a program; a one-statement
+                // program means the same as that statement
+                if let [PStmt::Expr(only)] = stmts.as_slice() {
+                    self.expr(only, o, d)?;
+                } else {
+                    ind(o, d);
+                    o.push_str("<ml:program>\n");
+                    self.pstmts(stmts, o, d + 1)?;
+                    ind(o, d);
+                    o.push_str("</ml:program>\n");
+                }
             }
             Expr::OnError(a, b) => {
+                // Mathcad's "on error" operator: <ml:tryCatch> carrying the two branches itself
                 ind(o, d);
-                o.push_str("<ml:onError>\n");
+                o.push_str("<ml:tryCatch>\n");
                 self.expr(a, o, d + 1)?;
                 self.expr(b, o, d + 1)?;
                 ind(o, d);
-                o.push_str("</ml:onError>\n");
+                o.push_str("</ml:tryCatch>\n");
             }
             Expr::Vectorize(a) => {
                 ind(o, d);

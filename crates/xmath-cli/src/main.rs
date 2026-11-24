@@ -155,7 +155,8 @@ fn main() -> ExitCode {
         // results are computed in the folder of the worksheet (nothing is written), plots get pictures
         let dir = std::path::Path::new(&path).parent().filter(|p| !p.as_os_str().is_empty()).map_or_else(|| std::path::PathBuf::from("."), |p| p.to_path_buf());
         let env = xmath_core::EvalEnv { dir: Some(dir), allow_write: false, stack: Vec::new() };
-        let outputs = ws.evaluate_with(true, &env);
+        // on the large-stack thread: a deeply recursive user function would abort on the main one
+        let outputs = xmath_core::evaluate_worksheet_with(&ws, true, &env);
         let has_plots = ws.regions.iter().any(|r| matches!(r.kind, xmath_core::RegionKind::Plot { .. } | xmath_core::RegionKind::Plot3d { .. }));
         let renderings = if has_plots { xmath_gui::print::render_plot_pngs(&ws, &outputs) } else { Default::default() };
         let opts = xmath_core::xmcd_export::ExportOptions { renderings, rendering_scale: xmath_gui::print::PNG_SCALE, env: Some(env), outputs: Some(outputs) };

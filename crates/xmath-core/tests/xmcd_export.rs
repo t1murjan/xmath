@@ -46,7 +46,10 @@ fn check_example(path: &str) {
     let ws = Worksheet::from_json(&src).unwrap();
     let (back, warnings) = roundtrip(&ws);
     assert!(warnings.is_empty(), "{path}: import warnings {warnings:?}");
-    let (a, b) = (show(&ws), show(&back));
+    // `{ e }` and `e` mean the same, and Mathcad's schema needs two statements in a program, so
+    // the exporter writes a one-statement program as the statement itself
+    let unwrap = |m: HashMap<u64, String>| m.into_iter().map(|(k, v)| (k, single_statement(&v))).collect::<HashMap<_, _>>();
+    let (a, b) = (unwrap(show(&ws)), unwrap(show(&back)));
     let mut bad = Vec::new();
     for r in &ws.regions {
         if matches!(r.kind, RegionKind::Plot { .. } | RegionKind::Plot3d { .. }) {
@@ -288,4 +291,18 @@ fn exported_structure_matches_mathcad() {
     assert!(xml.contains("<presentation"));
     assert!(xml.contains("<pageModel"));
     assert!(xml.contains("<calculation"));
+}
+
+/// `name(x) := { stmt } -> name(x) := stmt`, and the same for a bare `{ stmt }`.
+fn single_statement(s: &str) -> String {
+    let Some(open) = s.find("{ ") else { return s.to_string() };
+    let Some(close) = s.rfind(" }") else { return s.to_string() };
+    if close + 2 != s.len() || close <= open {
+        return s.to_string();
+    }
+    let inner = &s[open + 2..close];
+    if inner.contains(';') || inner.contains('{') {
+        return s.to_string();
+    }
+    format!("{}{}", &s[..open], inner)
 }

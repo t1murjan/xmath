@@ -800,9 +800,10 @@ fn conv(cx: &mut Cx, n: Node) -> R<Expr> {
         }
         "apply" => conv_apply(cx, n),
         "program" => conv_program(cx, n),
-        "onError" => {
+        // Mathcad's "on error" operator; older spellings are accepted too
+        "tryCatch" | "onError" => {
             let ks = kids(n);
-            need(&ks, 2, "onError")?;
+            need(&ks, 2, "tryCatch")?;
             Ok(Expr::OnError(Box::new(conv(cx, ks[0])?), Box::new(conv(cx, ks[1])?)))
         }
         "matrix" => conv_matrix(cx, n),
@@ -980,6 +981,7 @@ fn conv_apply(cx: &mut Cx, n: Node) -> R<Expr> {
             binding(cx, head, args)
         }
         // the symbolic limit: lim(f, x, a), the engine's own form (see symbolic::calculus)
+        // (tryCatch is an element carrying its two branches, handled in conv, not an operator)
         "limit" => {
             need(args, 2, "limit")?;
             let lam = args.iter().find(|a| lname(**a) == "lambda").ok_or("<limit> без lambda")?;
