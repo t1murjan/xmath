@@ -15,6 +15,10 @@
 - Единицы измерения с автоматической проверкой размерностей (`m`, `kg`, `s`, `N`, `kN`, `Pa`, `MPa`, `J`, `W` …).
 - Пользовательские функции, диапазонные переменные, векторы и матрицы.
 - Численные интегралы, производные, поиск корней, суммы и произведения.
+- Статистика и распределения: нормальное, Стьюдента, хи-квадрат, F, равномерное, экспоненциальное
+  (`dt`/`pt`/`qt`, `dchisq`/`pchisq`/`qchisq`, `dF`/`pF`/`qF`, `percentile`, `correl2d`, `walsh`).
+- Быстрое преобразование Фурье (`cfft`/`CFFT`, `icfft`/`ICFFT`, `FFT`, `IFFT`) и преобразования цвета
+  (`rgb_to_hsv`, `hsv_to_rgb`, `rgb_to_hls`, `hls_to_rgb`).
 - Графики X-Y.
 - Интерфейс в стиле Mathcad 15: меню, панели инструментов, палитры
   Calculator, Graph, Matrix, Evaluation, Calculus, Boolean, Programming, Greek, Symbolic.
@@ -34,11 +38,12 @@
 | Единицы измерения и проверка размерностей | ✅ |
 | Комплексные числа, матрицы, ранжированные переменные, таблицы | ✅ |
 | Интегралы, производные, `root`, `polyroots`, суммы/произведения | ✅ |
-| ~150 встроенных функций (линейная алгебра, статистика, сплайны, регрессия, Бессель, ОДУ `rkfixed`) | ✅ |
+| ~210 встроенных функций (линейная алгебра, статистика и распределения, сплайны, регрессия, Бессель, ОДУ `rkfixed`, Фурье, цвет) | ✅ |
 | Двумерная отрисовка формул (дроби, степени, корни, интегралы, матрицы) | ✅ |
 | X-Y графики, окно «Форматирование выбранного графика X-Y» (оси, трассировка, формат числа, подписи, умолчания) | ✅ |
 | Меню, панели инструментов, палитры, диалоги «Вставить функцию/матрицу/единицы», «Формат результата» | ✅ |
 | Импорт `.xmcd` (Mathcad 15) | ✅ базовый, см. [docs/xmcd-import.md](docs/xmcd-import.md) |
+| Data Table и Input Table из Mathcad: значения таблицы читаются и становятся матрицей с тем же именем | ✅ |
 | MCP-сервер и навык для ИИ | ✅ |
 | Программирование (`←`, `if`, `for`, `while`…) | 🚧 в работе |
 | Блоки решения `Given`/`Find`/`Minerr` | 🚧 в работе |
@@ -352,8 +357,10 @@ MIT OR Apache-2.0 — на выбор ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APAC
 
 **xmath** is a free, open-source clone of Mathcad 15 (the classic UI, not Prime) written in Rust for
 Linux, Windows and macOS. Alpha status. It features unit-aware calculations with dimension checking,
-functions, ranges, matrices, numeric integrals/derivatives/roots, X-Y plots, a Mathcad-15-style interface
-with palettes, `.xmcd` import, and an MCP server for AI assistants.
+functions, ranges, matrices, numeric integrals/derivatives/roots, statistical distributions, FFT and colour
+conversions, X-Y plots, a Mathcad-15-style interface with palettes, `.xmcd` import (data tables included)
+and export, a compatibility checker against the results Mathcad itself stored, and an MCP server for AI
+assistants.
 Install: `curl -fsSL https://raw.githubusercontent.com/t1murjan/xmath/main/install.sh | bash`
 (also supports `update` and `uninstall`). Licensed under MIT OR Apache-2.0.
 
@@ -384,6 +391,14 @@ Install: `curl -fsSL https://raw.githubusercontent.com/t1murjan/xmath/main/insta
   замечаний — один раз, в окне после сохранения;
 * если график или текст правили в Mathcad после сохранения в xmath, выигрывает то, что записано в
   самом файле Mathcad (комментарий признаётся устаревшим).
+
+Проверка совместимости: `xmath-cli --check файл.xmcd` импортирует лист, пересчитывает его и сравнивает
+каждое значение с результатом, который Mathcad сохранил в файле, печатая `OK` / `MISMATCH` /
+`NOT EVALUATED` и сводку причин. На штатных примерах, поставляемых с Mathcad 15, счёт идёт на тысячи
+сверенных результатов.
+
+Таблицы данных (Data Table и Input Table) Mathcad импортируются как матрицы: числа таблицы становятся
+переменной с именем из таблицы, поэтому `n := rows(data)` и `data^<0>` работают как в оригинале.
 
 Подробности и устройство формата — в [docs/export-print.md](docs/export-print.md),
 [docs/xmcd-import.md](docs/xmcd-import.md) и [docs/xmcd-plot-format.md](docs/xmcd-plot-format.md).
