@@ -814,8 +814,12 @@ impl Exporter<'_> {
                         break;
                     }
                 }
-                let head = if order > 1 { format!("ml:derivative order=\"{order}\"") } else { "ml:derivative".to_string() };
-                self.binding(&head, v, body, &[], o, d)
+                // Mathcad writes the order as a `<degree>` element, not as an attribute
+                if order > 1 {
+                    self.binding_with_degree(v, body, order, o, d)
+                } else {
+                    self.binding("ml:derivative", v, body, &[], o, d)
+                }
             }
             ("sum" | "prod", 4) => {
                 let Expr::Var(v) = &args[0] else { return Err("индекс суммы должен быть именем".into()) };
@@ -852,6 +856,33 @@ impl Exporter<'_> {
                 Ok(())
             }
         }
+    }
+
+    /// A derivative of order `n`: the same lambda as [`binding`], plus `<ml:degree>`.
+    fn binding_with_degree(&mut self, var: &str, body: &Expr, order: usize, o: &mut String, d: usize) -> Result<(), String> {
+        ind(o, d);
+        o.push_str("<ml:apply>\n");
+        ind(o, d + 1);
+        o.push_str("<ml:derivative/>\n");
+        ind(o, d + 1);
+        o.push_str("<ml:lambda>\n");
+        ind(o, d + 2);
+        o.push_str("<ml:boundVars>\n");
+        id(var, o, d + 3);
+        ind(o, d + 2);
+        o.push_str("</ml:boundVars>\n");
+        self.expr(body, o, d + 2)?;
+        ind(o, d + 1);
+        o.push_str("</ml:lambda>\n");
+        ind(o, d + 1);
+        o.push_str("<ml:degree>\n");
+        ind(o, d + 2);
+        let _ = writeln!(o, "<ml:real>{order}</ml:real>");
+        ind(o, d + 1);
+        o.push_str("</ml:degree>\n");
+        ind(o, d);
+        o.push_str("</ml:apply>\n");
+        Ok(())
     }
 
     fn binding(&mut self, head: &str, var: &str, body: &Expr, bounds: &[&Expr], o: &mut String, d: usize) -> Result<(), String> {
