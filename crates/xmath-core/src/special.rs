@@ -162,6 +162,166 @@ pub fn gamma_p(a: f64, x: f64) -> f64 {
     }
 }
 
+/// The regularized incomplete beta function I_x(a, b) (continued fraction, Lentz).
+pub fn beta_i(a: f64, b: f64, x: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    let ln_front = libm::lgamma(a + b) - libm::lgamma(a) - libm::lgamma(b) + a * x.ln() + b * (1.0 - x).ln();
+    let front = ln_front.exp();
+    // the continued fraction converges quickly for x < (a+1)/(a+b+2); otherwise use symmetry
+    if x < (a + 1.0) / (a + b + 2.0) {
+        (front * beta_cf(a, b, x) / a).clamp(0.0, 1.0)
+    } else {
+        (1.0 - front * beta_cf(b, a, 1.0 - x) / b).clamp(0.0, 1.0)
+    }
+}
+
+fn beta_cf(a: f64, b: f64, x: f64) -> f64 {
+    let tiny = 1e-300;
+    let mut c = 1.0;
+    let mut d = 1.0 - (a + b) * x / (a + 1.0);
+    if d.abs() < tiny {
+        d = tiny;
+    }
+    d = 1.0 / d;
+    let mut h = d;
+    for m in 1..500 {
+        let m = m as f64;
+        let m2 = 2.0 * m;
+        // even step
+        let aa = m * (b - m) * x / ((a + m2 - 1.0) * (a + m2));
+        d = 1.0 + aa * d;
+        if d.abs() < tiny {
+            d = tiny;
+        }
+        c = 1.0 + aa / c;
+        if c.abs() < tiny {
+            c = tiny;
+        }
+        d = 1.0 / d;
+        h *= d * c;
+        // odd step
+        let aa = -(a + m) * (a + b + m) * x / ((a + m2) * (a + m2 + 1.0));
+        d = 1.0 + aa * d;
+        if d.abs() < tiny {
+            d = tiny;
+        }
+        c = 1.0 + aa / c;
+        if c.abs() < tiny {
+            c = tiny;
+        }
+        d = 1.0 / d;
+        let del = d * c;
+        h *= del;
+        if (del - 1.0).abs() < 1e-15 {
+            break;
+        }
+    }
+    h
+}
+
+/// Student's t distribution: Mathcad's dt, pt and qt.
+pub fn t_pdf(t: f64, nu: f64) -> f64 {
+    let ln = libm::lgamma((nu + 1.0) / 2.0) - libm::lgamma(nu / 2.0) - 0.5 * (nu * std::f64::consts::PI).ln();
+    (ln - (nu + 1.0) / 2.0 * (1.0 + t * t / nu).ln()).exp()
+}
+
+pub fn t_cdf(t: f64, nu: f64) -> f64 {
+    let x = nu / (nu + t * t);
+    let tail = 0.5 * beta_i(nu / 2.0, 0.5, x);
+    if t >= 0.0 {
+        1.0 - tail
+    } else {
+        tail
+    }
+}
+
+/// The quantile of Student's t distribution: the `t` with `t_cdf(t) == p`.
+pub fn t_quantile(p: f64, nu: f64) -> f64 {
+    if !(0.0..=1.0).contains(&p) {
+        return f64::NAN;
+    }
+    if p == 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    if p == 1.0 {
+        return f64::INFINITY;
+    }
+    if p == 0.5 {
+        return 0.0;
+    }
+    let mut lo = -1e3;
+    let mut hi = 1e3;
+    for _ in 0..200 {
+        let mid = 0.5 * (lo + hi);
+        if t_cdf(mid, nu) < p {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+        if hi - lo <= 1e-14 * hi.abs().max(1.0) {
+            break;
+        }
+    }
+    // bisection alone reaches the resolution of f64 long before the loop ends
+    0.5 * (lo + hi)
+}
+
+/// The F distribution: Mathcad's dF, pF and qF.
+pub fn f_pdf(x: f64, d1: f64, d2: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    // f(x) = sqrt(((d1 x)^d1 d2^d2) / (d1 x + d2)^(d1+d2)) / (x · B(d1/2, d2/2))
+    let ln_beta = libm::lgamma(d1 / 2.0) + libm::lgamma(d2 / 2.0) - libm::lgamma((d1 + d2) / 2.0);
+    (0.5 * (d1 * (d1 * x).ln() + d2 * d2.ln() - (d1 + d2) * (d1 * x + d2).ln()) - x.ln() - ln_beta).exp()
+}
+
+pub fn f_cdf(x: f64, d1: f64, d2: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    beta_i(d1 / 2.0, d2 / 2.0, d1 * x / (d1 * x + d2))
+}
+
+/// The quantile of the F distribution: the `x` with `f_cdf(x) == p`.
+pub fn f_quantile(p: f64, d1: f64, d2: f64) -> f64 {
+    if !(0.0..=1.0).contains(&p) {
+        return f64::NAN;
+    }
+    if p == 0.0 {
+        return 0.0;
+    }
+    if p == 1.0 {
+        return f64::INFINITY;
+    }
+    let mut lo = 0.0;
+    let mut hi = 1000.0;
+    while f_cdf(hi, d1, d2) < p {
+        hi *= 2.0;
+        if hi > 1e300 {
+            return f64::INFINITY;
+        }
+    }
+    for _ in 0..200 {
+        let mid = 0.5 * (lo + hi);
+        if f_cdf(mid, d1, d2) < p {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+        if hi - lo <= 1e-15 * hi.max(1.0) {
+            break;
+        }
+    }
+    // bisection alone reaches the resolution of f64 long before the loop ends
+    0.5 * (lo + hi)
+}
+
 /// The chi-square distribution with `k` degrees of freedom: Mathcad's dchisq, pchisq, qchisq.
 pub fn chisq_pdf(x: f64, k: f64) -> f64 {
     if x < 0.0 {
@@ -242,6 +402,40 @@ mod tests {
         assert!((bessel_k(1, 1.0) - 0.601_907_230_197_234_6).abs() < 1e-13);
         assert!((bessel_k(2, 3.0) - 0.061_510_458_471_742_0).abs() < 1e-13);
         assert!((bessel_k(0, 0.01) - 4.721_244_730_161_08).abs() < 1e-11);
+    }
+
+    #[test]
+    fn student_t() {
+        // the textbook two-sided 95% value for 10 degrees of freedom, and its symmetry
+        assert!((t_quantile(0.975, 10.0) - 2.228_138_852).abs() < 1e-8);
+        assert!((t_cdf(-2.228_138_852, 10.0) - 0.025).abs() < 1e-8);
+        // the density at zero has a closed form: Γ((ν+1)/2)/(sqrt(νπ)·Γ(ν/2))
+        let closed = |nu: f64| (libm::lgamma((nu + 1.0) / 2.0) - 0.5 * (nu * std::f64::consts::PI).ln() - libm::lgamma(nu / 2.0)).exp();
+        for nu in [1.0, 5.0, 30.0] {
+            assert!((t_pdf(0.0, nu) - closed(nu)).abs() < 1e-14, "nu={nu}");
+        }
+        // Cauchy is t with one degree of freedom: at(0) = 1/π
+        assert!((t_pdf(0.0, 1.0) - 1.0 / std::f64::consts::PI).abs() < 1e-14);
+        for p in [0.01, 0.2, 0.5, 0.8, 0.99] {
+            let q = t_quantile(p, 7.0);
+            assert!((t_cdf(q, 7.0) - p).abs() < 1e-12, "{p} -> {q}");
+        }
+    }
+
+    #[test]
+    fn f_distribution() {
+        // F(0.95; 5, 10) = 3.32583 and F(0.99; 2, 7) = 9.54658 from the tables
+        assert!((f_quantile(0.95, 5.0, 10.0) - 3.325_835).abs() < 1e-5);
+        assert!((f_quantile(0.99, 2.0, 7.0) - 9.546_578).abs() < 1e-5);
+        for p in [0.05, 0.5, 0.9] {
+            let q = f_quantile(p, 3.0, 12.0);
+            assert!((f_cdf(q, 3.0, 12.0) - p).abs() < 1e-12, "{p} -> {q}");
+        }
+        // the density integrates to the cdf: check one step against a Riemann sum
+        let (a, b, n) = (0.05f64, 4.0f64, 20_000);
+        let h = (b - a) / n as f64;
+        let sum: f64 = (0..n).map(|i| f_pdf(a + (i as f64 + 0.5) * h, 3.0, 12.0) * h).sum();
+        assert!((sum - (f_cdf(b, 3.0, 12.0) - f_cdf(a, 3.0, 12.0))).abs() < 1e-6);
     }
 
     #[test]

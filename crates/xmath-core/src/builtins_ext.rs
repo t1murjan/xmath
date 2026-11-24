@@ -808,6 +808,45 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
             };
             Ok(crate::fft::to_column(out))
         })(),
+        "dF" | "pF" | "qF" => (|| {
+            arity(name, args, 3)?;
+            let (d1, d2) = (args[1].as_real()?, args[2].as_real()?);
+            if d1 <= 0.0 || d2 <= 0.0 {
+                return Err("числа степеней свободы должны быть положительными".into());
+            }
+            real_checked(&args[0], |x| match name {
+                "dF" => {
+                    if x < 0.0 {
+                        return Err("аргумент должен быть неотрицательным".into());
+                    }
+                    Ok(special::f_pdf(x, d1, d2))
+                }
+                "pF" => Ok(special::f_cdf(x, d1, d2)),
+                _ => {
+                    if !(0.0..=1.0).contains(&x) {
+                        return Err("вероятность должна быть между 0 и 1".into());
+                    }
+                    Ok(special::f_quantile(x, d1, d2))
+                }
+            })
+        })(),
+        "dt" | "pt" | "qt" => (|| {
+            arity(name, args, 2)?;
+            let nu = args[1].as_real()?;
+            if nu <= 0.0 {
+                return Err("число степеней свободы должно быть положительным".into());
+            }
+            real_checked(&args[0], |x| match name {
+                "dt" => Ok(special::t_pdf(x, nu)),
+                "pt" => Ok(special::t_cdf(x, nu)),
+                _ => {
+                    if !(0.0..=1.0).contains(&x) {
+                        return Err("вероятность должна быть между 0 и 1".into());
+                    }
+                    Ok(special::t_quantile(x, nu))
+                }
+            })
+        })(),
         "dchisq" | "pchisq" | "qchisq" => (|| {
             arity(name, args, 2)?;
             let k = args[1].as_real()?;
