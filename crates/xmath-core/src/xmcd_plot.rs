@@ -58,6 +58,37 @@ pub(crate) const C_COLUMN: u16 = 0x34fd;
 pub(crate) const C_SQRT: u16 = 0x9a7b;
 
 pub(crate) const FIRST_NODE: u32 = 6;
+
+/// Bytes between a node's number and its class. Files written by older Mathcad releases use the
+/// single byte `0x32`; Mathcad 15 (all of the shipped samples) writes `40 40`.
+const NODE_TAGS: [&[u8]; 2] = [&[0x32], &[0x40, 0x40]];
+
+/// Length of the node tag at `pos`, if one starts there.
+fn tag_len(d: &[u8], pos: usize) -> Option<usize> {
+    NODE_TAGS.iter().find(|t| d.get(pos..pos + t.len()) == Some(**t)).map(|t| t.len())
+}
+
+/// Position of the header of node `num` at or after `from`, if one starts there.
+fn find_node(d: &[u8], num: u32, from: usize) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for tag in NODE_TAGS {
+        let mut pat = Vec::new();
+        write_num(num, &mut pat);
+        pat.extend_from_slice(tag);
+        let mut at = from;
+        while let Some(c) = find(d, &pat, at) {
+            if plausible_header(d, c + pat.len(), num) {
+                best = Some(match best {
+                    Some(b) => b.min(c),
+                    None => c,
+                });
+                break;
+            }
+            at = c + 1;
+        }
+    }
+    best
+}
 pub(crate) const ROOT_PARENT: u32 = 5;
 
 /// Variable-length number: values below 0x40 take one byte, larger ones two
@@ -95,22 +126,18 @@ fn find(d: &[u8], pat: &[u8], from: usize) -> Option<usize> {
 /// followed by the node tag `0x32` and a plausible header.
 pub(crate) fn parse_nodes(d: &[u8]) -> Result<Vec<Node>, String> {
     let tree = find(d, b"tree", 0).ok_or("нет дерева выражений")?;
-    let mut start = {
-        let mut pat = Vec::new();
-        write_num(FIRST_NODE, &mut pat);
-        pat.push(0x32);
-        find(d, &pat, tree).ok_or("нет узлов дерева")?
-    };
+    let mut start = find_node(d, FIRST_NODE, tree).ok_or("нет узлов дерева")?;
     let mut nodes: Vec<Node> = Vec::new();
     let mut id = FIRST_NODE;
     loop {
         // header: number, 0x32, class(2), 0 0, flag, parent
         let mut pos = start;
         let (n, p) = read_num(d, pos).ok_or("обрыв данных")?;
-        if n != id || d.get(p) != Some(&0x32) {
+        let tag = if n == id { tag_len(d, p) } else { None };
+        let Some(tag) = tag else {
             return Err("нарушена нумерация узлов".into());
-        }
-        pos = p + 1;
+        };
+        pos = p + tag;
         if d.len() < pos + 6 {
             return Err("обрыв данных".into());
         }
@@ -118,18 +145,7 @@ pub(crate) fn parse_nodes(d: &[u8]) -> Result<Vec<Node>, String> {
         let flag = d[pos + 4];
         let (parent, body) = read_num(d, pos + 5).ok_or("обрыв данных")?;
         // the next node
-        let mut next_pat = Vec::new();
-        write_num(id + 1, &mut next_pat);
-        next_pat.push(0x32);
-        let mut from = body;
-        let mut next = None;
-        while let Some(c) = find(d, &next_pat, from) {
-            if plausible_header(d, c + next_pat.len(), id + 1) {
-                next = Some(c);
-                break;
-            }
-            from = c + 1;
-        }
+        let next = find_node(d, id + 1, body);
         match next {
             Some(c) => {
                 nodes.push(Node { id, cls, flag, parent, payload: d[body..c].to_vec() });
