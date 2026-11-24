@@ -190,6 +190,26 @@ impl Cx {
         }
     }
 
+    /// The picture of a region: the payload of a `<png>`/`<jpeg>`/`<gif>`/`<bmp>` region (that is
+    /// the image itself), else the picture Mathcad rendered next to the region.
+    fn picture(&self, reg: Node) -> Option<String> {
+        for c in reg.children().filter(|c| c.is_element()) {
+            if matches!(lname(c), "png" | "jpeg" | "jpg" | "gif" | "bmp") {
+                let bytes = c.attribute("item-idref").and_then(|id| self.item_bytes(id));
+                if let Some(bytes) = bytes {
+                    let known = bytes.starts_with(&[0x89, b'P', b'N', b'G'])
+                        || bytes.starts_with(&[0xff, 0xd8])
+                        || bytes.starts_with(b"GIF8")
+                        || bytes.starts_with(b"BM");
+                    if known {
+                        return Some(base64::engine::general_purpose::STANDARD.encode(bytes));
+                    }
+                }
+            }
+        }
+        self.rendering(reg)
+    }
+
     /// The picture Mathcad rendered for a region (`<rendering item-idref>`), as base64 PNG/JPEG.
     fn rendering(&self, reg: Node) -> Option<String> {
         let r = child(reg, "rendering")?;
@@ -366,7 +386,7 @@ fn note(text: &str, w: Option<f32>) -> RegionKind {
 
 /// A picture region from the rendering Mathcad stored, if any.
 fn image_kind(cx: &Cx, reg: Node, raw: (Option<f32>, Option<f32>)) -> Option<RegionKind> {
-    let png = cx.rendering(reg)?;
+    let png = cx.picture(reg)?;
     Some(RegionKind::Image { png_base64: png, width: raw.0.unwrap_or(200.0).max(4.0), height: raw.1.unwrap_or(120.0).max(4.0) })
 }
 
@@ -391,22 +411,25 @@ fn convert_region(cx: &mut Cx, reg: Node, body: Node, w: Option<f32>, h: Option<
             }
         }
         "reference" if reference_href(reg, body).is_some() => RegionKind::Reference { href: reference_href(reg, body).unwrap_or_default() },
-        name @ ("picture" | "image" | "ole" | "component" | "reference") => match image_kind(cx, reg, raw) {
-            Some(img) => {
-                if name != "picture" && name != "image" {
-                    cx.warn(format!("объект <{name}> импортирован как рисунок"));
+        // `<png>`, `<jpeg>`: Mathcad's own picture regions; the image is the region's payload
+        name @ ("picture" | "image" | "png" | "jpeg" | "jpg" | "gif" | "bmp" | "ole" | "component" | "reference") => {
+            match image_kind(cx, reg, raw) {
+                Some(img) => {
+                    if !matches!(name, "picture" | "image" | "png" | "jpeg" | "jpg" | "gif" | "bmp") {
+                        cx.warn(format!("объект <{name}> импортирован как рисунок"));
+                    }
+                    img
                 }
-                img
-            }
-            None if name == "picture" || name == "image" => {
+                None if matches!(name, "picture" | "image" | "png" | "jpeg" | "jpg" | "gif" | "bmp") => {
                 cx.warn("рисунок не импортирован");
                 note("[Рисунок не импортирован]", w)
             }
-            None => {
-                cx.warn(format!("область типа <{name}> не поддерживается"));
-                note(&format!("[Область «{name}» не импортирована]"), w)
+                None => {
+                    cx.warn(format!("область типа <{name}> не поддерживается"));
+                    note(&format!("[Область «{name}» не импортирована]"), w)
+                }
             }
-        },
+        }
         other => {
             cx.warn(format!("область типа <{other}> не поддерживается"));
             note(&format!("[Область «{other}» не импортирована]"), w)
