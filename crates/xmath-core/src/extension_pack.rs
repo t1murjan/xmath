@@ -567,6 +567,26 @@ fn concomp(args: &[Value]) -> EResult<Value> {
     Ok(Value::Matrix(Matrix::new(rows, cols, labels.into_iter().map(Num::real).collect())))
 }
 
+/// `IsNaN(x)` — 1 where the value is not a number.
+fn is_nan(args: &[Value]) -> EResult<Value> {
+    one_arg("IsNaN", args)?;
+    map_nums(&args[0], |n| Ok(Num::real(if n.v.re.is_nan() || n.v.im.is_nan() { 1.0 } else { 0.0 })))
+}
+
+/// `pbeta(x, a, b)` — the regularized incomplete beta function I_x(a, b).
+fn pbeta(args: &[Value]) -> EResult<Value> {
+    if args.len() != 3 {
+        return Err("pbeta(x, a, b) принимает три аргумента".into());
+    }
+    let x = args[0].as_num()?.v.re;
+    let a = args[1].as_num()?.v.re;
+    let b = args[2].as_num()?.v.re;
+    if !(0.0..=1.0).contains(&x) || a <= 0.0 || b <= 0.0 {
+        return Err("pbeta: x должен быть в [0, 1], a и b — положительными".into());
+    }
+    Ok(Value::real(crate::special::beta_i(a, b, x)))
+}
+
 /// Functions of the extension pack, called from [`crate::builtins::call`].
 pub fn call(name: &str, args: &[Value]) -> Option<EResult<Value>> {
     match name {
@@ -579,6 +599,8 @@ pub fn call(name: &str, args: &[Value]) -> Option<EResult<Value>> {
         "∠" => Some(polar(args)),
         "binarize" => Some(binarize(args)),
         "concomp" => Some(concomp(args)),
+        "IsNaN" => Some(is_nan(args)),
+        "pbeta" => Some(pbeta(args)),
         "Seed" => Some(seed(args)),
         "setwindow" => Some(setwindow(args)),
         "SIUnitsOf" => Some(si_units_of(args)),

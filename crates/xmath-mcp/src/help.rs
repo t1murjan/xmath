@@ -78,6 +78,8 @@ pub const FUNCTION_DOCS: &[(&str, &str)] = &[
     ("kendltau", "kendltau(x, y): [tau; z; p] of Kendall's rank correlation"),
     ("kendltau2", "kendltau2(M): [tau; z; p] of a contingency table"),
     ("contingtbl", "contingtbl(M): [χ²; df; p; V; C] of a contingency table"),
+    ("IsNaN", "IsNaN(x): 1 where x is not a number"),
+    ("pbeta", "pbeta(x, a, b): the regularized incomplete beta function I_x(a, b)"),
     ("sign", "sign(x): -1, 0 or 1"),
     ("signum", "signum(x): sign function (Mathcad's signum)"),
     ("max", "max(a, b, ...) or max(vector/matrix): largest value"),

@@ -399,6 +399,8 @@ pub fn constant(name: &str) -> Option<Num> {
         "∞" => Num::real(1e307),
         "g" => Num::with_dim(9.806_65, units::ACCELERATION),
         "c" => Num::with_dim(299_792_458.0, units::VELOCITY),
+        // Mathcad's not-a-number value, tested with `IsNaN`
+        "NaN" => Num::new(C64::new(f64::NAN, f64::NAN), Dim::NONE),
         // Catalan's constant, which Mathcad knows only symbolically (`Catalan → float`)
         "Catalan" => Num::real(0.915_965_594_177_219),
         "TOL" => Num::real(1e-3),
