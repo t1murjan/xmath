@@ -49,7 +49,7 @@ pub(super) struct Document {
     /// What the last save to .xmcd could not write (shown once in a dialog).
     pub(super) save_warnings: Option<Vec<String>>,
     /// A fresh hash key for each document, including untitled sheets with identical contents.
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "android")))]
     pub(super) live_document: std::hash::RandomState,
     /// When the window last had the keyboard focus (seconds since 1970): the MCP server picks
     /// the window used last.
@@ -107,7 +107,7 @@ impl Document {
             status: String::new(),
             import_log: Vec::new(),
             save_warnings: None,
-            #[cfg(unix)]
+            #[cfg(all(unix, not(target_os = "android")))]
             live_document: std::hash::RandomState::new(),
             focused_at: 0.0,
             shown_warnings: Vec::new(),
@@ -177,7 +177,7 @@ impl Document {
             .unwrap_or_else(|| format!("Без имени:{}", self.id))
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "android")))]
     pub(super) fn live_info(&self, active: bool) -> serde_json::Value {
         serde_json::json!({
             "pid": std::process::id(),
@@ -897,7 +897,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "android")))]
     #[test]
     fn live_write_follows_the_document_after_focus_changes() {
         use serde_json::json;

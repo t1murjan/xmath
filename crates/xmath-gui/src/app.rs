@@ -41,6 +41,38 @@ const BASE_PT: f32 = 10.0;
 pub const PANEL: Color32 = Color32::from_rgb(236, 233, 216);
 const SELECT_BLUE: Color32 = Color32::from_rgb(49, 106, 197);
 
+/// Windows XP / Mathcad 15 colour scheme.
+pub fn setup_style(ctx: &egui::Context) {
+    let mut v = egui::Visuals::light();
+    v.panel_fill = PANEL;
+    v.window_fill = PANEL;
+    v.faint_bg_color = egui::Color32::from_rgb(245, 244, 236);
+    v.extreme_bg_color = egui::Color32::WHITE;
+    v.override_text_color = Some(egui::Color32::BLACK);
+    v.selection.bg_fill = egui::Color32::from_rgb(49, 106, 197);
+    v.selection.stroke = egui::Stroke::new(1.0_f32, egui::Color32::WHITE);
+    v.window_stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0, 60, 160));
+    let w = &mut v.widgets;
+    w.inactive.weak_bg_fill = PANEL;
+    w.inactive.bg_fill = egui::Color32::WHITE;
+    w.inactive.bg_stroke = egui::Stroke::NONE;
+    w.hovered.weak_bg_fill = egui::Color32::from_rgb(252, 252, 248);
+    w.hovered.bg_stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(120, 140, 190));
+    w.active.weak_bg_fill = egui::Color32::from_rgb(220, 218, 205);
+    w.active.bg_stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(90, 110, 170));
+    for s in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+        s.corner_radius = egui::CornerRadius::same(2);
+        s.fg_stroke.color = egui::Color32::BLACK;
+    }
+    ctx.set_visuals(v);
+    ctx.style_mut(|s| {
+        s.spacing.button_padding = egui::vec2(5.0, 2.0);
+        s.spacing.menu_margin = egui::Margin::same(3);
+        s.text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(13.0));
+        s.text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(13.0));
+    });
+}
+
 fn px(pt: f32, zoom: f32) -> f32 {
     pt * 4.0 / 3.0 * zoom
 }
@@ -161,6 +193,7 @@ enum DlgKind {
 }
 
 /// A native file dialog running on a background thread.
+#[cfg(not(target_os = "android"))]
 struct FileJob {
     kind: DlgKind,
     rx: mpsc::Receiver<Result<Option<PathBuf>, ()>>,
@@ -201,7 +234,12 @@ pub struct App {
     confirm: Option<Action>,
     allow_close: bool,
 
+    #[cfg(not(target_os = "android"))]
     file_job: Option<FileJob>,
+    #[cfg(target_os = "android")]
+    file_job: Option<(DlgKind, Option<Action>)>,
+    #[cfg(target_os = "android")]
+    android: Option<crate::android::Bridge>,
     path_dlg: Option<PathDlg>,
     /// Context help of the hovered toolbar/palette button (shown in the status bar).
     hint: String,
@@ -212,7 +250,7 @@ pub struct App {
     pending: Vec<Action>,
     has_bold_font: bool,
     /// The live link to AI assistants (MCP): this window's socket, see `xmath_core::live`.
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "android")))]
     live: Option<crate::live::Server>,
     /// Debug harness (`XMATH_DUMP_RECTS=path`): writes the rendered region sizes and exits.
     dump_rects: Option<PathBuf>,
@@ -233,11 +271,19 @@ impl App {
         paths: impl IntoIterator<Item = PathBuf>,
         has_bold_font: bool,
     ) -> App {
-        let mut palettes = HashSet::new();
-        palettes.insert(Palette::Calculator);
+        let palettes = if cfg!(target_os = "android") {
+            HashSet::new()
+        } else {
+            HashSet::from([Palette::Calculator])
+        };
         let mut app = App {
             clipboard: Vec::new(),
-            bars: Toolbars { standard: true, formatting: true, math: true, status: true },
+            bars: Toolbars {
+                standard: !cfg!(target_os = "android"),
+                formatting: !cfg!(target_os = "android"),
+                math: !cfg!(target_os = "android"),
+                status: true,
+            },
             palettes,
             auto_calc: true,
             dlg_matrix: None,
@@ -252,13 +298,15 @@ impl App {
             confirm: None,
             allow_close: false,
             file_job: None,
+            #[cfg(target_os = "android")]
+            android: None,
             path_dlg: None,
             hint: String::new(),
             text_mode: false,
             title: String::new(),
             pending: Vec::new(),
             has_bold_font,
-            #[cfg(unix)]
+            #[cfg(all(unix, not(target_os = "android")))]
             live: crate::live::start(cc.egui_ctx.clone()),
             dump_rects: std::env::var_os("XMATH_DUMP_RECTS").map(PathBuf::from),
             dump_frames: 0,
@@ -276,6 +324,12 @@ impl App {
             app.load(&cc.egui_ctx, &path);
         }
         app
+    }
+
+    #[cfg(target_os = "android")]
+    pub(crate) fn set_android(&mut self, bridge: crate::android::Bridge) {
+        self.android = Some(bridge);
+        self.text_mode = true;
     }
 
     /// `bars:SFMT;palettes:Calculator,Graph` — toolbar visibility and open palettes.
@@ -320,7 +374,7 @@ impl App {
         if ctx.input(|i| i.focused) {
             self.mark_document_focused();
         }
-        #[cfg(unix)]
+        #[cfg(all(unix, not(target_os = "android")))]
         {
             let reqs: Vec<crate::live::Request> = match &self.live {
                 Some(l) => l.rx.try_iter().collect(),
@@ -333,7 +387,7 @@ impl App {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "android")))]
     fn handle_live(&mut self, cmd: &serde_json::Value) -> serde_json::Value {
         if cmd["cmd"] == "info" {
             let mut info = self.doc.live_info(true);
@@ -353,7 +407,7 @@ impl App {
             .unwrap_or_else(|| serde_json::json!({"error": "Лист xmath уже закрыт."}))
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "android")))]
     fn handle_live_document(&mut self, cmd: &serde_json::Value) -> serde_json::Value {
         let path = self.doc.path.as_ref().and_then(|p| std::path::absolute(p).ok());
         match cmd["cmd"].as_str().unwrap_or("") {
@@ -479,7 +533,7 @@ impl App {
             return;
         }
         if ext == "xmath" {
-            match std::fs::write(&p, self.doc.ws.to_json()) {
+            match self.write_output(&p, self.doc.ws.to_json().as_bytes()) {
                 Ok(()) => {
                     self.doc.status = format!("Сохранено: {}", p.display());
                     self.doc.path = Some(p);
@@ -490,6 +544,14 @@ impl App {
             return;
         }
         self.save_xmcd(&p);
+    }
+
+    fn write_output(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
+        #[cfg(target_os = "android")]
+        if let Some(android) = &self.android {
+            return android.write(path, bytes);
+        }
+        std::fs::write(path, bytes).map_err(|err| err.to_string())
     }
 
     /// Saves to the current path, or asks for one.
@@ -523,6 +585,7 @@ impl App {
 
     /// Runs the native dialog (on a thread under Linux, where the xdg portal
     /// may block or be missing; directly elsewhere, macOS wants the main thread).
+    #[cfg(not(target_os = "android"))]
     fn start_dialog(&mut self, ctx: &Context, kind: DlgKind, then: Option<Action>) {
         if self.file_job.is_some() || self.path_dlg.is_some() {
             return;
@@ -551,6 +614,7 @@ impl App {
         ctx.request_repaint_after(Duration::from_millis(100));
     }
 
+    #[cfg(not(target_os = "android"))]
     fn poll_dialog(&mut self, ctx: &Context) {
         let Some(job) = &self.file_job else { return };
         let res = match job.rx.try_recv() {
@@ -580,6 +644,52 @@ impl App {
         if let Some(p) = res.ok().flatten() {
             self.file_chosen(ctx, job.kind, p, job.then);
         } else if job.then == Some(Action::Exit) {
+            self.workspace.exit_discarded.clear();
+        }
+    }
+
+    #[cfg(target_os = "android")]
+    fn start_dialog(&mut self, ctx: &Context, kind: DlgKind, then: Option<Action>) {
+        if self.file_job.is_some() {
+            return;
+        }
+        let Some(android) = &self.android else { return };
+        let mode = match kind {
+            DlgKind::Open => 0,
+            DlgKind::Save => 1,
+            DlgKind::Pdf => 2,
+            DlgKind::Reference => 3,
+        };
+        let name = self.doc_name();
+        let ext = match kind {
+            DlgKind::Pdf => "pdf",
+            DlgKind::Save if name.to_lowercase().ends_with(".xmath") => "xmath",
+            _ => "xmcd",
+        };
+        let name = format!("{}.{ext}", file_stem_of(&name.replace(':', "")));
+        match android.pick(mode, &name) {
+            Ok(()) => {
+                self.file_job = Some((kind, then));
+                ctx.request_repaint_after(Duration::from_millis(250));
+            }
+            Err(error) => self.doc.status = format!("Ошибка выбора файла: {error}"),
+        }
+    }
+
+    #[cfg(target_os = "android")]
+    fn poll_dialog(&mut self, ctx: &Context) {
+        let Some((kind, then)) = self.file_job else { return };
+        let Some(result) = self.android.as_ref().and_then(|android| android.take_document()) else {
+            ctx.request_repaint_after(Duration::from_millis(250));
+            return;
+        };
+        self.file_job = None;
+        match result {
+            Ok(Some(path)) => self.file_chosen(ctx, kind, path, then),
+            Ok(None) => self.doc.status.clear(),
+            Err(error) => self.doc.status = format!("Ошибка выбора файла: {error}"),
+        }
+        if then == Some(Action::Exit) && self.doc.modified {
             self.workspace.exit_discarded.clear();
         }
     }
@@ -1432,6 +1542,7 @@ fn file_stem_of(name: &str) -> String {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 fn native_dialog(kind: DlgKind, name: &str) -> Option<PathBuf> {
     match kind {
         // the first filter is the default one
@@ -1684,7 +1795,7 @@ impl App {
         let ctx = ui.ctx().clone();
         let mut act: Option<Action> = None;
         let sel = !self.doc.selection.is_empty();
-        egui::menu::bar(ui, |ui| {
+        let menus = |ui: &mut Ui| {
             ui.menu_button("Файл", |ui| {
                 if menu_item(ui, "Создать", "Ctrl+N", true) {
                     act = Some(Action::New);
@@ -1918,10 +2029,50 @@ impl App {
                     act = Some(Action::About);
                 }
             });
-        });
+        };
+        if cfg!(target_os = "android") {
+            ui.spacing_mut().interact_size.y = 30.0;
+            ui.horizontal_wrapped(menus);
+        } else {
+            egui::menu::bar(ui, menus);
+        }
         if let Some(a) = act {
             self.pending.push(a);
         }
+    }
+
+    #[cfg(target_os = "android")]
+    fn touch_toolbar(&mut self, ui: &mut Ui) {
+        let ctx = ui.ctx().clone();
+        ui.spacing_mut().interact_size.y = 36.0;
+        ui.add_enabled_ui(!self.dialogs_open(), |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if self.doc.editing.is_some() {
+                    if ui.button("Готово").clicked() {
+                        self.finish_edit(true);
+                        ctx.memory_mut(|mem| mem.stop_text_input());
+                    }
+                    if self.editing_math().is_some() {
+                        for token in [":=", "=", "^", "√", "(", ")"] {
+                            if ui.button(token).clicked() {
+                                self.insert(&ctx, if token == "√" { "sqrt(■)" } else { token });
+                            }
+                        }
+                    }
+                } else {
+                    for (label, action) in [
+                        ("Формула", Action::InsertMath),
+                        ("Текст", Action::InsertText),
+                        ("График", Action::InsertPlot),
+                        ("Расчёт", Action::Calculate),
+                    ] {
+                        if ui.button(label).clicked() {
+                            self.pending.push(action);
+                        }
+                    }
+                }
+            });
+        });
     }
 
     fn standard_toolbar(&mut self, ui: &mut Ui) {
@@ -2159,16 +2310,25 @@ impl App {
 
     fn status_bar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
+            let name;
             let msg = if !self.hint.is_empty() {
                 &self.hint
             } else if self.doc.evaluating || (self.doc.dirty && self.auto_calc) {
                 "Вычисление…"
             } else if self.doc.status.is_empty() {
-                "Нажмите F1 для справки."
+                if cfg!(target_os = "android") {
+                    name = self.doc_name();
+                    &name
+                } else {
+                    "Нажмите F1 для справки."
+                }
             } else {
                 &self.doc.status
             };
             ui.label(RichText::new(msg).size(12.0));
+            if cfg!(target_os = "android") {
+                return;
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let page = (self.doc.scroll_off.y / self.doc.zoom / self.page_px().1).floor().max(0.0) as i32 + 1;
                 status_box(ui, &format!("Страница {page}"), 84.0);
@@ -2250,7 +2410,8 @@ impl App {
             let avail = ui.available_size();
             let size = Vec2::new(((right + 120.0) * z).max(avail.x), ((bottom + 240.0) * z).max(avail.y));
             let visible = ui.clip_rect();
-            let (rect, bg) = ui.allocate_exact_size(size, Sense::click_and_drag());
+            let background = if cfg!(target_os = "android") { Sense::click() } else { Sense::click_and_drag() };
+            let (rect, bg) = ui.allocate_exact_size(size, background);
             let origin = rect.min;
             let to_screen = |p: Pos2| origin + p.to_vec2() * z;
             let to_ws = |s: Pos2| ((s - origin) / z).to_pos2();
@@ -2787,6 +2948,12 @@ impl App {
             }
         });
         self.doc.scroll_off = out.state.offset;
+        if cfg!(target_os = "android") && out.inner_rect.height() < self.doc.view_size.y {
+            if let Some(rect) = self.doc.editing.and_then(|id| self.doc.rects.get(&id)) {
+                self.doc.reveal = Some(*rect);
+                ctx.request_repaint();
+            }
+        }
         self.doc.view_min = out.inner_rect.min;
         self.doc.view_size = out.inner_rect.size();
         self.doc.content_size = out.content_size;
@@ -3492,6 +3659,11 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        #[cfg(target_os = "android")]
+        if let Some(android) = &self.android {
+            android.reserve_system_insets(ctx);
+            android.inject_input(ctx);
+        }
         self.serve_live(ctx);
         if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -3513,21 +3685,32 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("menu").frame(egui::Frame::default().fill(PANEL).inner_margin(2.0)).show(ctx, |ui| {
             self.menu_bar(ui);
         });
+        #[cfg(target_os = "android")]
+        egui::TopBottomPanel::top("touch-tools")
+            .frame(egui::Frame::default().fill(PANEL).inner_margin(egui::Margin::symmetric(6, 3)))
+            .show(ctx, |ui| self.touch_toolbar(ui));
         if self.bars.standard || self.bars.formatting || self.bars.math {
             egui::TopBottomPanel::top("toolbars").frame(egui::Frame::default().fill(PANEL).inner_margin(egui::Margin::symmetric(4, 2))).show(ctx, |ui| {
-                if self.bars.standard {
-                    self.standard_toolbar(ui);
-                }
-                if self.bars.formatting || self.bars.math {
-                    ui.horizontal(|ui| {
-                        if self.bars.formatting {
-                            self.formatting_toolbar(ui);
-                            separator(ui);
-                        }
-                        if self.bars.math {
-                            self.math_toolbar(ui);
-                        }
-                    });
+                let mut contents = |ui: &mut Ui| {
+                    if self.bars.standard {
+                        self.standard_toolbar(ui);
+                    }
+                    if self.bars.formatting || self.bars.math {
+                        ui.horizontal(|ui| {
+                            if self.bars.formatting {
+                                self.formatting_toolbar(ui);
+                                separator(ui);
+                            }
+                            if self.bars.math {
+                                self.math_toolbar(ui);
+                            }
+                        });
+                    }
+                };
+                if cfg!(target_os = "android") {
+                    ScrollArea::horizontal().show(ui, contents);
+                } else {
+                    contents(ui);
                 }
             });
         }
@@ -3551,6 +3734,10 @@ impl eframe::App for App {
             self.run(ctx, a);
         }
 
+        #[cfg(target_os = "android")]
+        if let Some(android) = &mut self.android {
+            android.update_ime(ctx);
+        }
         self.evaluate_documents(ctx);
         self.dump_rects_tick(ctx);
 

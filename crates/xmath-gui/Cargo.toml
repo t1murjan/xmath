@@ -19,13 +19,11 @@ required-features = ["gui"]
 default = ["gui"]
 # The window application (eframe, native file dialogs). Without it the crate only provides the
 # typesetting and PDF export used by the command line tool and the MCP server.
-gui = ["dep:eframe", "dep:rfd"]
+gui = ["dep:eframe", "dep:rfd", "dep:jni", "dep:winit"]
 
 [dependencies]
 xmath-core.workspace = true
-eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "wayland", "x11", "persistence"], optional = true }
 egui = "0.31"
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"], optional = true }
 serde_json.workspace = true
 base64 = "0.21"
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -34,3 +32,12 @@ ttf-parser = "0.25"
 subsetter = "0.2"
 flate2 = "1"
 tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "wayland", "x11", "persistence"], optional = true }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"], optional = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "persistence", "android-native-activity"], optional = true }
+jni = { version = "0.22", optional = true }
+winit = { version = "0.30", default-features = false, optional = true }

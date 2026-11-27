@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 /// Arial (or a metric-compatible replacement) for the Mathcad look.
 const REGULAR_FONTS: &[&str] = &[
+    "/system/fonts/Roboto-Regular.ttf",
     "C:\\Windows\\Fonts\\arial.ttf",
     "/System/Library/Fonts/Supplemental/Arial.ttf",
     "/Library/Fonts/Arial.ttf",
@@ -18,6 +19,7 @@ const REGULAR_FONTS: &[&str] = &[
 ];
 
 const BOLD_FONTS: &[&str] = &[
+    "/system/fonts/Roboto-Bold.ttf",
     "C:\\Windows\\Fonts\\arialbd.ttf",
     "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
     "/Library/Fonts/Arial Bold.ttf",
@@ -33,6 +35,7 @@ const BOLD_FONTS: &[&str] = &[
 
 /// Times New Roman or Liberation Serif.
 const SERIF_FONTS: &[&str] = &[
+    "/system/fonts/NotoSerif-Regular.ttf",
     "C:\\Windows\\Fonts\\times.ttf",
     "/System/Library/Fonts/Supplemental/Times New Roman.ttf",
     "/Library/Fonts/Times New Roman.ttf",
@@ -47,6 +50,7 @@ const SERIF_FONTS: &[&str] = &[
 ];
 
 const SERIF_BOLD_FONTS: &[&str] = &[
+    "/system/fonts/NotoSerif-Bold.ttf",
     "C:\\Windows\\Fonts\\timesbd.ttf",
     "/System/Library/Fonts/Supplemental/Times New Roman Bold.ttf",
     "/Library/Fonts/Times New Roman Bold.ttf",
@@ -62,6 +66,7 @@ const SERIF_BOLD_FONTS: &[&str] = &[
 
 /// Courier New or Liberation Mono.
 const MONO_FONTS: &[&str] = &[
+    "/system/fonts/DroidSansMono.ttf",
     "C:\\Windows\\Fonts\\cour.ttf",
     "/System/Library/Fonts/Supplemental/Courier New.ttf",
     "/Library/Fonts/Courier New.ttf",
@@ -91,6 +96,8 @@ const MONO_BOLD_FONTS: &[&str] = &[
 
 /// Wide Unicode coverage for math symbols (∫, Σ, ■, Greek, arrows).
 const SYMBOL_FONTS: &[&str] = &[
+    "/system/fonts/NotoSansMath-Regular.ttf",
+    "/system/fonts/NotoSansSymbols-Regular-Subsetted.ttf",
     "C:\\Windows\\Fonts\\seguisym.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/dejavu/DejaVuSans.ttf",

@@ -1,0 +1,9 @@
+<resources>
+    <style name="XmathTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">#ece9d8</item>
+        <item name="android:navigationBarColor">#ece9d8</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+    </style>
+</resources>

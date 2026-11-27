@@ -4021,12 +4021,14 @@ dependencies = [
  "egui",
  "flate2",
  "image",
+ "jni",
  "pdf-writer",
  "rfd",
  "serde_json",
  "subsetter",
  "tiny-skia",
  "ttf-parser",
+ "winit",
  "xmath-core",
 ]
 

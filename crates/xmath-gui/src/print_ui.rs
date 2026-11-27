@@ -67,7 +67,7 @@ impl App {
     pub(super) fn export_pdf_to(&mut self, p: PathBuf) {
         let p = if p.extension().is_none() { p.with_extension("pdf") } else { p };
         let bytes = self.pdf_bytes();
-        self.doc.status = match std::fs::write(&p, bytes) {
+        self.doc.status = match self.write_output(&p, &bytes) {
             Ok(()) => format!("PDF сохранён: {}", p.display()),
             Err(e) => format!("Не удалось сохранить PDF: {e}"),
         };
@@ -84,7 +84,7 @@ impl App {
         let renderings = if has_plots { print::render_plot_pngs(&self.doc.ws, &outputs) } else { Default::default() };
         let opts = xmath_core::xmcd_export::ExportOptions { renderings, rendering_scale: print::PNG_SCALE, env: Some(env), outputs: Some(outputs) };
         let r = xmath_core::xmcd_export::export_xmcd_with(&self.doc.ws, &opts);
-        match std::fs::write(p, r.xml) {
+        match self.write_output(p, r.xml.as_bytes()) {
             Ok(()) => {
                 self.doc.path = Some(p.to_path_buf());
                 self.doc.modified = false;
@@ -104,6 +104,7 @@ impl App {
 
     /// Writes a temporary PDF and hands it to the system: `lp` under Linux (the default
     /// printer), the default PDF application elsewhere (and under Linux without `lp`).
+    #[cfg(not(target_os = "android"))]
     fn print_now(&mut self) {
         let bytes = self.pdf_bytes();
         let file = std::env::temp_dir().join(format!("xmath-print-{}.pdf", std::process::id()));
@@ -146,6 +147,16 @@ impl App {
         {
             let _ = Command::new("xdg-open");
             self.doc.status = format!("PDF: {}", file.display());
+        }
+    }
+
+    #[cfg(target_os = "android")]
+    fn print_now(&mut self) {
+        if let Some(android) = &self.android {
+            self.doc.status = match android.print(&self.doc_name(), &self.pdf_bytes()) {
+                Ok(()) => "Открыт диалог печати".into(),
+                Err(error) => format!("Не удалось открыть диалог печати: {error}"),
+            };
         }
     }
 
