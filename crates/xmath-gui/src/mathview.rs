@@ -936,6 +936,17 @@ impl<'a> Ts<'a> {
                 with_units(self.matrix(grid, size), units)
             }
             ResultView::Text(s) => self.text(&format!("\"{s}\""), size),
+            ResultView::Table { rows, cols, cells } => {
+                let mut grid = Vec::new();
+                for r in 0..*rows {
+                    let mut row = Vec::new();
+                    for c in 0..*cols {
+                        row.push(self.text(&cells[r * cols + c], size));
+                    }
+                    grid.push(row);
+                }
+                self.matrix(grid, size)
+            }
             ResultView::TextMatrix { rows, cols, cells } => {
                 let mut grid = Vec::new();
                 for r in 0..*rows {

@@ -341,6 +341,12 @@ pub enum ResultView {
         units: UnitText,
     },
     Text(String),
+    /// A table of mixed cells (a data table with a column of names).
+    Table {
+        rows: usize,
+        cols: usize,
+        cells: Vec<String>,
+    },
     /// A table of strings (`PolyLookup(6)`).
     TextMatrix {
         rows: usize,
@@ -410,6 +416,22 @@ impl ResultView {
                 Ok(ResultView::Matrix { rows: m.rows, cols: m.cols, cells, cell_units, units })
             }
             Value::Str(s) => Ok(ResultView::Text(s.to_string())),
+            Value::Table(t) => {
+                // Mathcad: "This value must be a scalar or a matrix." — a display unit does not
+                // apply to a table with text in it
+                if unit.is_some() {
+                    return Err("единица вывода применима только к скаляру или матрице".into());
+                }
+                let mut cells = Vec::with_capacity(t.cells.len());
+                for v in &t.cells {
+                    cells.push(match v {
+                        Value::Num(n) => format_num(*n, o).to_string(),
+                        Value::Str(s) => s.to_string(),
+                        other => other.type_name().to_string(),
+                    });
+                }
+                Ok(ResultView::Table { rows: t.rows, cols: t.cols, cells })
+            }
             Value::StrMat(t) => Ok(ResultView::TextMatrix {
                 rows: t.rows,
                 cols: t.cols,
@@ -455,6 +477,21 @@ impl fmt::Display for ResultView {
                 units(f, u)
             }
             ResultView::Text(s) => write!(f, "\"{s}\""),
+            ResultView::Table { rows, cols, cells } => {
+                write!(f, "[")?;
+                for r in 0..*rows {
+                    if r > 0 {
+                        write!(f, "; ")?;
+                    }
+                    for c in 0..*cols {
+                        if c > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", cells[r * cols + c])?;
+                    }
+                }
+                write!(f, "]")
+            }
             ResultView::TextMatrix { rows, cols, cells } => {
                 write!(f, "[")?;
                 for r in 0..*rows {

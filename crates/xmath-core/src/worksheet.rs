@@ -685,7 +685,8 @@ impl Snapshot {
                 text: None,
                 texts: t.data.iter().map(|s| s.to_string()).collect(),
             }),
-            Value::Func(_) => None,
+            // a table with mixed cells has no numeric snapshot (definitions do not need one)
+            Value::Table(_) | Value::Func(_) => None,
         }
     }
 }

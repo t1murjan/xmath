@@ -398,12 +398,21 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
         })(),
         "length" => one(&|v| match v {
             Value::Matrix(m) if m.is_vector() => Ok(Value::real(m.data.len() as f64)),
+            Value::Table(t) if t.cols == 1 || t.rows == 1 => Ok(Value::real(t.cells.len() as f64)),
             Value::Range(r) => Ok(Value::real(r.len() as f64)),
             Value::Str(s) => Ok(Value::real(s.chars().count() as f64)),
             _ => Err("ожидался вектор".into()),
         }),
-        "rows" => one(&|v| Ok(Value::real(v.to_matrix()?.rows as f64))),
-        "cols" => one(&|v| Ok(Value::real(v.to_matrix()?.cols as f64))),
+        "rows" => one(&|v| match v {
+            Value::Table(t) => Ok(Value::real(t.rows as f64)),
+            Value::StrMat(t) => Ok(Value::real(t.rows as f64)),
+            _ => Ok(Value::real(v.to_matrix()?.rows as f64)),
+        }),
+        "cols" => one(&|v| match v {
+            Value::Table(t) => Ok(Value::real(t.cols as f64)),
+            Value::StrMat(t) => Ok(Value::real(t.cols as f64)),
+            _ => Ok(Value::real(v.to_matrix()?.cols as f64)),
+        }),
         "last" => one(&|v| {
             let m = v.to_matrix()?;
             Ok(Value::real((m.data.len() as i64 - 1 + origin) as f64))
@@ -436,6 +445,25 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
         "stack" => concat_matrices(args, false),
         "submatrix" => (|| {
             arity(name, args, 5)?;
+            if let Value::Table(t) = &args[0] {
+                let ix = args[1..].iter().map(|a| int_arg(a).map(|k| k - origin)).collect::<EResult<Vec<_>>>()?;
+                let (ir, jr, ic, jc) = (ix[0], ix[1], ix[2], ix[3]);
+                if ir < 0 || ic < 0 || jr < ir || jc < ic || jr as usize >= t.rows || jc as usize >= t.cols {
+                    return Err("индекс вне допустимых границ".into());
+                }
+                let (rows, cols) = ((jr - ir + 1) as usize, (jc - ic + 1) as usize);
+                let mut cells = Vec::with_capacity(rows * cols);
+                for i in 0..rows {
+                    for j in 0..cols {
+                        cells.push(t.get(ir as usize + i, ic as usize + j).clone());
+                    }
+                }
+                let part = crate::value::Table::new(rows, cols, cells);
+                return Ok(match part.numeric() {
+                    Some(m) => Value::Matrix(m),
+                    None => Value::Table(Box::new(part)),
+                });
+            }
             let m = args[0].as_matrix()?;
             let ix = args[1..].iter().map(|a| int_arg(a).map(|k| k - origin)).collect::<EResult<Vec<_>>>()?;
             let (ir, jr, ic, jc) = (ix[0], ix[1], ix[2], ix[3]);

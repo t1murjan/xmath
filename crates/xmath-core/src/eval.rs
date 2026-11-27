@@ -497,6 +497,29 @@ impl Evaluator {
             Expr::Call(name, args) => self.call(name, args, sc),
             Expr::Index(base, idx) => {
                 let b = self.eval(base, sc)?;
+                if let Value::Table(t) = &b {
+                    let origin = self.origin(sc);
+                    let ix = idx
+                        .iter()
+                        .map(|i| self.eval(i, sc)?.as_int().map(|k| k - origin))
+                        .collect::<EResult<Vec<i64>>>()?;
+                    let out_of_range = || "индекс вне допустимых границ".to_string();
+                    return match ix.as_slice() {
+                        [k] if t.cols == 1 => {
+                            let r = usize::try_from(*k).map_err(|_| out_of_range())?;
+                            t.cells.get(r).cloned().ok_or_else(out_of_range)
+                        }
+                        [r, c] => {
+                            let r = usize::try_from(*r).map_err(|_| out_of_range())?;
+                            let c = usize::try_from(*c).map_err(|_| out_of_range())?;
+                            if r >= t.rows || c >= t.cols {
+                                return Err(out_of_range());
+                            }
+                            Ok(t.get(r, c).clone())
+                        }
+                        _ => Err("для таблицы нужны два индекса".into()),
+                    };
+                }
                 let m = match &b {
                     Value::Matrix(m) => m,
                     Value::Range(_) => return Err("дискретную переменную нельзя индексировать; используйте вектор".into()),
@@ -535,17 +558,29 @@ impl Evaluator {
                 // Mathcad 12+ evaluates the elements column by column, which matters when a
                 // cell assigns a local: `[P ← 1, Q; Q ← 2, P]` reads P only in the second column.
                 let mut data = vec![Num::zero(); nrows * ncols];
+                let mut mixed: Option<Vec<Value>> = None;
                 for c in 0..ncols {
                     for r in 0..nrows {
-                        match self.eval(&rows[r][c], sc)? {
-                            Value::Num(n) => data[r * ncols + c] = n,
+                        let v = self.eval(&rows[r][c], sc)?;
+                        match &v {
+                            Value::Num(n) => data[r * ncols + c] = *n,
+                            Value::Str(_) => {
+                                // a data table with a column of names: keep every cell
+                                let cells = mixed.get_or_insert_with(|| {
+                                    data.iter().map(|n| Value::Num(*n)).collect::<Vec<_>>()
+                                });
+                                cells[r * ncols + c] = v.clone();
+                            }
                             other => {
-                                return Err(format!("элементы матрицы должны быть скалярами, найдено: {}", other.type_name()))
+                                return Err(format!("элементы матрицы должны быть числами или строками, найдено: {}", other.type_name()))
                             }
                         }
                     }
                 }
-                Ok(Value::Matrix(Matrix::new(nrows, ncols, data)))
+                match mixed {
+                    Some(cells) => Ok(Value::Table(Box::new(crate::value::Table::new(nrows, ncols, cells)))),
+                    None => Ok(Value::Matrix(Matrix::new(nrows, ncols, data))),
+                }
             }
             Expr::Range(first, second, last) => {
                 let mut a = self.eval(first, sc)?.as_num()?;
@@ -612,6 +647,20 @@ impl Evaluator {
             Expr::Vectorize(a) => self.veval(a, sc),
             Expr::MatCol(m, j) => {
                 let b = self.eval(m, sc)?;
+                if let Value::Table(t) = &b {
+                    let origin = self.origin(sc);
+                    let k = self.eval(j, sc)?.as_int()? - origin;
+                    let k = usize::try_from(k)
+                        .ok()
+                        .filter(|k| *k < t.cols)
+                        .ok_or_else(|| format!("столбец {} вне допустимых границ (в таблице {} столбцов)", k + origin, t.cols))?;
+                    let cells: Vec<Value> = (0..t.rows).map(|r| t.get(r, k).clone()).collect();
+                    let col = crate::value::Table::new(t.rows, 1, cells);
+                    return match col.numeric() {
+                        Some(m) => Ok(Value::Matrix(m)),
+                        None => Ok(Value::Table(Box::new(col))),
+                    };
+                }
                 let m = match &b {
                     Value::Matrix(m) => m,
                     Value::Num(_) => return Err("оператор столбца M⟨j⟩ применим только к матрицам".into()),

@@ -171,6 +171,8 @@ pub enum Value {
     Str(Rc<str>),
     /// A table of strings, e.g. `PolyLookup(6)` = `["tetrahedron"; "tetrahedron"; "3|2 3"]`.
     StrMat(StrMatrix),
+    /// A matrix whose cells are not all numbers (a data table with a column of names).
+    Table(Box<Table>),
     Range(Range),
     Func(Rc<UserFunc>),
 }
@@ -182,6 +184,38 @@ pub struct StrMatrix {
     pub cols: usize,
     /// Row-major.
     pub data: Vec<Rc<str>>,
+}
+
+/// A matrix with mixed cells: numbers and strings, as Mathcad's data tables have.
+#[derive(Clone, Debug)]
+pub struct Table {
+    pub rows: usize,
+    pub cols: usize,
+    /// Row-major.
+    pub cells: Vec<Value>,
+}
+
+impl Table {
+    pub fn new(rows: usize, cols: usize, cells: Vec<Value>) -> Table {
+        debug_assert_eq!(rows * cols, cells.len());
+        Table { rows, cols, cells }
+    }
+
+    pub fn get(&self, r: usize, c: usize) -> &Value {
+        &self.cells[r * self.cols + c]
+    }
+
+    /// Whether every cell is a number (then the table can become a matrix).
+    pub fn numeric(&self) -> Option<Matrix> {
+        let mut data = Vec::with_capacity(self.cells.len());
+        for v in &self.cells {
+            match v {
+                Value::Num(n) => data.push(*n),
+                _ => return None,
+            }
+        }
+        Some(Matrix::new(self.rows, self.cols, data))
+    }
 }
 
 impl StrMatrix {
@@ -218,6 +252,7 @@ impl Value {
             Value::Matrix(_) => "матрица",
             Value::Str(_) => "строка",
             Value::StrMat(_) => "таблица строк",
+            Value::Table(_) => "таблица",
             Value::Range(_) => "диапазон",
             Value::Func(_) => "функция",
         }
