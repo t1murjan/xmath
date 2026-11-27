@@ -474,11 +474,13 @@ impl Evaluator {
                 let ncols = rows[0].len();
                 // Allow block matrices made of scalars only; vectors as elements
                 // of a single row/column are concatenated.
-                let mut data = Vec::with_capacity(nrows * ncols);
-                for row in rows {
-                    for cell in row {
-                        match self.eval(cell, sc)? {
-                            Value::Num(n) => data.push(n),
+                // Mathcad 12+ evaluates the elements column by column, which matters when a
+                // cell assigns a local: `[P ← 1, Q; Q ← 2, P]` reads P only in the second column.
+                let mut data = vec![Num::zero(); nrows * ncols];
+                for c in 0..ncols {
+                    for r in 0..nrows {
+                        match self.eval(&rows[r][c], sc)? {
+                            Value::Num(n) => data[r * ncols + c] = n,
                             other => {
                                 return Err(format!("элементы матрицы должны быть скалярами, найдено: {}", other.type_name()))
                             }

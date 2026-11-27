@@ -116,8 +116,21 @@ fn existing_syntax_unaffected() {
     assert_eq!(parse_expr("[1, 2; 3, 4]").unwrap().to_string(), "[1, 2; 3, 4]");
     assert_eq!(parse_statement("x : 5").unwrap().to_string(), "x := 5");
     assert_eq!(parse_statement("x ← 5").unwrap().to_string(), "x := 5");
+    // a local assignment inside an index; the displayed form parses back
+    assert_eq!(parse_statement("X[k ← 2] := 7").unwrap().to_string(), "X[k ← 2] := 7");
+    assert_eq!(parse_statement("X[(k ← 2)] := 7").unwrap().to_string(), "X[k ← 2] := 7");
     assert_eq!(parse_expr("a < -1").unwrap().to_string(), "a < -1");
     assert_eq!(parse_expr("if(a, b, c)").unwrap().to_string(), "if(a, b, c)");
+}
+
+#[test]
+fn matrix_cells_are_evaluated_column_wise() {
+    // Mathcad 12 and higher evaluate matrix elements by columns, so the second column sees
+    // the locals assigned in the first one
+    let v = run(&["X := [P ← 1, Q; Q ← 2, P]", "X"]).unwrap();
+    let Value::Matrix(m) = v else { panic!("not a matrix") };
+    assert_eq!((m.rows, m.cols), (2, 2));
+    assert_eq!(m.data.iter().map(|n| n.v.re).collect::<Vec<_>>(), vec![1.0, 2.0, 2.0, 1.0]);
 }
 
 #[test]

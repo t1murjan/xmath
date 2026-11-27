@@ -483,12 +483,19 @@ impl Parser {
 
     /// An element of a list or matrix; `a = b` there is an equation (Mathcad's bold equal sign).
     fn elem(&mut self) -> PResult<Expr> {
-        let a = self.expr_oe()?;
-        if self.eat(&Tok::Eq) {
-            let b = self.expr_oe()?;
-            return Ok(Expr::Binary(BinOp::Eq, Box::new(a), Box::new(b)));
-        }
-        Ok(a)
+        // an element of `f(...)`, `v[...]`, `[a, b]` or `|...|` is an ordinary expression:
+        // `X[k ← 2] := 7` assigns a local in the index
+        let saved = std::mem::replace(&mut self.no_arrow, false);
+        let r = (|| {
+            let a = self.expr_oe()?;
+            if self.eat(&Tok::Eq) {
+                let b = self.expr_oe()?;
+                return Ok(Expr::Binary(BinOp::Eq, Box::new(a), Box::new(b)));
+            }
+            Ok(a)
+        })();
+        self.no_arrow = saved;
+        r
     }
 
     /// Comma separated expressions up to (and including) `close`.
