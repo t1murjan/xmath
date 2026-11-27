@@ -406,7 +406,10 @@ fn strings() {
 fn lookups() {
     let a = "A := [1, 10; 2, 20; 3, 30]";
     close(num(&["lookup(2, [1; 2; 3], [10; 20; 30])"]), 20.0, 0.0);
-    close(num(&["lookup(2.9, [1; 2; 3], [10; 20; 30])"]), 30.0, 0.0);
+    // every match is returned, as Mathcad does (`lookup` is an exact search, not interp)
+    let v = mat(&["lookup(2, [2; 1; 2], [10; 20; 30])"]);
+    assert_mat(&v, &[vec![10.0], vec![30.0]], 0.0);
+    assert!(run(&["lookup(2.9, [1; 2; 3], [10; 20; 30])"]).is_err());
     close(num(&[a, "vlookup(2, A, 1)"]), 20.0, 0.0);
     close(num(&["B := [1, 2, 3; 4, 5, 6]", "hlookup(2, B, 1)"]), 5.0, 0.0);
     close(num(&["ORIGIN := 1", a, "vlookup(3, A, 2)"]), 30.0, 0.0);

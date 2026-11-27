@@ -562,6 +562,8 @@ fn closest(z: Num, items: &[Num]) -> EResult<usize> {
     best.map(|(i, _)| i).ok_or_else(|| "нет значений".to_string())
 }
 
+/// `lookup(z, A, B)` — every element of `B` where `A` equals `z` (a vector when several
+/// match, a scalar for one), as Mathcad does.
 fn lookup(args: &[Value]) -> EResult<Value> {
     arity("lookup", args, 3)?;
     let z = args[0].as_num()?;
@@ -570,7 +572,17 @@ fn lookup(args: &[Value]) -> EResult<Value> {
     if a.data.len() != b.data.len() {
         return Err("A и B должны иметь одинаковый размер".into());
     }
-    Ok(Value::Num(b.data[closest(z, &a.data)?]))
+    let mut hits = Vec::new();
+    for (k, n) in a.data.iter().enumerate() {
+        if n.dim == z.dim && (n.v - z.v).norm() <= 1e-12 * n.v.norm().max(z.v.norm()).max(1.0) {
+            hits.push(b.data[k]);
+        }
+    }
+    match hits.len() {
+        0 => Err("значение не найдено".into()),
+        1 => Ok(Value::Num(hits[0])),
+        _ => Ok(col(hits)),
+    }
 }
 
 fn match_fn(args: &[Value], origin: i64) -> EResult<Value> {
