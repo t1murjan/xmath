@@ -1628,6 +1628,7 @@ fn mathcad_unit(name: &str) -> Option<&'static units::UnitDef> {
         ("kelvin", "K"),
         ("mole", "mol"),
         ("candela", "cd"),
+        ("base_currency", "¤"),
         ("liter", "L"),
         ("hertz", "Hz"),
         ("newton", "N"),

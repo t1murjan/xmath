@@ -135,7 +135,7 @@ struct Token {
 
 fn is_ident_start(c: char) -> bool {
     // `⇒` and `⇔` are operator names Mathcad lets a worksheet define (`⇒(P, Q) := …`)
-    c.is_alphabetic() || c == '_' || c == '°' || c == '∞' || c == '%' || c == '⇒' || c == '⇔'
+    c.is_alphabetic() || c == '_' || c == '°' || c == '∞' || c == '%' || c == '⇒' || c == '⇔' || c == '¤' || c == '∠'
 }
 
 fn is_ident_continue(c: char) -> bool {

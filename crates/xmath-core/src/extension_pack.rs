@@ -220,6 +220,21 @@ fn as_vec<'a>(v: &'a Value, name: &str) -> EResult<Vec<&'a Num>> {
     }
 }
 
+/// `∠(r, θ)` — the complex number with magnitude `r` and phase `θ` (Mathcad's polar form;
+/// the corpus sheet sets degrees as the angular unit, and its stored results are degrees).
+fn polar(args: &[Value]) -> EResult<Value> {
+    if args.len() != 2 {
+        return Err("∠(r, θ) принимает модуль и угол".into());
+    }
+    let r = args[0].as_num()?;
+    let theta = args[1].as_num()?;
+    let radians = theta.v.re * std::f64::consts::PI / 180.0;
+    Ok(Value::Num(Num::new(
+        C64::new(r.v.re * radians.cos(), r.v.re * radians.sin()),
+        r.dim,
+    )))
+}
+
 /// `DMS([degrees; minutes; seconds])` — the angle in radians.
 fn dms(args: &[Value]) -> EResult<Value> {
     one_arg("DMS", args)?;
@@ -372,6 +387,7 @@ pub fn call(name: &str, args: &[Value]) -> Option<EResult<Value>> {
         "phasecor" => Some(phasecor(args)),
         "makeri" => Some(makeri(args)),
         "DMS" => Some(dms(args)),
+        "∠" => Some(polar(args)),
         "Seed" => Some(seed(args)),
         "setwindow" => Some(setwindow(args)),
         "SIUnitsOf" => Some(si_units_of(args)),

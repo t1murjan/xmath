@@ -544,7 +544,7 @@ mod tests {
         assert_eq!(unit_text(units::VELOCITY).to_string(), "m/s");
         assert_eq!(unit_text(units::ACCELERATION).to_string(), "m/s^2");
         assert_eq!(unit_text(units::FREQUENCY).to_string(), "1/s");
-        assert_eq!(unit_text(Dim::from_ints([-1, 1, -1, 0, 0, 0, 0])).to_string(), "Pa·s");
+        assert_eq!(unit_text(Dim::from_ints([-1, 1, -1, 0, 0, 0, 0, 0])).to_string(), "Pa·s");
         assert_eq!(unit_text(units::LENGTH.powf(0.5).unwrap()).to_string(), "m^(1/2)");
     }
 }

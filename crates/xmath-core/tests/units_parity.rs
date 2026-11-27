@@ -156,7 +156,7 @@ fn display_units() {
 
 #[test]
 fn automatic_units_table() {
-    let d = |e: [i32; 7]| Dim::from_ints(e);
+    let d = |e: [i32; 7]| Dim::from_ints([e[0], e[1], e[2], e[3], e[4], e[5], e[6], 0]);
     let t = |dim: Dim| auto_units(dim, UnitSystem::Si).0.to_string();
     assert_eq!(t(units::FORCE), "N");
     assert_eq!(t(units::PRESSURE), "Pa");

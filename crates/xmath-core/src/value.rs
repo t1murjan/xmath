@@ -205,6 +205,32 @@ impl Table {
         &self.cells[r * self.cols + c]
     }
 
+    /// Grows the table to hold `(r, c)` and stores `v` there.
+    pub fn set(&mut self, r: usize, c: usize, v: Value) {
+        let rows = self.rows.max(r + 1);
+        let cols = self.cols.max(c + 1);
+        if rows != self.rows || cols != self.cols {
+            let mut cells: Vec<Value> = (0..rows * cols).map(|_| Value::Num(Num::zero())).collect();
+            for i in 0..self.rows {
+                for j in 0..self.cols {
+                    cells[i * cols + j] = self.cells[i * self.cols + j].clone();
+                }
+            }
+            self.rows = rows;
+            self.cols = cols;
+            self.cells = cells;
+        }
+        self.cells[r * self.cols + c] = v;
+    }
+
+    /// The same table as a value, converting a numeric one to a matrix.
+    pub fn into_value(self) -> Value {
+        match self.numeric() {
+            Some(m) => Value::Matrix(m),
+            None => Value::Table(Box::new(self)),
+        }
+    }
+
     /// Whether every cell is a number (then the table can become a matrix).
     pub fn numeric(&self) -> Option<Matrix> {
         let mut data = Vec::with_capacity(self.cells.len());

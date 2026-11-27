@@ -167,6 +167,40 @@ fn set_element(m: &mut Matrix, ix: &[i64], v: Num) -> EResult<()> {
     Ok(())
 }
 
+/// Stores `v` at the (zero based) index `ix` of a numeric matrix or of a table with mixed
+/// cells (a table cell may itself be a matrix: Mathcad's nested arrays).
+fn set_cell(container: &mut Value, ix: &[i64], v: Value) -> EResult<()> {
+    let (r, c) = match ix {
+        [r] => (*r, 0),
+        [r, c] => (*r, *c),
+        _ => return Err("слишком много индексов".into()),
+    };
+    if r < 0 || c < 0 {
+        return Err("индекс вне допустимых границ".into());
+    }
+    if (r as usize + 1) * (c as usize + 1) > MAX_RANGE_LEN {
+        return Err("матрица получилась бы слишком большой".into());
+    }
+    match container {
+        Value::Table(t) => {
+            t.set(r as usize, c as usize, v);
+            Ok(())
+        }
+        Value::Matrix(m) => match v {
+            Value::Num(n) => set_element(m, ix, n),
+            other => {
+                // a vector in a cell makes the container a nested array
+                let cells: Vec<Value> = m.data.iter().map(|n| Value::Num(*n)).collect();
+                let mut t = crate::value::Table::new(m.rows, m.cols, cells);
+                t.set(r as usize, c as usize, other);
+                *container = Value::Table(Box::new(t));
+                Ok(())
+            }
+        },
+        other => Err(format!("'{}' нельзя индексировать", other.type_name())),
+    }
+}
+
 /// Replaces column `k` (zero based) of `m` with the vector `v`, growing the matrix.
 fn assign_column(m: &mut Matrix, k: i64, v: &Value) -> EResult<()> {
     let Value::Matrix(col) = v else {
@@ -1061,16 +1095,16 @@ impl Evaluator {
                     .iter()
                     .map(|i| self.eval(i, sc)?.as_int().map(|k| k - origin))
                     .collect::<EResult<Vec<i64>>>()?;
-                let num = v.as_num()?;
-                let mut m = match self.local_value(name, sc).filter(|_| !self.local_pending(name)) {
-                    Some(Value::Matrix(m)) => m,
+                let mut container = match self.local_value(name, sc).filter(|_| !self.local_pending(name)) {
+                    Some(Value::Matrix(m)) => Value::Matrix(m),
+                    Some(v @ Value::Table(_)) => v,
                     Some(other) => {
                         return Err(format!("'{name}': элементу нельзя присвоить значение, найдено: {}", other.type_name()))
                     }
-                    None => Matrix::zeros(0, 0),
+                    None => Value::Matrix(Matrix::zeros(0, 0)),
                 };
-                set_element(&mut m, &ix, num)?;
-                self.set_local(name, Value::Matrix(m), sc);
+                set_cell(&mut container, &ix, v.clone())?;
+                self.set_local(name, container, sc);
                 self.mark_assigned(name);
             }
             Target::MatCol(name, j) => {
@@ -1566,8 +1600,13 @@ impl Evaluator {
                 (name.clone(), Value::Func(Rc::new(f)))
             }
             Target::Indexed(name, idx) => {
-                let mut m = match self.lookup(name, &sc) {
-                    Some(Value::Matrix(m)) => m,
+                let mut container = match self.lookup(name, &sc) {
+                    Some(Value::Matrix(m)) => Value::Matrix(m),
+                    Some(v @ Value::Table(_)) => v,
+                    _ => Value::Matrix(Matrix::zeros(0, 0)),
+                };
+                let mut m = match &container {
+                    Value::Matrix(m) => m.clone(),
                     _ => Matrix::zeros(0, 0),
                 };
                 let origin = self.origin(&sc);
@@ -1591,10 +1630,31 @@ impl Evaluator {
                         .iter()
                         .map(|i| self.eval(i, s)?.as_int().map(|k| k - origin))
                         .collect::<EResult<Vec<i64>>>()?;
-                    let v = self.eval(expr, s)?.as_num()?;
-                    set_element(&mut m, &ix, v)
+                    let cell = self.eval(expr, s)?;
+                    if matches!(cell, Value::Num(_)) && matches!(container, Value::Matrix(_)) {
+                        set_element(&mut m, &ix, cell.as_num()?)?;
+                    } else {
+                        // a vector cell makes this a nested array
+                        if matches!(container, Value::Matrix(_)) {
+                            let cells: Vec<Value> = m.data.iter().map(|n| Value::Num(*n)).collect();
+                            container = Value::Table(Box::new(crate::value::Table::new(m.rows, m.cols, cells)));
+                            m = Matrix::zeros(0, 0);
+                        }
+                        set_cell(&mut container, &ix, cell)?;
+                    }
+                    Ok(())
                 })?;
-                (name.clone(), Value::Matrix(m))
+                // the numeric elements accumulate in `m`; a table keeps its own cells
+                let container = match container {
+                    t @ Value::Table(_) => t,
+                    _ => Value::Matrix(m),
+                };
+                let value = match container {
+                    Value::Table(t) => t.into_value(),
+                    Value::Matrix(m) => Value::Matrix(m),
+                    other => other,
+                };
+                (name.clone(), value)
             }
             Target::MatCol(name, j) => {
                 let mut m = match self.lookup(name, &sc) {

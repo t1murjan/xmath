@@ -14,7 +14,7 @@ pub const NAMES: &[&str] = &[
     "PolyLookup", "Floor", "Ceil", "Trunc", "Round", "mag", "phase", "phasecor", "makeri", "DMS", "Seed",
     "setwindow", "SIUnitsOf", "stderr", "Spear", "Rank",
     "dilog", "Psi", "Zeta", "Ei", "Si", "Ci", "FresnelC", "FresnelS", "hypergeom", "mhyper", "fhyper",
-    "⇒", "⇔",
+    "⇒", "⇔", "∠",
     "augment", "stack", "submatrix", "cross", "norme", "sort", "reverse", "linterp", "polyroots", "factorial",
     "gamma", "Γ", "erf", "erfc", "dnorm", "pnorm", "UnitsOf", "concat", "num2str", "strlen", "if", "integrate",
     "diff", "root", "matrix", "eigenvals", "eigenvecs", "eigenvec", "rank", "cholesky", "lu", "qr", "svd", "svds",
@@ -399,6 +399,7 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
         "length" => one(&|v| match v {
             Value::Matrix(m) if m.is_vector() => Ok(Value::real(m.data.len() as f64)),
             Value::Table(t) if t.cols == 1 || t.rows == 1 => Ok(Value::real(t.cells.len() as f64)),
+            Value::StrMat(t) if t.is_vector() => Ok(Value::real(t.data.len() as f64)),
             Value::Range(r) => Ok(Value::real(r.len() as f64)),
             Value::Str(s) => Ok(Value::real(s.chars().count() as f64)),
             _ => Err("ожидался вектор".into()),
@@ -413,9 +414,13 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
             Value::StrMat(t) => Ok(Value::real(t.cols as f64)),
             _ => Ok(Value::real(v.to_matrix()?.cols as f64)),
         }),
-        "last" => one(&|v| {
-            let m = v.to_matrix()?;
-            Ok(Value::real((m.data.len() as i64 - 1 + origin) as f64))
+        "last" => one(&|v| match v {
+            Value::Table(t) => Ok(Value::real((t.cells.len() as i64 - 1 + origin) as f64)),
+            Value::StrMat(t) => Ok(Value::real((t.data.len() as i64 - 1 + origin) as f64)),
+            _ => {
+                let m = v.to_matrix()?;
+                Ok(Value::real((m.data.len() as i64 - 1 + origin) as f64))
+            }
         }),
         "identity" => one(&|v| {
             let n = int_arg(v)?;

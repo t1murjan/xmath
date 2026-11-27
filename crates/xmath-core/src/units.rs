@@ -7,25 +7,25 @@ use std::fmt;
 pub const DIM_SCALE: i32 = 12;
 
 /// Names of the seven SI base dimensions, in storage order.
-pub const BASE_UNITS: [&str; 7] = ["m", "kg", "s", "A", "K", "mol", "cd"];
+pub const BASE_UNITS: [&str; 8] = ["m", "kg", "s", "A", "K", "mol", "cd", "¤"];
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct Dim(pub [i32; 7]);
+pub struct Dim(pub [i32; 8]);
 
 impl Dim {
-    pub const NONE: Dim = Dim([0; 7]);
+    pub const NONE: Dim = Dim([0; 8]);
 
     pub const fn base(i: usize) -> Dim {
-        let mut d = [0; 7];
+        let mut d = [0; 8];
         d[i] = DIM_SCALE;
         Dim(d)
     }
 
     /// Builds a dimension from integer exponents of (m, kg, s, A, K, mol, cd).
-    pub const fn from_ints(e: [i32; 7]) -> Dim {
-        let mut d = [0; 7];
+    pub const fn from_ints(e: [i32; 8]) -> Dim {
+        let mut d = [0; 8];
         let mut i = 0;
-        while i < 7 {
+        while i < 8 {
             d[i] = e[i] * DIM_SCALE;
             i += 1;
         }
@@ -33,7 +33,7 @@ impl Dim {
     }
 
     pub fn is_none(&self) -> bool {
-        self.0 == [0; 7]
+        self.0 == [0; 8]
     }
 
     pub fn mul(self, o: Dim) -> Dim {
@@ -62,7 +62,7 @@ impl Dim {
         if self.is_none() {
             return Some(self);
         }
-        let mut d = [0; 7];
+        let mut d = [0; 8];
         for (i, e) in self.0.iter().enumerate() {
             let v = *e as f64 * p;
             let r = v.round();
@@ -119,34 +119,36 @@ impl fmt::Debug for Dim {
     }
 }
 
-pub const LENGTH: Dim = Dim::from_ints([1, 0, 0, 0, 0, 0, 0]);
-pub const MASS: Dim = Dim::from_ints([0, 1, 0, 0, 0, 0, 0]);
-pub const TIME: Dim = Dim::from_ints([0, 0, 1, 0, 0, 0, 0]);
-pub const CURRENT: Dim = Dim::from_ints([0, 0, 0, 1, 0, 0, 0]);
-pub const TEMPERATURE: Dim = Dim::from_ints([0, 0, 0, 0, 1, 0, 0]);
-pub const AMOUNT: Dim = Dim::from_ints([0, 0, 0, 0, 0, 1, 0]);
-pub const LUMINOSITY: Dim = Dim::from_ints([0, 0, 0, 0, 0, 0, 1]);
-pub const AREA: Dim = Dim::from_ints([2, 0, 0, 0, 0, 0, 0]);
-pub const VOLUME: Dim = Dim::from_ints([3, 0, 0, 0, 0, 0, 0]);
-pub const FREQUENCY: Dim = Dim::from_ints([0, 0, -1, 0, 0, 0, 0]);
-pub const VELOCITY: Dim = Dim::from_ints([1, 0, -1, 0, 0, 0, 0]);
-pub const ACCELERATION: Dim = Dim::from_ints([1, 0, -2, 0, 0, 0, 0]);
-pub const FORCE: Dim = Dim::from_ints([1, 1, -2, 0, 0, 0, 0]);
-pub const PRESSURE: Dim = Dim::from_ints([-1, 1, -2, 0, 0, 0, 0]);
-pub const ENERGY: Dim = Dim::from_ints([2, 1, -2, 0, 0, 0, 0]);
-pub const POWER: Dim = Dim::from_ints([2, 1, -3, 0, 0, 0, 0]);
-pub const CHARGE: Dim = Dim::from_ints([0, 0, 1, 1, 0, 0, 0]);
-pub const VOLTAGE: Dim = Dim::from_ints([2, 1, -3, -1, 0, 0, 0]);
-pub const RESISTANCE: Dim = Dim::from_ints([2, 1, -3, -2, 0, 0, 0]);
-pub const CONDUCTANCE: Dim = Dim::from_ints([-2, -1, 3, 2, 0, 0, 0]);
-pub const CAPACITANCE: Dim = Dim::from_ints([-2, -1, 4, 2, 0, 0, 0]);
-pub const INDUCTANCE: Dim = Dim::from_ints([2, 1, -2, -2, 0, 0, 0]);
-pub const MAG_FLUX: Dim = Dim::from_ints([2, 1, -2, -1, 0, 0, 0]);
-pub const MAG_FLUX_DENSITY: Dim = Dim::from_ints([0, 1, -2, -1, 0, 0, 0]);
-pub const ILLUMINANCE: Dim = Dim::from_ints([-2, 0, 0, 0, 0, 0, 1]);
-pub const DOSE: Dim = Dim::from_ints([2, 0, -2, 0, 0, 0, 0]);
-pub const DYN_VISCOSITY: Dim = Dim::from_ints([-1, 1, -1, 0, 0, 0, 0]);
-pub const KIN_VISCOSITY: Dim = Dim::from_ints([2, 0, -1, 0, 0, 0, 0]);
+pub const LENGTH: Dim = Dim::from_ints([1, 0, 0, 0, 0, 0, 0, 0]);
+pub const MASS: Dim = Dim::from_ints([0, 1, 0, 0, 0, 0, 0, 0]);
+pub const TIME: Dim = Dim::from_ints([0, 0, 1, 0, 0, 0, 0, 0]);
+pub const CURRENT: Dim = Dim::from_ints([0, 0, 0, 1, 0, 0, 0, 0]);
+pub const TEMPERATURE: Dim = Dim::from_ints([0, 0, 0, 0, 1, 0, 0, 0]);
+pub const AMOUNT: Dim = Dim::from_ints([0, 0, 0, 0, 0, 1, 0, 0]);
+pub const LUMINOSITY: Dim = Dim::from_ints([0, 0, 0, 0, 0, 0, 1, 0]);
+/// Mathcad's currency base dimension (its `¤` unit).
+pub const CURRENCY: Dim = Dim::from_ints([0, 0, 0, 0, 0, 0, 0, 1]);
+pub const AREA: Dim = Dim::from_ints([2, 0, 0, 0, 0, 0, 0, 0]);
+pub const VOLUME: Dim = Dim::from_ints([3, 0, 0, 0, 0, 0, 0, 0]);
+pub const FREQUENCY: Dim = Dim::from_ints([0, 0, -1, 0, 0, 0, 0, 0]);
+pub const VELOCITY: Dim = Dim::from_ints([1, 0, -1, 0, 0, 0, 0, 0]);
+pub const ACCELERATION: Dim = Dim::from_ints([1, 0, -2, 0, 0, 0, 0, 0]);
+pub const FORCE: Dim = Dim::from_ints([1, 1, -2, 0, 0, 0, 0, 0]);
+pub const PRESSURE: Dim = Dim::from_ints([-1, 1, -2, 0, 0, 0, 0, 0]);
+pub const ENERGY: Dim = Dim::from_ints([2, 1, -2, 0, 0, 0, 0, 0]);
+pub const POWER: Dim = Dim::from_ints([2, 1, -3, 0, 0, 0, 0, 0]);
+pub const CHARGE: Dim = Dim::from_ints([0, 0, 1, 1, 0, 0, 0, 0]);
+pub const VOLTAGE: Dim = Dim::from_ints([2, 1, -3, -1, 0, 0, 0, 0]);
+pub const RESISTANCE: Dim = Dim::from_ints([2, 1, -3, -2, 0, 0, 0, 0]);
+pub const CONDUCTANCE: Dim = Dim::from_ints([-2, -1, 3, 2, 0, 0, 0, 0]);
+pub const CAPACITANCE: Dim = Dim::from_ints([-2, -1, 4, 2, 0, 0, 0, 0]);
+pub const INDUCTANCE: Dim = Dim::from_ints([2, 1, -2, -2, 0, 0, 0, 0]);
+pub const MAG_FLUX: Dim = Dim::from_ints([2, 1, -2, -1, 0, 0, 0, 0]);
+pub const MAG_FLUX_DENSITY: Dim = Dim::from_ints([0, 1, -2, -1, 0, 0, 0, 0]);
+pub const ILLUMINANCE: Dim = Dim::from_ints([-2, 0, 0, 0, 0, 0, 1, 0]);
+pub const DOSE: Dim = Dim::from_ints([2, 0, -2, 0, 0, 0, 0, 0]);
+pub const DYN_VISCOSITY: Dim = Dim::from_ints([-1, 1, -1, 0, 0, 0, 0, 0]);
+pub const KIN_VISCOSITY: Dim = Dim::from_ints([2, 0, -1, 0, 0, 0, 0, 0]);
 
 /// A named unit: `value_in_SI = (number + offset) * factor`.
 ///
@@ -384,6 +386,8 @@ pub static UNITS: &[UnitDef] = &[
     u("cP", 1e-3, DYN_VISCOSITY),
     u("St", 1e-4, KIN_VISCOSITY),
     u("cSt", 1e-6, KIN_VISCOSITY),
+    // currency: a base dimension of its own, as in Mathcad
+    u("¤", 1.0, CURRENCY),
     // Mathcad accepts the full SI names as well as the symbols
     u("volt", 1.0, VOLTAGE),
     u("ampere", 1.0, CURRENT),

@@ -72,6 +72,7 @@ pub const FUNCTION_DOCS: &[(&str, &str)] = &[
     ("fhyper", "fhyper(a, b, c, z): the Gauss hypergeometric function ₂F₁"),
     ("⇒", "⇒(P, Q) or P ⇒ Q: implication, ¬P or Q"),
     ("⇔", "⇔(P, Q) or P ⇔ Q: equivalence"),
+    ("∠", "∠(r, θ): the complex number with magnitude r and phase θ"),
     ("sign", "sign(x): -1, 0 or 1"),
     ("signum", "signum(x): sign function (Mathcad's signum)"),
     ("max", "max(a, b, ...) or max(vector/matrix): largest value"),
