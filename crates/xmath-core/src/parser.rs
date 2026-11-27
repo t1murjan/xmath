@@ -294,6 +294,9 @@ fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
 struct Parser {
     toks: Vec<Token>,
     i: usize,
+    /// Set while the left side of a worksheet statement is parsed: there `x ← 5` is a
+    /// definition, not a local assignment expression.
+    no_arrow: bool,
 }
 
 type PResult<T> = Result<T, ParseError>;
@@ -511,6 +514,11 @@ impl Parser {
             Tok::Imag(x) => Ok(Expr::Imag(x)),
             Tok::Str(s) => Ok(Expr::Str(s)),
             Tok::Ident(name) => {
+                // `break` and `continue` are statements, but Mathcad allows them in an
+                // expression too: `x on error continue`
+                if (name == "break" || name == "continue") && !matches!(self.peek(), Tok::LParen) {
+                    return Ok(if name == "break" { Expr::Break } else { Expr::Continue });
+                }
                 if self.eat(&Tok::LParen) {
                     let mut args = self.list(Tok::RParen)?;
                     if name == "vectorize" {
@@ -524,11 +532,23 @@ impl Parser {
                     Ok(Expr::Var(name))
                 }
             }
-            Tok::LBrace => self.program(pos),
+            Tok::LBrace => {
+                // a program body is made of statements: `←` assigns there
+                let saved = std::mem::replace(&mut self.no_arrow, false);
+                let r = self.program(pos);
+                self.no_arrow = saved;
+                r
+            }
             Tok::LParen => {
-                let e = self.expr_oe()?;
-                self.expect(Tok::RParen)?;
-                Ok(e)
+                // inside parentheses a local assignment is an ordinary expression
+                let saved = std::mem::replace(&mut self.no_arrow, false);
+                let e = (|| {
+                    let e = self.expr_oe()?;
+                    self.expect(Tok::RParen)?;
+                    Ok(e)
+                })();
+                self.no_arrow = saved;
+                e
             }
             Tok::LBrack => {
                 let mut rows = vec![];
@@ -585,17 +605,49 @@ impl Parser {
         }
     }
 
+    /// Whether the parenthesis group after the current word is followed by a `{` block.
+    fn block_after_parens(&self) -> bool {
+        let mut depth = 0usize;
+        for k in self.i..self.toks.len() {
+            match self.toks[k].tok {
+                Tok::LParen => depth += 1,
+                Tok::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return matches!(self.toks.get(k + 1).map(|t| &t.tok), Some(Tok::LBrace));
+                    }
+                }
+                Tok::Eof => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
     fn peek2(&self) -> &Tok {
         &self.toks[(self.i + 1).min(self.toks.len() - 1)].tok
     }
 
-    /// `expr [on error expr]...`
+    /// `expr [on error expr]...`, a local assignment `x ← e` and `return e`
+    /// (both are expressions in Mathcad: `a on error (return b)`).
     fn expr_oe(&mut self) -> PResult<Expr> {
-        let mut a = self.expr()?;
+        if self.is_kw("return") {
+            self.next();
+            let e = self.expr_oe()?;
+            return Ok(Expr::Return(Box::new(e)));
+        }
+        let a = self.expr()?;
+        if !self.no_arrow && self.eat(&Tok::Arrow) {
+            let target = to_target(a).map_err(|msg| ParseError { msg, pos: self.pos() })?;
+            let v = self.expr_oe()?;
+            return Ok(Expr::LocalDefine(Box::new(target), Box::new(v)));
+        }
+        let mut a = a;
         while self.is_kw("on") && matches!(self.peek2(), Tok::Ident(s) if s == "error") {
             self.next();
             self.next();
-            let b = self.expr()?;
+            // the failing branch may itself be `return …`, `break` or `continue`
+            let b = self.expr_oe()?;
             a = Expr::OnError(Box::new(a), Box::new(b));
         }
         Ok(a)
@@ -644,6 +696,29 @@ impl Parser {
         Ok(Expr::Program(stmts))
     }
 
+    /// `for v ∈ iter { .. }`, the `for` keyword is current.
+    fn for_block(&mut self) -> PResult<PStmt> {
+        self.next();
+        let var = match self.next() {
+            Tok::Ident(v) => v,
+            t => return self.err(format!("ожидалось имя переменной цикла, найдено {}", t.describe())),
+        };
+        if !(self.eat(&Tok::In) || self.eat_kw("in")) {
+            return self.err(format!("ожидалось '∈' или 'in', найдено {}", self.peek().describe()));
+        }
+        let iter = self.range_or_expr()?;
+        let body = self.block()?;
+        Ok(PStmt::For { var, iter, body })
+    }
+
+    /// `while cond { .. }`, the `while` keyword is current.
+    fn while_block(&mut self) -> PResult<PStmt> {
+        self.next();
+        let cond = self.expr_oe()?;
+        let body = self.block()?;
+        Ok(PStmt::While { cond, body })
+    }
+
     /// `if cond { .. } [else if .. | else { .. } | otherwise { .. }]`, the `if` keyword is current.
     fn if_block(&mut self) -> PResult<PStmt> {
         self.next();
@@ -665,7 +740,8 @@ impl Parser {
 
     /// One program statement; the flag tells whether it ended with a `}` block.
     fn pstmt(&mut self) -> PResult<(PStmt, bool)> {
-        let call_follows = matches!(self.peek2(), Tok::LParen);
+        // `while (x) { .. }` is a loop whose condition is parenthesised, `while(x)` a call
+        let call_follows = matches!(self.peek2(), Tok::LParen) && !self.block_after_parens();
         if let Tok::Ident(kw) = self.peek().clone() {
             match kw.as_str() {
                 "if" => {
@@ -681,24 +757,29 @@ impl Parser {
                         }
                     }
                 }
-                "for" if !call_follows => {
-                    self.next();
-                    let var = match self.next() {
-                        Tok::Ident(v) => v,
-                        t => return self.err(format!("ожидалось имя переменной цикла, найдено {}", t.describe())),
-                    };
-                    if !(self.eat(&Tok::In) || self.eat_kw("in")) {
-                        return self.err(format!("ожидалось '∈' или 'in', найдено {}", self.peek().describe()));
+                "for" => {
+                    let save = self.i;
+                    match self.for_block() {
+                        Ok(s) => return Ok((s, true)),
+                        Err(e) => {
+                            if !call_follows {
+                                return Err(e);
+                            }
+                            self.i = save;
+                        }
                     }
-                    let iter = self.range_or_expr()?;
-                    let body = self.block()?;
-                    return Ok((PStmt::For { var, iter, body }, true));
                 }
-                "while" if !call_follows => {
-                    self.next();
-                    let cond = self.expr_oe()?;
-                    let body = self.block()?;
-                    return Ok((PStmt::While { cond, body }, true));
+                "while" => {
+                    let save = self.i;
+                    match self.while_block() {
+                        Ok(s) => return Ok((s, true)),
+                        Err(e) => {
+                            if !call_follows {
+                                return Err(e);
+                            }
+                            self.i = save;
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -717,16 +798,7 @@ impl Parser {
             let lhs = self.expr_oe()?;
             if matches!(self.peek(), Tok::Arrow | Tok::Define) {
                 self.next();
-                let target = match to_target(lhs) {
-                    Ok(t @ (Target::Var(_) | Target::Indexed(..))) => t,
-                    Ok(_) => {
-                        return Err(ParseError {
-                            msg: "в программе можно присваивать только переменным и элементам векторов".into(),
-                            pos: lhs_pos,
-                        })
-                    }
-                    Err(msg) => return Err(ParseError { msg, pos: lhs_pos }),
-                };
+                let target = to_target(lhs).map_err(|msg| ParseError { msg, pos: lhs_pos })?;
                 PStmt::Assign(target, self.expr_oe()?)
             } else {
                 PStmt::Expr(lhs)
@@ -783,7 +855,10 @@ impl Parser {
 
     fn statement(&mut self) -> PResult<Stmt> {
         let lhs_pos = self.pos();
-        let lhs = self.range_or_expr()?;
+        let saved = std::mem::replace(&mut self.no_arrow, true);
+        let lhs = self.range_or_expr();
+        self.no_arrow = saved;
+        let lhs = lhs?;
         let stmt = match self.peek() {
             Tok::Define | Tok::GlobalDefine | Tok::Arrow => {
                 let global = self.next() == Tok::GlobalDefine;
@@ -856,6 +931,11 @@ fn to_target(e: Expr) -> Result<Target, String> {
             Expr::Var(n) => Ok(Target::Indexed(n, idx)),
             other => Err(format!("нельзя присвоить значение '{other}'")),
         },
+        // `M^<j> ← v` replaces a whole column
+        Expr::MatCol(base, j) => match *base {
+            Expr::Var(n) => Ok(Target::MatCol(n, j)),
+            other => Err(format!("нельзя присвоить значение '{other}'")),
+        },
         Expr::Matrix(rows) => {
             if rows.len() != 1 && rows[0].len() != 1 {
                 return Err("слева от := допустим только вектор имён, например [a; b; c]".into());
@@ -875,7 +955,7 @@ fn to_target(e: Expr) -> Result<Target, String> {
 
 pub fn parse_statement(src: &str) -> Result<Stmt, ParseError> {
     let toks = lex(src)?;
-    let mut p = Parser { toks, i: 0 };
+    let mut p = Parser { toks, i: 0, no_arrow: false };
     if *p.peek() == Tok::Eof {
         return p.err("пустая область");
     }
@@ -884,7 +964,7 @@ pub fn parse_statement(src: &str) -> Result<Stmt, ParseError> {
 
 pub fn parse_expr(src: &str) -> Result<Expr, ParseError> {
     let toks = lex(src)?;
-    let mut p = Parser { toks, i: 0 };
+    let mut p = Parser { toks, i: 0, no_arrow: false };
     let e = p.range_or_expr()?;
     if *p.peek() != Tok::Eof {
         return p.err(format!("неожиданно: {}", p.peek().describe()));

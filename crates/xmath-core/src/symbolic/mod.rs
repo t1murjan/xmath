@@ -40,7 +40,7 @@ impl Defs {
                 self.vars.remove(n);
                 self.funcs.insert(n.clone(), (params.clone(), expr.clone()));
             }
-            Target::Indexed(n, _) => {
+            Target::Indexed(n, _) | Target::MatCol(n, _) => {
                 // an indexed definition makes the whole variable numeric
                 self.vars.remove(n);
             }

@@ -87,6 +87,14 @@ pub enum Expr {
     Vectorize(Box<Expr>),
     /// Matrix column operator `M⟨j⟩`, text syntax `M^<j>`.
     MatCol(Box<Expr>, Box<Expr>),
+    /// Local assignment used as an expression, `(k ← 2)`: the value is the right side.
+    LocalDefine(Box<Target>, Box<Expr>),
+    /// `return expr` inside an expression; Mathcad's `a on error (return b)`.
+    Return(Box<Expr>),
+    /// `break` inside an expression; Mathcad's `a on error break`.
+    Break,
+    /// `continue` inside an expression.
+    Continue,
 }
 
 /// A statement inside a program block.
@@ -117,7 +125,12 @@ impl PStmt {
 impl Expr {
     pub fn precedence(&self) -> u8 {
         match self {
-            Expr::Range(..) | Expr::OnError(..) => 0,
+            Expr::Range(..)
+            | Expr::OnError(..)
+            | Expr::LocalDefine(..)
+            | Expr::Return(..)
+            | Expr::Break
+            | Expr::Continue => 0,
             Expr::Binary(op, ..) => op.precedence(),
             Expr::Unary(UnOp::Not, _) => 3,
             Expr::Unary(UnOp::Neg, _) => 6,
@@ -135,6 +148,8 @@ pub enum Target {
     Indexed(String, Vec<Expr>),
     /// Vector definition `[a; b; c] := v`: every name gets one element.
     Vector(Vec<String>),
+    /// Matrix column `M⟨j⟩ := v` (text syntax `M^<j>`): the whole column is replaced.
+    MatCol(String, Box<Expr>),
 }
 
 /// A symbolic keyword operation after an arrow: `expr → simplify`, `→ solve, x`,
@@ -277,6 +292,10 @@ impl fmt::Display for Expr {
                 write_child(f, j, j.precedence() < 4)?;
                 write!(f, ">")
             }
+            Expr::LocalDefine(t, e) => write!(f, "{t} ← {e}"),
+            Expr::Return(e) => write!(f, "return {e}"),
+            Expr::Break => write!(f, "break"),
+            Expr::Continue => write!(f, "continue"),
         }
     }
 }
@@ -335,6 +354,7 @@ impl fmt::Display for Target {
                 write!(f, "]")
             }
             Target::Vector(names) => write!(f, "[{}]", names.join("; ")),
+            Target::MatCol(n, j) => write!(f, "{n}^<{j}>"),
         }
     }
 }

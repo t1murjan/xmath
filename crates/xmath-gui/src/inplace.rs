@@ -70,13 +70,20 @@ pub fn walk_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
             walk_mut(c, f);
         }
         Expr::Program(stmts) => walk_pstmts(stmts, f),
-        Expr::Num(_) | Expr::Imag(_) | Expr::Str(_) | Expr::Var(_) => {}
+        Expr::LocalDefine(t, v) => {
+            walk_target(t, f);
+            walk_mut(v, f);
+        }
+        Expr::Return(v) => walk_mut(v, f),
+        Expr::Break | Expr::Continue | Expr::Num(_) | Expr::Imag(_) | Expr::Str(_) | Expr::Var(_) => {}
     }
 }
 
 fn walk_target(t: &mut Target, f: &mut dyn FnMut(&mut Expr)) {
-    if let Target::Indexed(_, idx) = t {
-        idx.iter_mut().for_each(|a| walk_mut(a, f));
+    match t {
+        Target::Indexed(_, idx) => idx.iter_mut().for_each(|a| walk_mut(a, f)),
+        Target::MatCol(_, j) => walk_mut(j, f),
+        _ => {}
     }
 }
 

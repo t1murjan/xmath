@@ -7,6 +7,7 @@ use crate::units::{self, Dim};
 use crate::value::*;
 use num_complex::Complex64 as C64;
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::rc::Rc;
 
 /// Maximum nesting of user-function calls (protects against runaway recursion).
@@ -17,19 +18,35 @@ pub const MAX_CALL_DEPTH: usize = 2000;
 #[derive(Clone, Debug)]
 pub struct Scope {
     pub limit: usize,
-    pub locals: Rc<Vec<(String, Value)>>,
+    pub locals: Rc<RefCell<Vec<(String, Value)>>>,
 }
 
 impl Scope {
     pub fn with(&self, name: &str, v: Value) -> Scope {
-        let mut locals = (*self.locals).clone();
+        let mut locals = self.locals.borrow().clone();
         locals.push((name.to_string(), v));
-        Scope { limit: self.limit, locals: Rc::new(locals) }
+        Scope { limit: self.limit, locals: Rc::new(RefCell::new(locals)) }
+    }
+
+    /// A scope with the same visibility and a copy of the locals.
+    fn copy_here(&self) -> Scope {
+        Scope { limit: self.limit, locals: Rc::new(RefCell::new(self.locals.borrow().clone())) }
     }
 }
 
 /// Maximum number of loop iterations in one program run.
 pub const MAX_LOOP_ITERATIONS: u64 = 10_000_000;
+
+/// Error text that carries a `return` met inside an expression; the value travelling with it
+/// is in [`Evaluator::returns`]. No other error has exactly this text.
+const RETURN_SIGNAL: &str = "return вне программы";
+const BREAK_SIGNAL: &str = "'break' вне цикла";
+const CONTINUE_SIGNAL: &str = "'continue' вне цикла";
+
+/// Whether an error is one of the control-flow signals above.
+fn is_flow_signal(e: &str) -> bool {
+    e == RETURN_SIGNAL || e == BREAK_SIGNAL || e == CONTINUE_SIGNAL
+}
 
 pub struct Evaluator {
     /// All worksheet definitions, in evaluation order (append-only).
@@ -52,6 +69,20 @@ pub struct Evaluator {
     calling: RefCell<Option<String>>,
     /// Where the innermost failing program statement is (taken by the worksheet).
     pub prog_err: RefCell<Option<ProgErr>>,
+    /// Values carried out of an expression by `return` (see [`Expr::Return`]).
+    returns: RefCell<Vec<Value>>,
+    /// The programs being run, innermost last: the names they assign anywhere (Mathcad
+    /// declares them as locals of the whole program) and those already assigned.
+    frames: RefCell<Vec<FrameNames>>,
+}
+
+/// Statically collected local names of one running program.
+#[derive(Default)]
+struct FrameNames {
+    declared: HashSet<String>,
+    assigned: HashSet<String>,
+    /// First local of the program's own frame (parameters below it are never hidden).
+    base: usize,
 }
 
 /// The program statement where an error happened, for Mathcad's red mark: `func` is the
@@ -77,6 +108,8 @@ impl Default for Evaluator {
             prog_stack: RefCell::new(Vec::new()),
             calling: RefCell::new(None),
             prog_err: RefCell::new(None),
+            returns: RefCell::new(Vec::new()),
+            frames: RefCell::new(Vec::new()),
         }
     }
 }
@@ -100,12 +133,12 @@ struct Frame {
 
 impl Frame {
     fn local_pos(&self, name: &str) -> Option<usize> {
-        self.sc.locals.iter().rposition(|(n, _)| n == name).filter(|i| *i >= self.base)
+        self.sc.locals.borrow().iter().rposition(|(n, _)| n == name).filter(|i| *i >= self.base)
     }
 
     fn set(&mut self, name: &str, v: Value) {
         let pos = self.local_pos(name);
-        let locals = Rc::make_mut(&mut self.sc.locals);
+        let mut locals = self.sc.locals.borrow_mut();
         match pos {
             Some(i) => locals[i].1 = v,
             None => locals.push((name.to_string(), v)),
@@ -132,6 +165,135 @@ fn set_element(m: &mut Matrix, ix: &[i64], v: Num) -> EResult<()> {
     m.ensure(r as usize, c as usize);
     m.set(r as usize, c as usize, v);
     Ok(())
+}
+
+/// Replaces column `k` (zero based) of `m` with the vector `v`, growing the matrix.
+fn assign_column(m: &mut Matrix, k: i64, v: &Value) -> EResult<()> {
+    let Value::Matrix(col) = v else {
+        return Err(format!("справа от определения столбца должен быть вектор, найдено: {}", v.type_name()));
+    };
+    if !col.is_vector() {
+        return Err("справа от определения столбца должен быть вектор".into());
+    }
+    if k < 0 {
+        return Err("индекс столбца вне допустимых границ".into());
+    }
+    let (k, n) = (k as usize, col.data.len());
+    if (n.max(m.rows)) * (k + 1) > MAX_RANGE_LEN {
+        return Err("матрица получилась бы слишком большой".into());
+    }
+    let mut out = Matrix::zeros(n.max(m.rows), (m.cols).max(k + 1));
+    for r in 0..m.rows {
+        for c in 0..m.cols {
+            out.set(r, c, m.get(r, c));
+        }
+    }
+    for (r, x) in col.data.iter().enumerate() {
+        out.set(r, k, *x);
+    }
+    *m = out;
+    Ok(())
+}
+
+/// Collects the names a program assigns anywhere (its static local scope) and its loop
+/// variables; function definitions are not values and are left out.
+fn collect_locals(stmts: &[PStmt], out: &mut HashSet<String>) {
+    for s in stmts {
+        match s {
+            PStmt::Assign(target, _) => match target {
+                Target::Var(n) | Target::Indexed(n, _) | Target::MatCol(n, _) => {
+                    out.insert(n.clone());
+                }
+                Target::Vector(names) => out.extend(names.iter().cloned()),
+                Target::Func(..) => {}
+            },
+            PStmt::For { var, body, .. } => {
+                out.insert(var.clone());
+                collect_locals(body, out);
+            }
+            PStmt::While { body, .. } => collect_locals(body, out),
+            PStmt::If { then, else_, .. } => {
+                collect_locals(then, out);
+                if let Some(e) = else_ {
+                    collect_locals(e, out);
+                }
+            }
+            PStmt::Expr(e) | PStmt::Return(e) => collect_expr_locals(e, out),
+            PStmt::Break | PStmt::Continue => {}
+        }
+    }
+}
+
+/// Names assigned by a local assignment written as an expression (`X[(k ← 2)] := …`).
+fn collect_expr_locals(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::LocalDefine(t, v) => {
+            match &**t {
+                Target::Var(n) | Target::Indexed(n, _) | Target::MatCol(n, _) => {
+                    out.insert(n.clone());
+                }
+                Target::Vector(names) => out.extend(names.iter().cloned()),
+                Target::Func(..) => {}
+            }
+            collect_expr_locals(v, out);
+        }
+        Expr::Unary(_, a) | Expr::Abs(a) | Expr::Vectorize(a) | Expr::Return(a) => collect_expr_locals(a, out),
+        Expr::Binary(_, a, b) | Expr::OnError(a, b) | Expr::MatCol(a, b) => {
+            collect_expr_locals(a, out);
+            collect_expr_locals(b, out);
+        }
+        Expr::Call(_, args) => args.iter().for_each(|a| collect_expr_locals(a, out)),
+        Expr::Index(b, idx) => {
+            collect_expr_locals(b, out);
+            idx.iter().for_each(|i| collect_expr_locals(i, out));
+        }
+        Expr::Range(a, b, c) => {
+            collect_expr_locals(a, out);
+            if let Some(b) = b {
+                collect_expr_locals(b, out);
+            }
+            collect_expr_locals(c, out);
+        }
+        Expr::Matrix(rows) => rows.iter().flatten().for_each(|c| collect_expr_locals(c, out)),
+        Expr::Program(stmts) => collect_locals(stmts, out),
+        Expr::Break | Expr::Continue => {}
+        _ => {}
+    }
+}
+
+/// Whether the expression calls `name` as a function.
+fn calls_name(e: &Expr, name: &str) -> bool {
+    match e {
+        Expr::Call(n, args) => n == name || args.iter().any(|a| calls_name(a, name)),
+        Expr::Unary(_, a) | Expr::Abs(a) | Expr::Vectorize(a) | Expr::Return(a) => calls_name(a, name),
+        Expr::Binary(_, a, b) | Expr::OnError(a, b) | Expr::MatCol(a, b) => calls_name(a, name) || calls_name(b, name),
+        Expr::Index(b, idx) => calls_name(b, name) || idx.iter().any(|i| calls_name(i, name)),
+        Expr::Range(a, b, c) => {
+            calls_name(a, name) || calls_name(c, name) || b.as_ref().is_some_and(|b| calls_name(b, name))
+        }
+        Expr::Matrix(rows) => rows.iter().flatten().any(|c| calls_name(c, name)),
+        Expr::LocalDefine(_, v) => calls_name(v, name),
+        Expr::Program(stmts) => stmts.iter().any(|s| match s {
+            PStmt::Assign(_, e) | PStmt::Expr(e) | PStmt::Return(e) => calls_name(e, name),
+            PStmt::If { cond, then, else_ } => {
+                calls_name(cond, name)
+                    || then.iter().any(|s| pstmt_calls(s, name))
+                    || else_.as_ref().is_some_and(|b| b.iter().any(|s| pstmt_calls(s, name)))
+            }
+            PStmt::For { iter, body, .. } => {
+                calls_name(iter, name) || body.iter().any(|s| pstmt_calls(s, name))
+            }
+            PStmt::While { cond, body } => {
+                calls_name(cond, name) || body.iter().any(|s| pstmt_calls(s, name))
+            }
+            PStmt::Break | PStmt::Continue => false,
+        }),
+        Expr::Break | Expr::Continue | Expr::Num(_) | Expr::Imag(_) | Expr::Str(_) | Expr::Var(_) => false,
+    }
+}
+
+fn pstmt_calls(s: &PStmt, name: &str) -> bool {
+    calls_name(&Expr::Program(vec![s.clone()]), name)
 }
 
 pub const PI: f64 = std::f64::consts::PI;
@@ -163,12 +325,12 @@ impl Evaluator {
     }
 
     pub fn top_scope(&self) -> Scope {
-        Scope { limit: self.defs.len(), locals: Rc::new(Vec::new()) }
+        Scope { limit: self.defs.len(), locals: Rc::new(RefCell::new(Vec::new())) }
     }
 
     pub fn lookup(&self, name: &str, sc: &Scope) -> Option<Value> {
-        if let Some((_, v)) = sc.locals.iter().rev().find(|(n, _)| n == name) {
-            return Some(v.clone());
+        if let Some(v) = sc.locals.borrow().iter().rev().find(|(n, _)| n == name).map(|(_, v)| v.clone()) {
+            return Some(v);
         }
         if let Some((_, v)) = self.defs[..sc.limit].iter().rev().find(|(n, _)| n == name) {
             return Some(v.clone());
@@ -374,8 +536,18 @@ impl Evaluator {
             },
             Expr::OnError(a, b) => match self.eval(a, sc) {
                 Ok(v) => Ok(v),
+                // `return`/`break`/`continue` in the failing branch leave the whole program
+                Err(e) if is_flow_signal(&e) => Err(e),
                 Err(_) => self.eval(b, sc),
             },
+            Expr::LocalDefine(target, e) => self.local_assign(target, e, sc),
+            Expr::Break => Err(BREAK_SIGNAL.to_string()),
+            Expr::Continue => Err(CONTINUE_SIGNAL.to_string()),
+            Expr::Return(e) => {
+                let v = self.eval(e, sc)?;
+                self.returns.borrow_mut().push(v);
+                Err(RETURN_SIGNAL.to_string())
+            }
             Expr::Program(stmts) => self.run_program(stmts, sc),
             Expr::Vectorize(a) => self.veval(a, sc),
             Expr::MatCol(m, j) => {
@@ -497,16 +669,35 @@ impl Evaluator {
     // Programs
 
     fn run_program(&self, stmts: &[PStmt], sc: &Scope) -> EResult<Value> {
-        let mut fr = Frame { sc: sc.clone(), base: sc.locals.len(), iters: 0 };
+        let inner = sc.copy_here();
+        let base = inner.locals.borrow().len();
+        let mut fr = Frame { sc: inner, base, iters: 0 };
+        // Mathcad 13 made the scope of a program static: a name assigned anywhere in it is a
+        // local of the whole program, and reading it before the assignment gives 0 (Mathcad
+        // 11/12 read the worksheet variable instead).
+        let mut names = FrameNames { base, ..Default::default() };
+        collect_locals(stmts, &mut names.declared);
+        for n in &names.declared {
+            // a function parameter (or an enclosing local) of the same name keeps its value:
+            // `sqroot(a, ε, maxiter) := { for i ∈ 0..maxiter { … maxiter ← i … } }`
+            let exists = fr.sc.locals.borrow().iter().any(|(m, _)| m == n);
+            if !exists {
+                fr.set(n, Value::real(0.0));
+            }
+        }
+        self.frames.borrow_mut().push(names);
         let func = self.calling.borrow_mut().take();
         self.prog_stack.borrow_mut().push((func, Vec::new()));
         let r = self.exec_block(stmts, &mut fr);
         self.prog_stack.borrow_mut().pop();
-        match r? {
-            Flow::Normal(Some(v)) | Flow::Return(v) => Ok(v),
-            Flow::Normal(None) => Err("программа не вернула значения".into()),
-            Flow::Break => Err("'break' вне цикла".into()),
-            Flow::Continue => Err("'continue' вне цикла".into()),
+        self.frames.borrow_mut().pop();
+        match r {
+            Err(e) if e == RETURN_SIGNAL => return self.returns.borrow_mut().pop().ok_or_else(|| RETURN_SIGNAL.to_string()),
+            Err(e) => return Err(e),
+            Ok(Flow::Normal(Some(v))) | Ok(Flow::Return(v)) => Ok(v),
+            Ok(Flow::Normal(None)) => Err("программа не вернула значения".into()),
+            Ok(Flow::Break) => Err("'break' вне цикла".into()),
+            Ok(Flow::Continue) => Err("'continue' вне цикла".into()),
         }
     }
 
@@ -567,7 +758,9 @@ impl Evaluator {
                 }
             };
             if let Err(e) = &r {
-                self.note_err(e);
+                if !is_flow_signal(e) {
+                    self.note_err(e);
+                }
             }
             self.path_pop();
             let flow = r?;
@@ -591,35 +784,7 @@ impl Evaluator {
     fn exec_stmt(&self, s: &PStmt, fr: &mut Frame) -> EResult<Flow> {
         match s {
             PStmt::Expr(e) => Ok(Flow::Normal(Some(self.eval(e, &fr.sc)?))),
-            PStmt::Assign(Target::Var(name), e) => {
-                let v = self.eval(e, &fr.sc)?;
-                fr.set(name, v.clone());
-                Ok(Flow::Normal(Some(v)))
-            }
-            PStmt::Assign(Target::Indexed(name, idx), e) => {
-                let origin = self.origin(&fr.sc);
-                let ix = idx
-                    .iter()
-                    .map(|i| self.eval(i, &fr.sc)?.as_int().map(|k| k - origin))
-                    .collect::<EResult<Vec<i64>>>()?;
-                let v = self.eval(e, &fr.sc)?.as_num()?;
-                match fr.local_pos(name) {
-                    Some(i) => match &mut Rc::make_mut(&mut fr.sc.locals)[i].1 {
-                        Value::Matrix(m) => set_element(m, &ix, v)?,
-                        other => {
-                            return Err(format!("'{name}': элементу нельзя присвоить значение, найдено: {}", other.type_name()))
-                        }
-                    },
-                    None => {
-                        let mut m = Matrix::zeros(0, 0);
-                        set_element(&mut m, &ix, v)?;
-                        fr.set(name, Value::Matrix(m));
-                    }
-                }
-                Ok(Flow::Normal(Some(Value::Num(v))))
-            }
-            PStmt::Assign(Target::Func(..), _) => Err("в программе нельзя определять функции".into()),
-            PStmt::Assign(Target::Vector(_), _) => Err("в программе нельзя использовать векторное определение".into()),
+            PStmt::Assign(target, e) => Ok(Flow::Normal(Some(self.local_assign(target, e, &fr.sc)?))),
             PStmt::If { cond, then, else_ } => {
                 if self.eval(cond, &fr.sc)?.truthy()? {
                     self.in_branch(0, || self.exec_block(then, fr))
@@ -633,11 +798,15 @@ impl Evaluator {
                 let mut last = None;
                 while self.eval(cond, &fr.sc)?.truthy()? {
                     self.tick(fr)?;
-                    match self.in_branch(0, || self.exec_block(body, fr))? {
-                        Flow::Normal(v) => last = v.or(last),
-                        Flow::Break => break,
-                        Flow::Continue => {}
-                        r @ Flow::Return(_) => return Ok(r),
+                    match self.in_branch(0, || self.exec_block(body, fr)) {
+                        Err(e) if e == BREAK_SIGNAL => break,
+                        Err(e) if e == CONTINUE_SIGNAL => continue,
+                        r => match r? {
+                            Flow::Normal(v) => last = v.or(last),
+                            Flow::Break => break,
+                            Flow::Continue => {}
+                            r @ Flow::Return(_) => return Ok(r),
+                        },
                     }
                 }
                 Ok(Flow::Normal(last))
@@ -653,11 +822,16 @@ impl Evaluator {
                 for v in items {
                     self.tick(fr)?;
                     fr.set(var, v);
-                    match self.in_branch(0, || self.exec_block(body, fr))? {
-                        Flow::Normal(v) => last = v.or(last),
-                        Flow::Break => break,
-                        Flow::Continue => {}
-                        r @ Flow::Return(_) => return Ok(r),
+                    self.mark_assigned(var);
+                    match self.in_branch(0, || self.exec_block(body, fr)) {
+                        Err(e) if e == BREAK_SIGNAL => break,
+                        Err(e) if e == CONTINUE_SIGNAL => continue,
+                        r => match r? {
+                            Flow::Normal(v) => last = v.or(last),
+                            Flow::Break => break,
+                            Flow::Continue => {}
+                            r @ Flow::Return(_) => return Ok(r),
+                        },
                     }
                 }
                 Ok(Flow::Normal(last))
@@ -666,6 +840,168 @@ impl Evaluator {
             PStmt::Continue => Ok(Flow::Continue),
             PStmt::Return(e) => Ok(Flow::Return(self.eval(e, &fr.sc)?)),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Local assignments
+
+    /// Sets a local name of the running program (the innermost binding, else a new one).
+    fn set_local(&self, name: &str, v: Value, sc: &Scope) {
+        let mut locals = sc.locals.borrow_mut();
+        match locals.iter().rposition(|(n, _)| n == name) {
+            Some(i) => locals[i].1 = v,
+            None => locals.push((name.to_string(), v)),
+        }
+    }
+
+    /// A declared local that the program has not assigned yet (it holds the 0 placeholder).
+    fn local_pending(&self, name: &str) -> bool {
+        self.frames
+            .borrow()
+            .last()
+            .is_some_and(|f| f.declared.contains(name) && !f.assigned.contains(name))
+    }
+
+    fn local_value(&self, name: &str, sc: &Scope) -> Option<Value> {
+        sc.locals.borrow().iter().rev().find(|(n, _)| n == name).map(|(_, v)| v.clone())
+    }
+
+    /// Records that the running program has assigned `name` (Mathcad's scope is static, so an
+    /// assignment inside a branch the program never reaches still declares the name).
+    fn mark_assigned(&self, name: &str) {
+        if let Some(f) = self.frames.borrow_mut().last_mut() {
+            f.assigned.insert(name.to_string());
+        }
+    }
+
+    /// Hides declared but not yet assigned locals while the right side of a local assignment is
+    /// evaluated: Mathcad 13+ reads the worksheet value of a name there until the program
+    /// assigns it (a program like `{ s ← s + 1 }` starts from the worksheet `s`).
+    fn hide_unassigned(&self, sc: &Scope) -> Vec<(usize, (String, Value))> {
+        let (pending, base): (Vec<String>, usize) = {
+            let frames = self.frames.borrow();
+            match frames.last() {
+                Some(f) if !f.declared.is_empty() => {
+                    (f.declared.difference(&f.assigned).cloned().collect(), f.base)
+                }
+                _ => return Vec::new(),
+            }
+        };
+        if pending.is_empty() {
+            return Vec::new();
+        }
+        let mut locals = sc.locals.borrow_mut();
+        let mut removed = Vec::new();
+        for i in (base..locals.len()).rev() {
+            if pending.iter().any(|p| *p == locals[i].0) {
+                removed.push((i, locals.remove(i)));
+            }
+        }
+        removed
+    }
+
+    fn restore_hidden(&self, sc: &Scope, removed: Vec<(usize, (String, Value))>) {
+        if removed.is_empty() {
+            return;
+        }
+        let mut locals = sc.locals.borrow_mut();
+        for (i, kv) in removed.into_iter().rev() {
+            locals.insert(i, kv);
+        }
+    }
+
+    /// `target ← body` inside a program (or as an expression, `X[(k ← 2)] := …`); the value of
+    /// the assignment is the value of its right side.
+    fn local_assign(&self, target: &Target, body: &Expr, sc: &Scope) -> EResult<Value> {
+        if let Target::Func(name, params) = target {
+            let f = UserFunc {
+                name: name.clone(),
+                params: params.clone(),
+                body: Rc::new(body.clone()),
+                limit: sc.limit,
+                locals: Rc::new(sc.locals.borrow().clone()),
+            };
+            let v = Value::Func(Rc::new(f));
+            self.set_local(name, v.clone(), sc);
+            self.mark_assigned(name);
+            return Ok(v);
+        }
+        // `Q1 ← Q1(j)` makes a name that is also called here a value: Mathcad refuses it
+        if let Target::Var(name) = target {
+            if calls_name(body, name) {
+                return Err(format!("функция '{name}' ссылается на себя непоследовательно"));
+            }
+        }
+        let hidden = self.hide_unassigned(sc);
+        let value = self.eval(body, sc);
+        self.restore_hidden(sc, hidden);
+        let v = value?;
+        match target {
+            Target::Var(name) => {
+                self.set_local(name, v.clone(), sc);
+                self.mark_assigned(name);
+            }
+            Target::Indexed(name, idx) => {
+                let origin = self.origin(sc);
+                // the right side is evaluated first (Mathcad evaluates such a statement from
+                // right to left), so the index sees the local it may have just set
+                let ix = idx
+                    .iter()
+                    .map(|i| self.eval(i, sc)?.as_int().map(|k| k - origin))
+                    .collect::<EResult<Vec<i64>>>()?;
+                let num = v.as_num()?;
+                let mut m = match self.local_value(name, sc).filter(|_| !self.local_pending(name)) {
+                    Some(Value::Matrix(m)) => m,
+                    Some(other) => {
+                        return Err(format!("'{name}': элементу нельзя присвоить значение, найдено: {}", other.type_name()))
+                    }
+                    None => Matrix::zeros(0, 0),
+                };
+                set_element(&mut m, &ix, num)?;
+                self.set_local(name, Value::Matrix(m), sc);
+                self.mark_assigned(name);
+            }
+            Target::MatCol(name, j) => {
+                let origin = self.origin(sc);
+                let k = self.eval(j, sc)?.as_int()? - origin;
+                let mut m = match self.local_value(name, sc).filter(|_| !self.local_pending(name)) {
+                    Some(Value::Matrix(m)) => m,
+                    Some(other) => {
+                        return Err(format!("'{name}': столбцу нельзя присвоить значение, найдено: {}", other.type_name()))
+                    }
+                    None => Matrix::zeros(0, 0),
+                };
+                assign_column(&mut m, k, &v)?;
+                self.set_local(name, Value::Matrix(m), sc);
+                self.mark_assigned(name);
+            }
+            Target::Vector(names) => {
+                let cols = match &v {
+                    Value::Matrix(m) if m.is_vector() => m.data.clone(),
+                    other => {
+                        return Err(format!(
+                            "справа от определения [{}] ← … должен быть вектор из {} элементов, найдено: {}",
+                            names.join("; "),
+                            names.len(),
+                            other.type_name()
+                        ))
+                    }
+                };
+                if cols.len() != names.len() {
+                    return Err(format!(
+                        "размер вектора ({}) не совпадает с числом определяемых имён ({})",
+                        cols.len(),
+                        names.len()
+                    ));
+                }
+                for (n, x) in names.iter().zip(&cols) {
+                    self.set_local(n, Value::Num(*x), sc);
+                    self.mark_assigned(n);
+                }
+            }
+            Target::Func(..) => unreachable!(),
+        }
+        Ok(v)
     }
 
     /// Calls a function value with already evaluated arguments.
@@ -686,14 +1022,18 @@ impl Evaluator {
         for (p, a) in f.params.iter().zip(args) {
             locals.push((p.clone(), a));
         }
-        let sc = Scope { limit: f.limit, locals: Rc::new(locals) };
+        let sc = Scope { limit: f.limit, locals: Rc::new(RefCell::new(locals)) };
         if matches!(*f.body, Expr::Program(_)) {
             *self.calling.borrow_mut() = Some(f.name.clone());
         }
         self.depth.set(d + 1);
         let r = self.eval(&f.body, &sc);
         self.depth.set(d);
-        r
+        match r {
+            // `f(x) := 1/x on error (return error("…"))`
+            Err(e) if e == RETURN_SIGNAL => self.returns.borrow_mut().pop().ok_or(e),
+            r => r,
+        }
     }
 
     fn eval_args(&self, args: &[Expr], sc: &Scope) -> EResult<Vec<Value>> {
@@ -1117,6 +1457,32 @@ impl Evaluator {
                 })?;
                 (name.clone(), Value::Matrix(m))
             }
+            Target::MatCol(name, j) => {
+                let mut m = match self.lookup(name, &sc) {
+                    Some(Value::Matrix(m)) => m,
+                    _ => Matrix::zeros(0, 0),
+                };
+                let origin = self.origin(&sc);
+                // `v^<k> := A*v^<k - 1>` over a range builds the columns in order, each one
+                // seeing the columns already assigned
+                let ranges = self.range_vars(&[expr, j], &sc);
+                let mut used = Vec::new();
+                free_vars(expr, &mut Vec::new(), &mut used);
+                let self_ref = !ranges.is_empty() && used.iter().any(|u| u == name);
+                self.for_each_binding(&ranges, &sc, &mut |s| {
+                    let s2;
+                    let s = if self_ref {
+                        s2 = s.with(name, Value::Matrix(m.clone()));
+                        &s2
+                    } else {
+                        s
+                    };
+                    let k = self.eval(j, s)?.as_int()? - origin;
+                    let v = self.eval(expr, s)?;
+                    assign_column(&mut m, k, &v)
+                })?;
+                (name.clone(), Value::Matrix(m))
+            }
             Target::Vector(_) => unreachable!(),
         };
         self.defs.push((name, value.clone()));
@@ -1132,7 +1498,7 @@ pub fn free_vars(e: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
                 out.push(n.clone());
             }
         }
-        Expr::Num(_) | Expr::Imag(_) | Expr::Str(_) => {}
+        Expr::Num(_) | Expr::Imag(_) | Expr::Str(_) | Expr::Break | Expr::Continue => {}
         Expr::Unary(_, a) | Expr::Abs(a) | Expr::Vectorize(a) => free_vars(a, bound, out),
         Expr::MatCol(a, b) => {
             free_vars(a, bound, out);
@@ -1188,6 +1554,20 @@ pub fn free_vars(e: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
             free_vars(a, bound, out);
             free_vars(b, bound, out);
         }
+        Expr::LocalDefine(target, v) => {
+            free_vars(v, bound, out);
+            match &**target {
+                Target::Var(n) => bound.push(n.clone()),
+                Target::Indexed(n, idx) => {
+                    for i in idx {
+                        free_vars(i, bound, out);
+                    }
+                    bound.push(n.clone());
+                }
+                _ => {}
+            }
+        }
+        Expr::Return(a) => free_vars(a, bound, out),
         Expr::Program(stmts) => {
             let mark = bound.len();
             block_free_vars(stmts, bound, out);
@@ -1208,6 +1588,10 @@ fn block_free_vars(stmts: &[PStmt], bound: &mut Vec<String>, out: &mut Vec<Strin
                         for i in idx {
                             free_vars(i, bound, out);
                         }
+                        bound.push(n.clone());
+                    }
+                    Target::MatCol(n, j) => {
+                        free_vars(j, bound, out);
                         bound.push(n.clone());
                     }
                     Target::Func(..) | Target::Vector(_) => {}
@@ -1238,7 +1622,7 @@ fn block_free_vars(stmts: &[PStmt], bound: &mut Vec<String>, out: &mut Vec<Strin
 /// The name a target defines (`v[i] := …` and `v(x) := …` both define `v`).
 fn defined_name(t: &Target) -> String {
     match t {
-        Target::Var(n) | Target::Func(n, _) | Target::Indexed(n, _) => n.clone(),
+        Target::Var(n) | Target::Func(n, _) | Target::Indexed(n, _) | Target::MatCol(n, _) => n.clone(),
         Target::Vector(ns) => ns.first().cloned().unwrap_or_default(),
     }
 }

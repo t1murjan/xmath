@@ -61,6 +61,16 @@ fn parse_roundtrips() {
         "{ if a { if b { 1 } otherwise { 2 } } otherwise { 3 } }",
         "{ x ← { y ← 2; y^2 }; x + 1 }",
         "2*{ a ← 3; a }",
+        // a local function, a matrix column and a vector of indexed names
+        "{ f(x) ← x^2; f(3) }",
+        "{ A ← identity(3); B^<1> ← 2*A^<1>; B }",
+        "{ a ← 1; b ← 2; [a; b] ← [b; a]; a*10 + b }",
+        "{ a ← 1; [a; b] ← [2; 3]; a*10 + b }",
+        // local assignment and control flow as expressions
+        "{ X[k ← 2] ← 7; X }",
+        "1/x on error (return error(\"zero\"))",
+        "{ for i ∈ 1..3 { x ← 1/i on error continue }; i }",
+        "{ for i ∈ 1..3 { if i == 2 { 1/0 on error break } }; i }",
     ] {
         roundtrip(s);
     }
@@ -94,7 +104,6 @@ fn parse_errors() {
     assert!(parse_expr("{ }").is_err());
     assert!(parse_expr("{ x ← }").is_err());
     assert!(parse_expr("{ 1 2 ").is_err());
-    assert!(parse_expr("{ f(x) ← 1 }").is_err());
     assert!(parse_expr("{ for i 1..3 { i } }").is_err());
     assert!(parse_expr("{ if x 1 }").is_err());
     assert!(parse_expr("{ 1 + }").is_err());

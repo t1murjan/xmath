@@ -501,8 +501,8 @@ const OUTSIDE: &str = "можно использовать только в бл�
 impl Evaluator {
     /// A name bound by a worksheet definition or a local binding (not a unit/constant).
     pub(crate) fn lookup_def(&self, name: &str, sc: &Scope) -> Option<Value> {
-        if let Some((_, v)) = sc.locals.iter().rev().find(|(n, _)| n == name) {
-            return Some(v.clone());
+        if let Some(v) = sc.locals.borrow().iter().rev().find(|(n, _)| n == name).map(|(_, v)| v.clone()) {
+            return Some(v);
         }
         self.defs[..sc.limit].iter().rev().find(|(n, _)| n == name).map(|(_, v)| v.clone())
     }

@@ -305,6 +305,7 @@ fn enc_target(t: Target) -> Expr {
         Target::Indexed(n, idx) => Expr::Index(Box::new(Expr::Var(n)), idx.into_iter().map(enc).collect()),
         Target::Func(n, params) => Expr::Call(n, params.into_iter().map(Expr::Var).collect()),
         Target::Vector(names) => Expr::Var(names.join(",")),
+        Target::MatCol(n, j) => Expr::MatCol(Box::new(Expr::Var(n)), Box::new(enc(*j))),
     }
 }
 
@@ -498,6 +499,7 @@ impl Ed {
                     Target::Var(n) => Expr::Var(n),
                     Target::Func(n, params) => Expr::Call(n, params.into_iter().map(Expr::Var).collect()),
                     Target::Indexed(n, idx) => Expr::Index(Box::new(Expr::Var(n)), idx),
+                    Target::MatCol(n, j) => Expr::MatCol(Box::new(Expr::Var(n)), j),
                     Target::Vector(_) => return None,
                 };
                 ed.form = Form::Define { global };

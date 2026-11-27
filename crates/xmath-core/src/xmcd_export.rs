@@ -594,6 +594,7 @@ impl Exporter<'_> {
                 }
             }
             Target::Indexed(n, idx) => self.expr(&Expr::Index(Box::new(Expr::Var(n.clone())), idx.clone()), o, d)?,
+            Target::MatCol(n, j) => self.expr(&Expr::MatCol(Box::new(Expr::Var(n.clone())), j.clone()), o, d)?,
             Target::Vector(names) => {
                 ind(o, d);
                 let _ = writeln!(o, "<ml:matrix rows=\"{}\" cols=\"1\">", names.len());
@@ -769,15 +770,16 @@ impl Exporter<'_> {
             Expr::Abs(a) => self.apply("ml:absval", &[a], o, d)?,
             Expr::Program(stmts) => {
                 // Mathcad's schema requires at least two statements in a program; a one-statement
-                // program means the same as that statement
-                if let [PStmt::Expr(only)] = stmts.as_slice() {
-                    self.expr(only, o, d)?;
-                } else {
-                    ind(o, d);
-                    o.push_str("<ml:program>\n");
-                    self.pstmts(stmts, o, d + 1)?;
-                    ind(o, d);
-                    o.push_str("</ml:program>\n");
+                // program means the same as that statement (an `if`/`otherwise` pair is two)
+                match stmts.as_slice() {
+                    [only] if !matches!(only, PStmt::If { else_: Some(_), .. }) => self.pstmt(only, o, d)?,
+                    _ => {
+                        ind(o, d);
+                        o.push_str("<ml:program>\n");
+                        self.pstmts(stmts, o, d + 1)?;
+                        ind(o, d);
+                        o.push_str("</ml:program>\n");
+                    }
                 }
             }
             Expr::OnError(a, b) => {
@@ -799,6 +801,30 @@ impl Exporter<'_> {
                 o.push_str("</ml:apply>\n");
             }
             Expr::MatCol(m, j) => self.apply("ml:matcol", &[m, j], o, d)?,
+            // Mathcad lets a local assignment stand where an expression is expected
+            Expr::LocalDefine(t, v) => {
+                ind(o, d);
+                o.push_str("<ml:localDefine>\n");
+                self.target(t, o, d + 1)?;
+                self.expr(v, o, d + 1)?;
+                ind(o, d);
+                o.push_str("</ml:localDefine>\n");
+            }
+            Expr::Return(v) => {
+                ind(o, d);
+                o.push_str("<ml:return>\n");
+                self.expr(v, o, d + 1)?;
+                ind(o, d);
+                o.push_str("</ml:return>\n");
+            }
+            Expr::Break => {
+                ind(o, d);
+                o.push_str("<ml:break/>\n");
+            }
+            Expr::Continue => {
+                ind(o, d);
+                o.push_str("<ml:continue/>\n");
+            }
         }
         Ok(())
     }

@@ -711,6 +711,11 @@ fn conv_target(cx: &mut Cx, n: Node) -> R<Target> {
                 Expr::Var(v) => Ok(Target::Indexed(v, idx)),
                 _ => Err("недопустимая левая часть определения".into()),
             },
+            // `M⟨j⟩ := v`
+            Expr::MatCol(base, j) => match *base {
+                Expr::Var(v) => Ok(Target::MatCol(v, j)),
+                _ => Err("недопустимая левая часть определения".into()),
+            },
             Expr::Call(name, args) => {
                 let mut ps = Vec::new();
                 for a in args {
@@ -807,6 +812,22 @@ fn conv(cx: &mut Cx, n: Node) -> R<Expr> {
             Ok(Expr::OnError(Box::new(conv(cx, ks[0])?), Box::new(conv(cx, ks[1])?)))
         }
         "matrix" => conv_matrix(cx, n),
+        // a local assignment used as an expression (Mathcad's `X[(k ← 2)] := …`)
+        "localDefine" => {
+            let ks = kids(n);
+            need(&ks, 2, "localDefine")?;
+            Ok(Expr::LocalDefine(Box::new(conv_target(cx, ks[0])?), Box::new(conv(cx, ks[1])?)))
+        }
+        // `return` in the failing branch of `on error`
+        "return" => {
+            let ks = kids(n);
+            need(&ks, 1, "return")?;
+            Ok(Expr::Return(Box::new(conv(cx, ks[0])?)))
+        }
+        "break" => Ok(Expr::Break),
+        "continue" => Ok(Expr::Continue),
+        // a loop or a branch used where a value is expected: `(for …) == 3`
+        "for" | "while" | "ifThen" => Ok(Expr::Program(vec![conv_pstmt(cx, n)?])),
         "range" => range_from(cx, &kids(n)),
         "vectorize" => {
             let ks = kids(n);
@@ -973,6 +994,7 @@ fn conv_apply(cx: &mut Cx, n: Node) -> R<Expr> {
             need(args, 1, "vectorSum")?;
             Ok(Expr::Call("sum".into(), vec![conv(cx, args[0])?]))
         }
+        "crossProduct" => Ok(Expr::Call("cross".into(), conv_all(cx, args)?)),
         "polyroots" => {
             need(args, 1, "polyroots")?;
             Ok(Expr::Call("polyroots".into(), vec![conv(cx, args[0])?]))
@@ -1021,6 +1043,17 @@ fn conv_program(cx: &mut Cx, n: Node) -> R<Expr> {
 fn conv_pstmts(cx: &mut Cx, nodes: &[Node]) -> R<Vec<PStmt>> {
     let mut out: Vec<PStmt> = Vec::new();
     for n in nodes {
+        if lname(*n) == "program" {
+            out.extend(conv_pstmts(cx, &kids(*n))?);
+            continue;
+        }
+        // `[a⟨0⟩; b⟨0⟩] ← [2; 3]`: a vector of indexed names, one assignment per element
+        if lname(*n) == "localDefine" {
+            if let Some(stmts) = conv_vector_elements(cx, *n)? {
+                out.extend(stmts);
+                continue;
+            }
+        }
         if lname(*n) == "otherwise" {
             let ks = kids(*n);
             need(&ks, 1, "otherwise")?;
@@ -1044,17 +1077,40 @@ fn conv_body(cx: &mut Cx, n: Node) -> R<Vec<PStmt>> {
     }
 }
 
+/// `[a⟨0⟩; b⟨0⟩] ← [2; 3]` — a vector target whose elements are not simple names. Returns
+/// `None` when the target is an ordinary vector of names (or not a vector at all).
+fn conv_vector_elements(cx: &mut Cx, n: Node) -> R<Option<Vec<PStmt>>> {
+    let ks = kids(n);
+    if ks.len() != 2 || lname(ks[0]) != "matrix" {
+        return Ok(None);
+    }
+    let targets = kids(ks[0]);
+    if targets.iter().all(|t| lname(*t) == "id") {
+        return Ok(None);
+    }
+    if lname(ks[1]) != "matrix" {
+        return Err("вектор из индексов можно определить только вектором значений".into());
+    }
+    let values = match conv_matrix(cx, ks[1])? {
+        Expr::Matrix(rows) => rows.into_iter().flatten().collect::<Vec<Expr>>(),
+        _ => return Err("вектор из индексов можно определить только вектором значений".into()),
+    };
+    if values.len() != targets.len() {
+        return Err("число элементов в векторе не совпадает с числом имён слева".into());
+    }
+    let mut out = Vec::with_capacity(targets.len());
+    for (t, v) in targets.into_iter().zip(values) {
+        out.push(PStmt::Assign(conv_target(cx, t)?, v));
+    }
+    Ok(Some(out))
+}
+
 fn conv_pstmt(cx: &mut Cx, n: Node) -> R<PStmt> {
     let ks = kids(n);
     match lname(n) {
         "localDefine" => {
             need(&ks, 2, "localDefine")?;
-            let target = match conv_target(cx, ks[0])? {
-                t @ (Target::Var(_) | Target::Indexed(..)) => t,
-                Target::Func(..) => return Err("в программе нельзя определять функции".into()),
-                Target::Vector(_) => return Err("в программе нельзя использовать векторное определение".into()),
-            };
-            Ok(PStmt::Assign(target, conv(cx, ks[1])?))
+            Ok(PStmt::Assign(conv_target(cx, ks[0])?, conv(cx, ks[1])?))
         }
         "ifThen" => {
             need(&ks, 2, "ifThen")?;

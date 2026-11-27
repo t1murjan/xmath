@@ -126,7 +126,7 @@ fn random_dependent_regions(ws: &Worksheet) -> HashSet<u64> {
 
 fn target_name(t: &Target) -> String {
     match t {
-        Target::Var(n) | Target::Func(n, _) | Target::Indexed(n, _) => n.clone(),
+        Target::Var(n) | Target::Func(n, _) | Target::Indexed(n, _) | Target::MatCol(n, _) => n.clone(),
         Target::Vector(ns) => ns.first().cloned().unwrap_or_default(),
     }
 }
@@ -181,7 +181,21 @@ impl Names {
                     self.expr(a);
                 }
             }
-            Expr::Unary(_, a) | Expr::Abs(a) | Expr::Vectorize(a) | Expr::MatCol(a, _) => self.expr(a),
+            Expr::Unary(_, a) | Expr::Abs(a) | Expr::Vectorize(a) | Expr::MatCol(a, _) | Expr::Return(a) => {
+                self.expr(a)
+            }
+            Expr::LocalDefine(t, v) => {
+                match &**t {
+                    Target::Indexed(_, idx) => {
+                        for i in idx {
+                            self.expr(i);
+                        }
+                    }
+                    Target::MatCol(_, j) => self.expr(j),
+                    _ => {}
+                }
+                self.expr(v);
+            }
             Expr::Binary(_, a, b) | Expr::OnError(a, b) => {
                 self.expr(a);
                 self.expr(b);
@@ -211,7 +225,7 @@ impl Names {
                     self.pstmt(s);
                 }
             }
-            Expr::Num(_) | Expr::Imag(_) | Expr::Str(_) => {}
+            Expr::Break | Expr::Continue | Expr::Num(_) | Expr::Imag(_) | Expr::Str(_) => {}
         }
     }
 

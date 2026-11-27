@@ -176,7 +176,15 @@ w(a) := { i ← 0; while i < a { i ← i + 1; if i == 5 { break } }; i }
   `{ a if x < 0; if x >= 0 and x < 5 { b } otherwise { c } }` returns `a`, `b` or `c` (Mathcad semantics).
 * The value of a program is the value of the last executed statement, or of `return`. A program that ends with no value is an error.
 * `←` always creates/updates a **local**; locals shadow worksheet variables and never change them. Assignments in nested blocks update the enclosing program's local.
-  `v[i] ← e` builds a local vector (indices start at `ORIGIN`).
+  `v[i] ← e` builds a local vector (indices start at `ORIGIN`), `M^<j> ← v` replaces a whole matrix column, `[a; b] ← v` unpacks a vector,
+  and `f(x) ← e` defines a **local function**.
+* Mathcad 13+ scope: a name assigned anywhere in the program is a local of the whole program; before its first assignment it
+  reads 0, while the right side of a local assignment still sees the worksheet value (`{ s ← s + 1 }` starts from the worksheet `s`).
+  Function parameters and loop variables are not shadowed by the declaration.
+* A local assignment is also an expression: `X[k ← 2] ← 7` (the right side runs first, then the index), and `on error` may end in
+  `return e`, `break` or `continue`.
+* The last statement may be a matrix literal: `{ j ← 0; [j; v[j]] }` returns the vector `[j; v[j]]` (this is how Mathcad stacks the
+  last lines of a program).
 * Loop iteration limit: 10 000 000 per program run (error in Russian).
 * Beware: `for i ∈ 2..n` with `n < 2` counts down (2, 1) — guard with `return 1 if n < 2`. Write `a < -1` with a space (`a<-1` is an assignment arrow).
 

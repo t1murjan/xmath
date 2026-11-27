@@ -206,7 +206,15 @@ impl<'a> Env<'a> {
                 }
             }
             Expr::Call(name, args) => self.call(e, name, args)?,
-            Expr::OnError(..) | Expr::Program(_) | Expr::Range(..) | Expr::Vectorize(_) | Expr::MatCol(..) => {
+            Expr::OnError(..)
+            | Expr::Program(_)
+            | Expr::Range(..)
+            | Expr::Vectorize(_)
+            | Expr::MatCol(..)
+            | Expr::LocalDefine(..)
+            | Expr::Return(..)
+            | Expr::Break
+            | Expr::Continue => {
                 return match self.numeric_expr(e) {
                     Some(v) => Ok(v),
                     None => ns("выражение вычисляется только численно"),

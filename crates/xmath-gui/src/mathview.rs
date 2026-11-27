@@ -543,6 +543,18 @@ impl<'a> Ts<'a> {
                 let lb = self.expr(b, size);
                 self.hcat(vec![la, self.kw(" on error ", size), lb])
             }
+            Expr::LocalDefine(t, v) => {
+                let lt = self.target(t, size);
+                let arrow = self.kw(" ← ", size);
+                let lv = self.expr(v, size);
+                self.fence(self.hcat(vec![lt, arrow, lv]), '(', size)
+            }
+            Expr::Return(v) => {
+                let kw = self.kw("return ", size);
+                self.hcat(vec![kw, self.expr(v, size)])
+            }
+            Expr::Break => self.kw("break", size),
+            Expr::Continue => self.kw("continue", size),
         }
     }
 
@@ -829,6 +841,12 @@ impl<'a> Ts<'a> {
             Target::Indexed(n, idx) => self.sub(self.ident(n, size), self.list(idx, size * 0.72), size),
             Target::Vector(names) => {
                 self.matrix(names.iter().map(|n| vec![self.ident(n, size)]).collect(), size)
+            }
+            Target::MatCol(n, j) => {
+                let b = self.ident(n, size);
+                let small = size * 0.75;
+                let idx = self.hcat(vec![self.text("<", small), self.expr(j, small), self.text(">", small)]);
+                self.sup(b, idx, size)
             }
         }
     }
