@@ -142,6 +142,38 @@ fn parse_number(s: &str) -> Option<f64> {
     t.parse::<f64>().ok().filter(|x| x.is_finite())
 }
 
+/// The delimiter of a `.prn`/`.csv` file: `,`, `;` or `\t` when the data lines split into
+/// numbers with it, otherwise a space (whitespace-separated numbers).
+fn prn_delimiter(text: &str) -> char {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).take(20).collect();
+    for d in [',', ';', '\t'] {
+        let mut ok = true;
+        let mut seen = 0;
+        for l in &lines {
+            if !l.contains(d) {
+                continue;
+            }
+            let cells: Vec<&str> = l.split(d).map(str::trim).filter(|c| !c.is_empty()).collect();
+            if cells.len() < 2 {
+                continue;
+            }
+            if !cells.iter().any(|c| parse_number(c).is_some()) {
+                continue; // a header line: `x, y`
+            }
+            if cells.iter().all(|c| parse_number(c).is_some()) {
+                seen += 1;
+            } else {
+                ok = false;
+                break;
+            }
+        }
+        if ok && seen > 0 {
+            return d;
+        }
+    }
+    ' '
+}
+
 fn matrix_from_rows(rows: Vec<Vec<f64>>) -> EResult<Value> {
     if rows.is_empty() {
         return Err("в файле нет числовых данных".into());
@@ -165,9 +197,16 @@ fn read_text(p: &Path) -> EResult<String> {
 /// Lines without any number (headers, blank lines) are skipped.
 pub fn read_prn(p: &Path) -> EResult<Value> {
     let text = read_text(p)?;
+    // A comma- or semicolon-delimited file (a `.csv` written by another program) is read with
+    // that delimiter when every data line splits into numbers: `400.81, 0` is two values, while
+    // `1,5` in a whitespace file is one number with a decimal comma.
+    let delim = prn_delimiter(&text);
     let mut rows: Vec<Vec<f64>> = Vec::new();
     for line in text.lines() {
-        let toks: Vec<&str> = line.split(|c: char| c.is_whitespace() || c == ';').filter(|t| !t.is_empty()).collect();
+        let toks: Vec<&str> = line
+            .split(|c: char| c.is_whitespace() || c == delim)
+            .filter(|t| !t.is_empty())
+            .collect();
         let nums: Vec<Option<f64>> = toks.iter().map(|t| parse_number(t)).collect();
         if nums.is_empty() || nums.iter().all(Option::is_none) {
             continue;
@@ -473,6 +512,22 @@ mod tests {
         assert_eq!(txt, "1  2\n3  4.5\n");
         let r = run(&d, &["APPENDPRN(\"out.prn\") := [5, 6]", "rows(READPRN(\"out.prn\")) ="]);
         assert_eq!(r.last().unwrap(), "3", "{r:?}");
+    }
+
+    #[test]
+    fn prn_reads_a_comma_delimited_table() {
+        // a `.csv` written by another program: a header line and `x, y` rows
+        let d = tmp("prn_csv");
+        std::fs::write(d.join("eye.csv"), "x, y\n400.81447963800906, 0\n403.52941176470586, 1\n").unwrap();
+        let r = run(&d, &["A := READPRN(\"eye.csv\")", "rows(A) =", "cols(A) =", "A[0, 1] ="]);
+        assert_eq!(r[1], "2", "{r:?}");
+        assert_eq!(r[2], "2", "{r:?}");
+        assert_eq!(r[3], "0", "{r:?}");
+        // a decimal comma in a whitespace-separated file is still one number
+        std::fs::write(d.join("dec.prn"), "1,5 2,5\n3,5 4,5\n").unwrap();
+        let r = run(&d, &["B := READPRN(\"dec.prn\")", "B[0, 0] =", "cols(B) ="]);
+        assert_eq!(r[1], "1.5", "{r:?}");
+        assert_eq!(r[2], "2");
     }
 
     #[test]
