@@ -748,8 +748,41 @@ impl Evaluator {
                 })
             }
             Expr::Call(name, args) => {
-                // special forms and matrix builders see their arguments unevaluated / whole
-                if matches!(name.as_str(), "if" | "sum" | "Σ" | "prod" | "Π" | "integrate" | "∫" | "diff" | "root" | "matrix" | "rkfixed" | "Rkadapt" | "rkadapt") {
+                // special forms, matrix builders and matrix operations see their arguments
+                // whole: `vectorize(augment(a, b))` and `vectorize(A/reverse(A))` are Mathcad
+                // expressions of the corpus
+                if matches!(
+                    name.as_str(),
+                    "if" | "sum"
+                        | "Σ"
+                        | "prod"
+                        | "Π"
+                        | "integrate"
+                        | "∫"
+                        | "diff"
+                        | "root"
+                        | "matrix"
+                        | "rkfixed"
+                        | "Rkadapt"
+                        | "rkadapt"
+                        | "augment"
+                        | "stack"
+                        | "submatrix"
+                        | "transpose"
+                        | "reverse"
+                        | "sort"
+                        | "csort"
+                        | "rsort"
+                        | "identity"
+                        | "rows"
+                        | "cols"
+                        | "length"
+                        | "last"
+                        | "tr"
+                        | "det"
+                        | "norme"
+                        | "cross"
+                ) {
                     return self.eval(e, sc);
                 }
                 let vals = args.iter().map(|a| self.veval(a, sc)).collect::<EResult<Vec<_>>>()?;
