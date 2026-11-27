@@ -467,3 +467,307 @@ mod tests {
         assert!((qnorm_std(0.975) - 1.959_963_984_540_054).abs() < 1e-12);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Special functions that Mathcad evaluates only through the symbolic engine
+// (`→ float`): the dilogarithm, digamma, polygamma, the zeta function, the
+// exponential and sine integrals, the Fresnel integrals and the hypergeometric
+// series.
+
+/// Bernoulli numbers B2, B4, … (used by the asymptotic expansions below).
+const BERNOULLI: [f64; 8] = [
+    1.0 / 6.0,
+    -1.0 / 30.0,
+    1.0 / 42.0,
+    -1.0 / 30.0,
+    5.0 / 66.0,
+    -691.0 / 2730.0,
+    7.0 / 6.0,
+    -3617.0 / 510.0,
+];
+
+/// The dilogarithm Li₂(x).
+pub fn dilog(x: f64) -> f64 {
+    const PI2_6: f64 = 1.6449340668482264;
+    if x <= -1.0 {
+        // -Li₂(x/(x-1)) - ½ ln²(1-x)
+        let y = x / (x - 1.0);
+        return -dilog(y) - 0.5 * (1.0 - x).ln().powi(2);
+    }
+    if x > 0.5 {
+        // π²/6 - ln x ln(1-x) - Li₂(1-x)
+        return PI2_6 - x.ln() * (1.0 - x).ln() - dilog(1.0 - x);
+    }
+    let mut term = x;
+    let mut sum = x;
+    let mut k = 2.0;
+    while k < 1e7 {
+        term *= x;
+        let add = term / (k * k);
+        sum += add;
+        if add.abs() < 1e-18 * sum.abs().max(1.0) {
+            break;
+        }
+        k += 1.0;
+    }
+    sum
+}
+
+/// The digamma function ψ(x).
+pub fn digamma(mut x: f64) -> f64 {
+    if x <= 0.0 {
+        return f64::NAN;
+    }
+    let mut shift = 0.0;
+    while x < 8.0 {
+        shift -= 1.0 / x;
+        x += 1.0;
+    }
+    // ψ(x) ≈ ln x - 1/(2x) - Σ B₂ₖ / (2k x²ᵏ)
+    let mut s = x.ln() - 0.5 / x;
+    let mut xp = x * x;
+    for (i, b) in BERNOULLI.iter().enumerate() {
+        let k = (i + 1) as f64;
+        let term = b / (2.0 * k) / xp;
+        s -= term;
+        xp *= x * x;
+        if term.abs() < 1e-20 * s.abs().max(1.0) {
+            break;
+        }
+    }
+    s + shift
+}
+
+/// The Hurwitz zeta function ζ(s, q) = Σ (q+k)^{-s}.
+pub fn hurwitz_zeta(s: f64, q: f64) -> f64 {
+    if s == 1.0 {
+        return f64::INFINITY;
+    }
+    let n = 20usize;
+    let mut sum: f64 = (0..n).map(|k| (q + k as f64).powf(-s)).sum();
+    let nn = q + n as f64;
+    sum += nn.powf(1.0 - s) / (s - 1.0) + 0.5 * nn.powf(-s);
+    for (i, b) in BERNOULLI.iter().enumerate() {
+        let k = (i + 1) as f64;
+        let mut num = 1.0;
+        for j in 0..(2 * (i + 1) - 1) {
+            num *= s + j as f64;
+        }
+        let mut den = 1.0;
+        for j in 1..=(2 * (i + 1)) {
+            den *= j as f64;
+        }
+        let term = b * num / den * nn.powf(-s - 2.0 * k + 1.0);
+        sum += term;
+        if term.abs() < 1e-20 * sum.abs().max(1.0) {
+            break;
+        }
+    }
+    sum
+}
+
+/// The polygamma function ψ⁽ⁿ⁾(x) = (-1)^(n+1) n! ζ(n+1, x), n ≥ 1.
+pub fn polygamma(n: u32, x: f64) -> f64 {
+    if x <= 0.0 {
+        return f64::NAN;
+    }
+    if n == 0 {
+        return digamma(x);
+    }
+    let mut fact = 1.0;
+    for k in 1..=n {
+        fact *= k as f64;
+    }
+    let sign = if n % 2 == 1 { 1.0 } else { -1.0 };
+    sign * fact * hurwitz_zeta(n as f64 + 1.0, x)
+}
+
+/// The cosine integral Ci(x).
+pub fn ci(x: f64) -> f64 {
+    const EULER: f64 = 0.577_215_664_901_532_9;
+    if x <= 0.0 {
+        return f64::NAN;
+    }
+    if x > 40.0 {
+        let f = sine_integral_aux(x, 0);
+        let g = sine_integral_aux(x, 1);
+        return f * x.sin() / x - g * x.cos() / x;
+    }
+    let mut sum = 0.0;
+    let mut term = 1.0;
+    let mut k = 1.0;
+    while k < 500.0 {
+        term *= -x * x / ((2.0 * k - 1.0) * (2.0 * k));
+        let add = term / (2.0 * k);
+        sum += add;
+        if add.abs() < 1e-18 * sum.abs().max(1.0) {
+            break;
+        }
+        k += 1.0;
+    }
+    EULER + x.ln() + sum
+}
+
+/// The Riemann zeta function ζ(s).
+pub fn zeta(s: f64) -> f64 {
+    if s == 1.0 {
+        return f64::INFINITY;
+    }
+    if s < 0.0 {
+        // reflection: ζ(s) = 2^s π^(s-1) sin(πs/2) Γ(1-s) ζ(1-s)
+        let pi = std::f64::consts::PI;
+        return 2f64.powf(s) * pi.powf(s - 1.0) * (pi * s / 2.0).sin() * libm::tgamma(1.0 - s) * zeta(1.0 - s);
+    }
+    hurwitz_zeta(s, 1.0)
+}
+
+/// The exponential integral Ei(x) (Cauchy principal value for x < 0).
+pub fn ei(x: f64) -> f64 {
+    const EULER: f64 = 0.5772156649015329;
+    if x.abs() < 40.0 {
+        let mut sum = 0.0;
+        let mut term = 1.0;
+        for k in 1..200 {
+            term *= x / k as f64;
+            let add = term / k as f64;
+            sum += add;
+            if add.abs() < 1e-18 * sum.abs().max(1.0) {
+                break;
+            }
+        }
+        return EULER + x.abs().ln() + sum;
+    }
+    // asymptotic expansion
+    let mut sum = 1.0;
+    let mut term = 1.0;
+    for k in 1..40 {
+        term *= k as f64 / x;
+        sum += term;
+        if term.abs() > 1e300 {
+            break;
+        }
+    }
+    x.exp() / x * sum
+}
+
+/// The sine integral Si(x).
+pub fn si(x: f64) -> f64 {
+    const PI_2: f64 = std::f64::consts::FRAC_PI_2;
+    if x.abs() > 40.0 {
+        // Si(x) = π/2 - f(x) cos x / x - g(x) sin x / x
+        let f = sine_integral_aux(x, 0);
+        let g = sine_integral_aux(x, 1);
+        let sign = if x > 0.0 { 1.0 } else { -1.0 };
+        return sign * PI_2 - f * x.cos() / x - g * x.sin() / x;
+    }
+    let mut sum = x;
+    let mut term = x;
+    let mut k = 1.0;
+    while k < 500.0 {
+        term *= -x * x / ((2.0 * k) * (2.0 * k + 1.0));
+        let add = term / (2.0 * k + 1.0);
+        sum += add;
+        if add.abs() < 1e-18 * sum.abs().max(1.0) {
+            break;
+        }
+        k += 1.0;
+    }
+    sum
+}
+
+/// `f` (odd = 0) and `g` (odd = 1) of the asymptotic Si/Ci expansions.
+fn sine_integral_aux(x: f64, odd: i32) -> f64 {
+    let mut sum = 0.0;
+    let mut term = if odd == 0 { 1.0 } else { 1.0 / x };
+    for k in 0..30 {
+        if k > 0 {
+            term *= ((2 * k) as f64 + odd as f64) * ((2 * k - 1) as f64 + odd as f64) * 0.0;
+        }
+        let _ = term;
+        // (2k+odd)! / x^(2k+odd)
+        let mut f = 1.0;
+        for j in 1..=(2 * k + odd) {
+            f *= j as f64;
+        }
+        term = f / x.powi(2 * k + odd);
+        if k % 2 == 1 {
+            term = -term;
+        }
+        sum += term;
+        if term.abs() > 1e250 {
+            break;
+        }
+    }
+    sum
+}
+
+/// The Fresnel integrals C(x) (`c = true`) and S(x).
+pub fn fresnel(x: f64, c: bool) -> f64 {
+    const PI_2: f64 = std::f64::consts::FRAC_PI_2;
+    if x.abs() < 6.0 {
+        let mut sum = 0.0;
+        let mut k = 0.0;
+        while k < 200.0 {
+            let mut fact = 1.0;
+            let top = if c { 2.0 * k } else { 2.0 * k + 1.0 };
+            let mut j = 1.0;
+            while j <= top {
+                fact *= j;
+                j += 1.0;
+            }
+            let pow = if c { 4.0 * k + 1.0 } else { 4.0 * k + 3.0 };
+            let mut term = PI_2.powf(top) * x.powf(pow) / (fact * pow);
+            if k as i32 % 2 == 1 {
+                term = -term;
+            }
+            sum += term;
+            if term.abs() < 1e-18 * sum.abs().max(1.0) {
+                break;
+            }
+            k += 1.0;
+        }
+        return sum;
+    }
+    // asymptotic: C, S → 1/2 as x → ∞
+    let sign = if x > 0.0 { 1.0 } else { -1.0 };
+    let ax = x.abs();
+    let (s, co) = ((PI_2 * ax * ax).sin(), (PI_2 * ax * ax).cos());
+    let f = 1.0 / (std::f64::consts::PI * ax);
+    let g = 1.0 / (std::f64::consts::PI.powi(2) * ax.powi(3));
+    if c {
+        0.5 * (1.0 + sign) + sign * (f * s - g * co)
+    } else {
+        0.5 * (1.0 + sign) - sign * (f * co + g * s)
+    }
+}
+
+/// The generalised hypergeometric series pFq(a; b; z). Outside the unit disc the series
+/// diverges, so the Gauss function ₂F₁ is continued with the Pfaff transformation.
+pub fn hypergeom(a: &[f64], b: &[f64], z: f64) -> f64 {
+    if z.abs() >= 1.0 && a.len() == 2 && b.len() == 1 && (z - 1.0).abs() > 1e-12 {
+        // ₂F₁(a, b; c; z) = (1-z)^(-a) ₂F₁(a, c-b; c; z/(z-1))
+        let w = z / (z - 1.0);
+        return (1.0 - z).powf(-a[0]) * hypergeom(&[a[0], b[0] - a[1]], b, w);
+    }
+    let mut term = 1.0;
+    let mut sum = 1.0;
+    for k in 1..10000 {
+        let mut t = term * z / k as f64;
+        for p in a {
+            t *= p + (k - 1) as f64;
+        }
+        for q in b {
+            let d = q + (k - 1) as f64;
+            if d == 0.0 {
+                return f64::NAN;
+            }
+            t /= d;
+        }
+        term = t;
+        sum += term;
+        if term.abs() < 1e-17 * sum.abs().max(1.0) {
+            break;
+        }
+    }
+    sum
+}

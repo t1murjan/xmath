@@ -134,7 +134,8 @@ struct Token {
 }
 
 fn is_ident_start(c: char) -> bool {
-    c.is_alphabetic() || c == '_' || c == '°' || c == '∞' || c == '%'
+    // `⇒` and `⇔` are operator names Mathcad lets a worksheet define (`⇒(P, Q) := …`)
+    c.is_alphabetic() || c == '_' || c == '°' || c == '∞' || c == '%' || c == '⇒' || c == '⇔'
 }
 
 fn is_ident_continue(c: char) -> bool {
@@ -365,6 +366,15 @@ impl Parser {
     }
 
     fn not_expr(&mut self) -> PResult<Expr> {
+        // Mathcad's apply form of the boolean operators: `and(A, B)`, `or(A, B)`
+        for (tok, name) in [(Tok::And, "and"), (Tok::Or, "or"), (Tok::Xor, "xor")] {
+            if *self.peek() == tok && matches!(self.peek2(), Tok::LParen) {
+                self.next();
+                self.next();
+                let args = self.list(Tok::RParen)?;
+                return Ok(Expr::Call(name.to_string(), args));
+            }
+        }
         if self.eat(&Tok::Not) {
             let a = self.not_expr()?;
             return Ok(Expr::Unary(UnOp::Not, Box::new(a)));

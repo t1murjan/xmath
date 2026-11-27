@@ -261,6 +261,65 @@ fn collect_expr_locals(e: &Expr, out: &mut HashSet<String>) {
     }
 }
 
+/// The real number a value holds (for Mathcad's image `and`/`or`, a min/max of pixels).
+fn num_of(v: &Value) -> Option<f64> {
+    let n = v.as_num().ok()?;
+    if n.dim.is_none() && n.v.im == 0.0 {
+        Some(n.v.re)
+    } else {
+        None
+    }
+}
+
+/// The boolean operation of a `logic` call: the binary operator or the name seen in
+/// Mathcad's apply form (`and(A, B)`, `implies(P, Q)`).
+#[derive(Clone, Copy)]
+pub enum LogicOp {
+    And,
+    Or,
+    Xor,
+    Implies,
+    Equiv,
+}
+
+impl LogicOp {
+    fn apply(self, x: bool, y: bool) -> bool {
+        match self {
+            LogicOp::And => x && y,
+            LogicOp::Or => x || y,
+            LogicOp::Xor => x != y,
+            LogicOp::Implies => !x || y,
+            LogicOp::Equiv => x == y,
+        }
+    }
+}
+
+pub trait IntoLogic {
+    fn into_logic(self) -> LogicOp;
+}
+
+impl IntoLogic for BinOp {
+    fn into_logic(self) -> LogicOp {
+        match self {
+            BinOp::And => LogicOp::And,
+            BinOp::Or => LogicOp::Or,
+            _ => LogicOp::Xor,
+        }
+    }
+}
+
+impl IntoLogic for &str {
+    fn into_logic(self) -> LogicOp {
+        match self {
+            "and" => LogicOp::And,
+            "or" => LogicOp::Or,
+            "xor" => LogicOp::Xor,
+            "implies" | "⇒" => LogicOp::Implies,
+            _ => LogicOp::Equiv,
+        }
+    }
+}
+
 /// Whether the expression calls `name` as a function.
 fn calls_name(e: &Expr, name: &str) -> bool {
     match e {
@@ -306,6 +365,8 @@ pub fn constant(name: &str) -> Option<Num> {
         "∞" => Num::real(1e307),
         "g" => Num::with_dim(9.806_65, units::ACCELERATION),
         "c" => Num::with_dim(299_792_458.0, units::VELOCITY),
+        // Catalan's constant, which Mathcad knows only symbolically (`Catalan → float`)
+        "Catalan" => Num::real(0.915_965_594_177_219),
         "TOL" => Num::real(1e-3),
         "CTOL" => Num::real(1e-3),
         "ORIGIN" => Num::real(0.0),
@@ -402,14 +463,11 @@ impl Evaluator {
                     }
                 }
                 match op {
-                    BinOp::And => {
-                        return Ok(Value::bool(self.eval(a, sc)?.truthy()? && self.eval(b, sc)?.truthy()?));
-                    }
-                    BinOp::Or => {
-                        return Ok(Value::bool(self.eval(a, sc)?.truthy()? || self.eval(b, sc)?.truthy()?));
-                    }
-                    BinOp::Xor => {
-                        return Ok(Value::bool(self.eval(a, sc)?.truthy()? != self.eval(b, sc)?.truthy()?));
+                    BinOp::And | BinOp::Or | BinOp::Xor => {
+                        // element by element when an operand is a matrix, as Mathcad does
+                        let x = self.eval(a, sc)?;
+                        let y = self.eval(b, sc)?;
+                        return self.logic(*op, &x, &y);
                     }
                     _ => {}
                 }
@@ -579,7 +637,10 @@ impl Evaluator {
     fn veval(&self, e: &Expr, sc: &Scope) -> EResult<Value> {
         match e {
             Expr::Vectorize(a) => self.veval(a, sc),
-            Expr::Unary(UnOp::Not, _) => self.eval(e, sc),
+            Expr::Unary(UnOp::Not, a) => {
+                let v = self.veval(a, sc)?;
+                self.vmap(&[v], &mut |x| Ok(Value::bool(!x[0].truthy()?)))
+            }
             Expr::Unary(op, a) => {
                 let v = self.veval(a, sc)?;
                 self.vmap(&[v], &mut |x| match op {
@@ -1006,6 +1067,28 @@ impl Evaluator {
         Ok(v)
     }
 
+    /// Boolean `and`/`or`/`xor` and the connectives: scalars, or matrices element by element.
+    fn logic(&self, op: impl IntoLogic, a: &Value, b: &Value) -> EResult<Value> {
+        let op = op.into_logic();
+        // Mathcad's image functions: `and` of two pixels is their minimum and `or` their
+        // maximum (for the 0/1 and 0/255 images of the corpus that is the Boolean operation)
+        let images = matches!(a, Value::Matrix(_)) || matches!(b, Value::Matrix(_));
+        self.vmap(&[a.clone(), b.clone()], &mut |v| {
+            if images {
+                if let (Some(x), Some(y)) = (num_of(&v[0]), num_of(&v[1])) {
+                    let r = match op {
+                        LogicOp::And => x.min(y),
+                        LogicOp::Or => x.max(y),
+                        _ => f64::from(u8::from(op.apply(x != 0.0, y != 0.0))),
+                    };
+                    return Ok(Value::real(r));
+                }
+            }
+            let (x, y) = (v[0].truthy()?, v[1].truthy()?);
+            Ok(Value::bool(op.apply(x, y)))
+        })
+    }
+
     /// Calls a function value with already evaluated arguments.
     pub fn call_value(&self, f: &UserFunc, args: Vec<Value>) -> EResult<Value> {
         if args.len() != f.params.len() {
@@ -1043,6 +1126,11 @@ impl Evaluator {
     }
 
     fn call(&self, name: &str, args: &[Expr], sc: &Scope) -> EResult<Value> {
+        // `and(A, B)` — the apply form of the boolean operators — and the connectives
+        if matches!(name, "and" | "or" | "xor" | "implies" | "equiv" | "⇒" | "⇔") && args.len() == 2 {
+            let vals = self.eval_args(args, sc)?;
+            return self.logic(name, &vals[0], &vals[1]);
+        }
         // user-defined functions (and function-valued parameters) come first
         let user = self.lookup(name, sc);
         if let Some(Value::Func(f)) = &user {

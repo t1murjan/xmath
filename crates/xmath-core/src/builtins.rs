@@ -13,6 +13,8 @@ pub const NAMES: &[&str] = &[
     "Var", "sum", "prod", "length", "rows", "cols", "last", "identity", "transpose", "det", "tr", "lsolve",
     "PolyLookup", "Floor", "Ceil", "Trunc", "Round", "mag", "phase", "phasecor", "makeri", "DMS", "Seed",
     "setwindow", "SIUnitsOf", "stderr", "Spear", "Rank",
+    "dilog", "Psi", "Zeta", "Ei", "Si", "Ci", "FresnelC", "FresnelS", "hypergeom", "mhyper", "fhyper",
+    "⇒", "⇔",
     "augment", "stack", "submatrix", "cross", "norme", "sort", "reverse", "linterp", "polyroots", "factorial",
     "gamma", "Γ", "erf", "erfc", "dnorm", "pnorm", "UnitsOf", "concat", "num2str", "strlen", "if", "integrate",
     "diff", "root", "matrix", "eigenvals", "eigenvecs", "eigenvec", "rank", "cholesky", "lu", "qr", "svd", "svds",
@@ -518,6 +520,55 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
         }),
         "gamma" | "Γ" => one(&|v| real_fn(v, libm::tgamma)),
         "erf" => one(&|v| real_fn(v, libm::erf)),
+        // special functions Mathcad evaluates symbolically (`→ float`)
+        "dilog" => one(&|v| real_fn(v, crate::special::dilog)),
+        "Psi" => match args.len() {
+            1 => real_fn(&args[0], crate::special::digamma),
+            2 => (|| {
+                let n = int_arg(&args[0])?;
+                if n < 0 {
+                    return Err("Psi: порядок производной не может быть отрицательным".into());
+                }
+                real_fn(&args[1], |x| crate::special::polygamma(n as u32, x))
+            })(),
+            _ => Err("Psi принимает аргумент или порядок и аргумент".into()),
+        },
+        "Zeta" => one(&|v| real_fn(v, crate::special::zeta)),
+        "Ei" => one(&|v| real_fn(v, crate::special::ei)),
+        "Si" => one(&|v| real_fn(v, crate::special::si)),
+        "Ci" => one(&|v| real_fn(v, crate::special::ci)),
+        "mhyper" => (|| {
+            if args.len() != 3 {
+                return Err("mhyper(a, c, z): конфлюэнтная гипергеометрическая функция".into());
+            }
+            let a = args[0].as_num()?.v.re;
+            let c = args[1].as_num()?.v.re;
+            let z = args[2].as_num()?.v.re;
+            Ok(Value::real(crate::special::hypergeom(&[a], &[c], z)))
+        })(),
+        "fhyper" => (|| {
+            if args.len() != 4 {
+                return Err("fhyper(a, b, c, z): гипергеометрическая функция Гаусса".into());
+            }
+            let a = args[0].as_num()?.v.re;
+            let b = args[1].as_num()?.v.re;
+            let c = args[2].as_num()?.v.re;
+            let z = args[3].as_num()?.v.re;
+            Ok(Value::real(crate::special::hypergeom(&[a, b], &[c], z)))
+        })(),
+        "FresnelC" => one(&|v| real_fn(v, |x| crate::special::fresnel(x, true))),
+        "FresnelS" => one(&|v| real_fn(v, |x| crate::special::fresnel(x, false))),
+        "hypergeom" => (|| {
+            if args.len() != 3 {
+                return Err("hypergeom(числители, знаменатели, z) принимает три аргумента".into());
+            }
+            let num = flatten(std::slice::from_ref(&args[0]))?;
+            let den = flatten(std::slice::from_ref(&args[1]))?;
+            let z = args[2].as_num()?.v.re;
+            let a: Vec<f64> = num.iter().map(|n| n.v.re).collect();
+            let b: Vec<f64> = den.iter().map(|n| n.v.re).collect();
+            Ok(Value::real(crate::special::hypergeom(&a, &b, z)))
+        })(),
         "erfc" => one(&|v| real_fn(v, libm::erfc)),
         "dnorm" => (|| {
             arity(name, args, 3)?;

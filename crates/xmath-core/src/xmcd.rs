@@ -744,7 +744,7 @@ fn id_name(n: Node) -> R<String> {
     }
     if let Some(sub) = n.attribute("subscript").map(str::trim).filter(|x| !x.is_empty()) {
         s.push('.');
-        s.push_str(sub);
+        s.push_str(sub.trim_end_matches('.'));
     }
     Ok(s)
 }

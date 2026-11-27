@@ -124,6 +124,9 @@ impl<'a> Env<'a> {
             "e" => func("exp", vec![one()]),
             "∞" | "inf" | "infinity" | "Inf" => inf(),
             "i" | "j" => Sx::Im,
+            // constants Mathcad knows only in symbolic form
+            "γ" => num_to_sx(0.577_215_664_901_532_9),
+            "Catalan" => num_to_sx(0.915_965_594_177_219),
             _ => sym(name),
         })
     }

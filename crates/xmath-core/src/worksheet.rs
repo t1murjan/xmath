@@ -1109,7 +1109,12 @@ impl Worksheet {
         };
         if let Some((t, _)) = target {
             // a numeric definition when possible; the symbolic definition is always recorded
-            let _ = ev.define_value(t, expr);
+            if ev.define_value(t, expr).is_err() {
+                // `gamma := γ → float`: the value comes from the symbolic result
+                if let Outcome::Done(o) = &outcome {
+                    let _ = ev.define_value(t, &o.result.clone());
+                }
+            }
             ev.sym.define(t, expr);
         }
         match outcome {
