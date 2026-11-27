@@ -19,6 +19,8 @@ pub(super) struct Document {
     /// Red crosshair (insertion point) in worksheet coordinates.
     pub(super) cursor: Pos2,
     pub(super) zoom: f32,
+    /// Typeset at the same font size throughout a pinch and scale only the drawing.
+    pub(super) pinch_layout_zoom: Option<f32>,
     /// Region rectangles from the last frame, in worksheet coordinates.
     pub(super) rects: HashMap<u64, Rect>,
     pub(super) band_start: Option<Pos2>,
@@ -85,6 +87,7 @@ impl Document {
             focus_pending: false,
             cursor: Pos2::new(24.0, 24.0),
             zoom: 1.0,
+            pinch_layout_zoom: None,
             rects: HashMap::new(),
             band_start: None,
             plot_buf: None,

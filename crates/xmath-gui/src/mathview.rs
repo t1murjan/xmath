@@ -62,23 +62,38 @@ impl Lay {
     }
 
     pub fn paint(&self, painter: &Painter, origin: Pos2) {
+        self.paint_scaled(painter, origin, 1.0);
+    }
+
+    pub(crate) fn paint_scaled(&self, painter: &Painter, origin: Pos2, scale: f32) {
         let o = origin.to_vec2();
+        let pos = |p: Vec2| (p * scale + o).to_pos2();
         for it in &self.items {
             match it {
                 Item::Text { off, galley, color } => {
-                    painter.galley((*off + o).to_pos2(), galley.clone(), *color);
+                    paint_scaled_galley(painter, pos(*off), galley.clone(), *color, scale);
                 }
                 Item::Line { a, b, w, color } => {
-                    painter.line_segment([(*a + o).to_pos2(), (*b + o).to_pos2()], Stroke::new(*w, *color));
+                    painter.line_segment([pos(*a), pos(*b)], Stroke::new(*w * scale, *color));
                 }
                 Item::Path { pts, w, color } => {
-                    painter.add(Shape::line(pts.iter().map(|p| (*p + o).to_pos2()).collect(), Stroke::new(*w, *color)));
+                    painter.add(Shape::line(pts.iter().copied().map(pos).collect(), Stroke::new(*w * scale, *color)));
                 }
                 Item::Rect { a, b, color } => {
-                    painter.rect_filled(Rect::from_min_max((*a + o).to_pos2(), (*b + o).to_pos2()), 0.0, *color);
+                    painter.rect_filled(Rect::from_min_max(pos(*a), pos(*b)), 0.0, *color);
                 }
             }
         }
+    }
+}
+
+pub(crate) fn paint_scaled_galley(painter: &Painter, pos: Pos2, galley: Arc<Galley>, color: Color32, scale: f32) {
+    if scale == 1.0 {
+        painter.galley(pos, galley, color);
+    } else {
+        let mut text = egui::epaint::TextShape::new(Pos2::ZERO, galley, color);
+        text.transform(egui::emath::TSTransform::new(pos.to_vec2(), scale));
+        painter.add(text);
     }
 }
 

@@ -1,7 +1,7 @@
 //! The main window: Mathcad 15 style menus, toolbars, palettes, worksheet
 //! canvas and status bar.
 
-use crate::mathview::{Lay, Node, Ts, RED};
+use crate::mathview::{paint_scaled_galley, Lay, Node, Ts, RED};
 use crate::palettes::{self, Act, Palette};
 use crate::plot;
 use egui::text::{CCursor, CCursorRange};
@@ -30,6 +30,9 @@ mod plotdlg;
 mod print_ui;
 #[path = "structural.rs"]
 mod structural;
+#[cfg(any(target_os = "android", test))]
+#[path = "touch.rs"]
+mod touch;
 #[path = "workspace.rs"]
 mod workspace;
 
@@ -79,6 +82,10 @@ fn px(pt: f32, zoom: f32) -> f32 {
 
 fn snap(p: Pos2) -> Pos2 {
     Pos2::new((p.x / GRID).round() * GRID, (p.y / GRID).round() * GRID)
+}
+
+fn touch_sheet(ctx: &Context) -> bool {
+    cfg!(target_os = "android") || (cfg!(test) && ctx.input(|i| i.has_touch_screen()))
 }
 
 fn char_to_byte(s: &str, ci: usize) -> usize {
@@ -240,6 +247,8 @@ pub struct App {
     file_job: Option<(DlgKind, Option<Action>)>,
     #[cfg(target_os = "android")]
     android: Option<crate::android::Bridge>,
+    #[cfg(any(target_os = "android", test))]
+    touch: touch::TouchInput,
     path_dlg: Option<PathDlg>,
     /// Context help of the hovered toolbar/palette button (shown in the status bar).
     hint: String,
@@ -300,6 +309,8 @@ impl App {
             file_job: None,
             #[cfg(target_os = "android")]
             android: None,
+            #[cfg(any(target_os = "android", test))]
+            touch: Default::default(),
             path_dlg: None,
             hint: String::new(),
             text_mode: false,
@@ -1159,18 +1170,24 @@ impl App {
         if (new - self.doc.zoom).abs() < 1e-4 {
             return;
         }
-        let a = anchor.unwrap_or(self.doc.view_min + self.doc.view_size / 2.0);
-        let rel = a - self.doc.view_min;
-        let p_ws = (rel + self.doc.scroll_off) / self.doc.zoom;
-        let off = (p_ws * new - rel).max(Vec2::ZERO);
+        let anchor = anchor.unwrap_or(self.doc.view_min + self.doc.view_size / 2.0);
+        self.zoom_about(new, anchor, anchor);
+    }
+
+    fn zoom_about(&mut self, new: f32, from: Pos2, to: Pos2) {
+        let new = new.clamp(0.25, 4.0);
+        let point = (from - self.doc.view_min + self.doc.scroll_off) / self.doc.zoom;
         self.doc.zoom = new;
-        self.doc.scroll_req = Some(off);
+        self.doc.scroll_req = Some((point * new - (to - self.doc.view_min)).max(Vec2::ZERO));
     }
 
     /// Ctrl+wheel, touchpad pinch, Ctrl+Plus / Ctrl+Minus / Ctrl+0 zoom the whole worksheet.
     fn zoom_input(&mut self, ctx: &Context) {
         const LEVELS: [f32; 9] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0];
-        let (ctrl, raw, pinch, pos) = ctx.input(|i| (i.modifiers.command, i.raw_scroll_delta.y, i.zoom_delta(), i.pointer.hover_pos()));
+        let (ctrl, raw, pinch, pos) = ctx.input(|i| {
+            let pinch = if cfg!(any(target_os = "android", test)) && i.multi_touch().is_some() { 1.0 } else { i.zoom_delta() };
+            (i.modifiers.command, i.raw_scroll_delta.y, pinch, i.pointer.hover_pos())
+        });
         if self.dialogs_open() {
             return;
         }
@@ -2341,12 +2358,7 @@ impl App {
     // -----------------------------------------------------------------
     // Worksheet canvas
 
-    fn text_galley(&self, ctx: &Context, text: &str, style: &xmath_core::worksheet::TextStyle, wrap: f32) -> std::sync::Arc<egui::Galley> {
-        crate::print::text_galley(ctx, text, style, wrap, self.doc.zoom, self.has_bold_font)
-    }
-
-    fn math_layout(&self, ctx: &Context, id: u64, source: &str) -> (Lay, Option<String>) {
-        let fs = px(BASE_PT, self.doc.zoom);
+    fn math_layout(&self, ctx: &Context, id: u64, source: &str, fs: f32) -> (Lay, Option<String>) {
         let out = self.doc.outputs.get(&id);
         ctx.fonts(|f| {
             let mut ts = Ts::new(f);
@@ -2383,8 +2395,32 @@ impl App {
         if self.doc.ed.as_ref().is_some_and(|e| Some(e.region) != self.doc.editing) {
             self.doc.ed = None;
         }
+        let previous_origin = self.doc.view_min - self.doc.scroll_off;
+        let previous_zoom = self.doc.zoom;
+        #[cfg(any(target_os = "android", test))]
+        let pinching = self.touch.pinch.is_some_and(|pinch| {
+            let view = Rect::from_min_size(self.doc.view_min, self.doc.view_size);
+            if !self.dialogs_open() && (view.contains(pinch.from) || view.contains(pinch.to)) {
+                self.touch.pinch = None;
+                self.zoom_about(previous_zoom * pinch.scale, pinch.from, pinch.to);
+                true
+            } else {
+                false
+            }
+        });
+        #[cfg(not(any(target_os = "android", test)))]
+        let pinching = false;
         let z = self.doc.zoom;
         let fs = px(BASE_PT, z);
+        let layout_zoom = if pinching {
+            *self.doc.pinch_layout_zoom.get_or_insert(previous_zoom)
+        } else {
+            self.doc.pinch_layout_zoom = None;
+            z
+        };
+        let layout_fs = px(BASE_PT, layout_zoom);
+        let draw_scale = z / layout_zoom;
+        let touch_sheet = touch_sheet(&ctx);
         // the canvas reaches just past the last region in both directions
         let bottom = self.doc
             .ws
@@ -2402,19 +2438,41 @@ impl App {
         classic_scrollbars(ui);
         // The same sheet can move between the central pane, a split and a floating window.
         let offset = self.doc.scroll_req.take().unwrap_or(self.doc.scroll_off);
+        let sheet_size = Vec2::new(right + 120.0, bottom + 240.0) * z;
+        let offset = if pinching {
+            // Stop any fling or animated reveal before applying the pinch offset.
+            egui::scroll_area::State::default().store(&ctx, ui.make_persistent_id(Id::new("sheet")));
+            offset.min((sheet_size - self.doc.view_size).max(Vec2::ZERO))
+        } else {
+            offset
+        };
         let area = ScrollArea::both().id_salt("sheet").auto_shrink([false, false])
             .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible).scroll_offset(offset);
         let inner_style = orig_style.clone();
         let out = area.show(ui, |ui| {
             ui.set_style(inner_style);
             let avail = ui.available_size();
-            let size = Vec2::new(((right + 120.0) * z).max(avail.x), ((bottom + 240.0) * z).max(avail.y));
+            let size = sheet_size.max(avail);
             let visible = ui.clip_rect();
-            let background = if cfg!(target_os = "android") { Sense::click() } else { Sense::click_and_drag() };
+            let background = if touch_sheet { Sense::click() } else { Sense::click_and_drag() };
             let (rect, bg) = ui.allocate_exact_size(size, background);
             let origin = rect.min;
             let to_screen = |p: Pos2| origin + p.to_vec2() * z;
             let to_ws = |s: Pos2| ((s - origin) / z).to_pos2();
+            // Measure the drag in sheet coordinates, including the pinch's pan and scale.
+            let pinch_drag_delta = if pinching {
+                ctx.input(|i| {
+                    i.pointer.interact_pos().map(|pos| {
+                        if i.pointer.any_pressed() {
+                            return Vec2::ZERO;
+                        }
+                        let previous = ((pos - i.pointer.delta() - previous_origin) / previous_zoom).to_pos2();
+                        to_ws(pos) - previous
+                    })
+                })
+            } else {
+                None
+            };
             let painter = ui.painter_at(rect);
 
             // right margin and page breaks
@@ -2444,6 +2502,7 @@ impl App {
                 let pos = to_screen(Pos2::new(region.x, region.y));
                 let editing = self.doc.editing == Some(id);
                 let selected = self.doc.selection.contains(&id);
+                let sense = if touch_sheet && !selected { Sense::click() } else { Sense::click_and_drag() };
                 // regions far outside the viewport are not laid out again (large worksheets)
                 if !editing && !selected && self.dump_rects.is_none() {
                     if let Some(r) = self.doc.rects.get(&id).copied() {
@@ -2486,7 +2545,7 @@ impl App {
                             let tw = ctx.fonts(|f| f.layout_no_wrap(src.clone(), font.clone(), Color32::BLACK).size().x);
                             let w = (tw + fs * 2.0).max(fs * 6.0);
                             // the box replaces the formula: its text baseline is the baseline of the region
-                            let asc = self.math_layout(&ctx, id, source).0.asc;
+                            let asc = self.math_layout(&ctx, id, source, fs).0.asc;
                             let te_top = pos.y + 3.0 + asc - fs * 0.95 - 1.0;
                             let te_rect = Rect::from_min_size(Pos2::new(pos.x, te_top.max(pos.y - fs)), Vec2::new(w, fs * 1.6));
                             painter.rect_filled(te_rect, 0.0, Color32::WHITE);
@@ -2512,7 +2571,7 @@ impl App {
                                 }
                                 self.changed();
                             }
-                            let (lay, err) = self.math_layout(&ctx, id, &src);
+                            let (lay, err) = self.math_layout(&ctx, id, &src, fs);
                             error = err;
                             let prev_origin = te_rect.left_bottom() + Vec2::new(2.0, 4.0 + lay.asc);
                             let prev_rect = Rect::from_min_size(te_rect.left_bottom() + Vec2::new(0.0, 2.0), Vec2::new(lay.w + 4.0, lay.h() + 4.0));
@@ -2532,13 +2591,16 @@ impl App {
                                 continue;
                             }
                         } else {
-                            let (lay, err) = self.math_layout(&ctx, id, source);
+                            let (lay, err) = self.math_layout(&ctx, id, source, layout_fs);
                             error = err;
-                            anchor_updates.push((id, [0.0, (lay.asc + 3.0) / z]));
-                            region_rect = Rect::from_min_size(pos, Vec2::new(lay.w + 4.0, lay.h() + 6.0));
-                            let origin = pos + Vec2::new(2.0, 3.0 + lay.asc);
-                            lay.paint(&painter, origin);
-                            self.doc.hits.insert(id, lay.boxes.iter().map(|(n, r)| (*n, r.translate(origin.to_vec2()))).collect());
+                            if !pinching {
+                                anchor_updates.push((id, [0.0, (lay.asc + 3.0) / z]));
+                            }
+                            region_rect = Rect::from_min_size(pos, Vec2::new(lay.w + 4.0, lay.h() + 6.0) * draw_scale);
+                            let origin = pos + Vec2::new(2.0, 3.0 + lay.asc) * draw_scale;
+                            lay.paint_scaled(&painter, origin, draw_scale);
+                            let to_screen = egui::emath::TSTransform::new(origin.to_vec2(), draw_scale);
+                            self.doc.hits.insert(id, lay.boxes.iter().map(|(n, r)| (*n, to_screen * *r)).collect());
                         }
                     }
                     RegionKind::Text { text, style, width, lock_width } => {
@@ -2546,7 +2608,7 @@ impl App {
                         if editing {
                             let mut t = text.clone();
                             let family = crate::print::text_family(style, self.has_bold_font);
-                            let g = self.text_galley(&ctx, &t, style, wrap);
+                            let g = crate::print::text_galley(&ctx, &t, style, wrap, z, self.has_bold_font);
                             let r = Rect::from_min_size(pos, Vec2::new(wrap.min(g.size().x + fs * 4.0).max(fs * 8.0), g.size().y + 6.0));
                             let resp = ui.put(
                                 r,
@@ -2574,12 +2636,13 @@ impl App {
                                 self.finish_edit(true);
                             }
                         } else {
-                            let g = self.text_galley(&ctx, text, style, wrap);
-                            region_rect = Rect::from_min_size(pos, g.size() + Vec2::splat(4.0));
-                            let at = pos + Vec2::splat(2.0);
-                            painter.galley(at, g.clone(), Color32::BLACK);
+                            let layout_wrap = if *lock_width { crate::print::locked_wrap(*width, layout_zoom) } else { wrap / draw_scale };
+                            let g = crate::print::text_galley(&ctx, text, style, layout_wrap, layout_zoom, self.has_bold_font);
+                            region_rect = Rect::from_min_size(pos, (g.size() + Vec2::splat(4.0)) * draw_scale);
+                            let at = pos + Vec2::splat(2.0) * draw_scale;
+                            paint_scaled_galley(&painter, at, g.clone(), Color32::BLACK, draw_scale);
                             if style.bold && !self.has_bold_font && style.font == xmath_core::worksheet::TextFont::Sans {
-                                painter.galley(at + Vec2::X * 0.7, g, Color32::BLACK);
+                                paint_scaled_galley(&painter, at + Vec2::X * 0.7 * draw_scale, g, Color32::BLACK, draw_scale);
                             }
                         }
                     }
@@ -2650,15 +2713,15 @@ impl App {
                         }
                         region_rect = region_rect.union(Rect::from_min_max(pos, Pos2::new(plot_rect.right() + m.right, bottom)));
                         // move / select
-                        let resp = ui.interact(region_rect, self.region_ui_id(("region", id)), Sense::click_and_drag());
-                        self.region_interaction(&ctx, id, &resp, z);
+                        let resp = ui.interact(region_rect, self.region_ui_id(("region", id)), sense);
+                        self.region_interaction(&ctx, id, &resp, z, pinch_drag_delta);
                         clicked_region |= resp.clicked();
-                        if resp.double_clicked() {
+                        if !touch_sheet && resp.double_clicked() {
                             // a double click only opens the format panel (the first click started editing)
                             self.finish_edit(false);
                             self.open_plot_dialog(id);
                         }
-                        if selected || editing {
+                        if editing || (selected && !touch_sheet) {
                             self.axis_limit_boxes(ui, id, plot_rect, fs, &axes, [*x_min, *x_max, *y_min, *y_max], &m, polar, fmt.y2_axis.then(|| [fmt.y2_min, fmt.y2_max]), empty);
                         } else if empty {
                             // the four optional limit placeholders of an empty plot
@@ -2767,10 +2830,10 @@ impl App {
                             let (txt, col) = if expr.is_empty() { ("■".to_string(), Color32::BLACK) } else { (expr.clone(), Color32::BLACK) };
                             painter.text(Pos2::new(plot_rect.left() + 4.0, label_row), Align2::LEFT_TOP, txt, FontId::proportional(fs), col);
                         }
-                        let resp = ui.interact(region_rect, self.region_ui_id(("region", id)), Sense::click_and_drag());
-                        self.region_interaction(&ctx, id, &resp, z);
+                        let resp = ui.interact(region_rect, self.region_ui_id(("region", id)), sense);
+                        self.region_interaction(&ctx, id, &resp, z, pinch_drag_delta);
                         clicked_region |= resp.clicked();
-                        if resp.double_clicked() {
+                        if !touch_sheet && resp.double_clicked() {
                             self.finish_edit(false);
                             self.open_plot3d_dialog(id);
                         }
@@ -2798,7 +2861,7 @@ impl App {
                         }
                         if *k3 != Plot3dKind::Contour {
                             // rotate with the left mouse button (selected plot), zoom with the plain wheel
-                            let live = selected || editing;
+                            let live = editing || (selected && !touch_sheet);
                             let rot = ui.interact(plot_rect, self.region_ui_id(("plot3d-rot", id)), if live { Sense::drag() } else { Sense::hover() });
                             if live && (rot.hovered() || rot.dragged()) {
                                 ctx.set_cursor_icon(CursorIcon::Grab);
@@ -2847,10 +2910,10 @@ impl App {
                 }
 
                 if !matches!(region.kind, RegionKind::Plot { .. } | RegionKind::Plot3d { .. }) && !editing {
-                    let resp = ui.interact(region_rect, self.region_ui_id(("region", id)), Sense::click_and_drag());
-                    self.region_interaction(&ctx, id, &resp, z);
+                    let resp = ui.interact(region_rect, self.region_ui_id(("region", id)), sense);
+                    self.region_interaction(&ctx, id, &resp, z, pinch_drag_delta);
                     clicked_region |= resp.clicked();
-                    if resp.double_clicked() {
+                    if resp.double_clicked() && (!touch_sheet || selected) {
                         if let RegionKind::Reference { href } = &region.kind {
                             self.open_reference_dialog(Some(id), href);
                         }
@@ -2892,7 +2955,7 @@ impl App {
             } else {
                 self.doc.last_edit_rect = None;
             }
-            if let Some(r) = self.doc.reveal.take() {
+            if let Some(r) = self.doc.reveal.take().filter(|_| !pinching) {
                 let sr = Rect::from_min_max(to_screen(r.min), to_screen(r.max)).expand(24.0);
                 ui.scroll_to_rect(sr, None);
             }
@@ -2998,9 +3061,12 @@ impl App {
         rects.insert(id, Rect::from_min_max(to_ws(r.min), to_ws(r.max)));
     }
 
-    fn region_interaction(&mut self, ctx: &Context, id: u64, resp: &egui::Response, z: f32) {
+    fn region_interaction(&mut self, ctx: &Context, id: u64, resp: &egui::Response, z: f32, pinch_drag_delta: Option<Vec2>) {
         let ctrl = ctx.input(|i| i.modifiers.command);
-        if resp.drag_started() {
+        let touch = touch_sheet(ctx);
+        let was_selected = self.doc.selection.contains(&id);
+        let can_move = !touch || was_selected;
+        if can_move && resp.drag_started() {
             if !self.doc.selection.contains(&id) {
                 self.doc.selection = vec![id];
             }
@@ -3009,17 +3075,23 @@ impl App {
             }
             self.checkpoint();
         }
-        if resp.dragged() {
+        if can_move && resp.dragged() {
             ctx.set_cursor_icon(CursorIcon::Grabbing);
-            let d = resp.drag_delta() / z;
-            let sel = self.doc.selection.clone();
-            for r in self.doc.ws.regions.iter_mut().filter(|r| sel.contains(&r.id)) {
-                r.x = (r.x + d.x).max(0.0);
-                r.y = (r.y + d.y).max(0.0);
+            let d = pinch_drag_delta.unwrap_or_else(|| resp.drag_delta() / z);
+            if d != Vec2::ZERO {
+                let sel = self.doc.selection.clone();
+                for r in self.doc.ws.regions.iter_mut().filter(|r| sel.contains(&r.id)) {
+                    r.x = (r.x + d.x).max(0.0);
+                    r.y = (r.y + d.y).max(0.0);
+                }
+                self.changed();
             }
-            self.changed();
         }
-        if resp.drag_stopped() {
+        #[cfg(any(target_os = "android", test))]
+        let cancelled = self.touch.cancelled_pointer;
+        #[cfg(not(any(target_os = "android", test)))]
+        let cancelled = false;
+        if can_move && resp.drag_stopped() && !cancelled {
             let sel = self.doc.selection.clone();
             for r in self.doc.ws.regions.iter_mut().filter(|r| sel.contains(&r.id)) {
                 let p = snap(Pos2::new(r.x, r.y));
@@ -3036,7 +3108,16 @@ impl App {
                     self.doc.selection.push(id);
                 }
             } else {
+                if touch {
+                    self.finish_edit(false);
+                    ctx.request_repaint();
+                }
                 self.doc.selection = vec![id];
+                if touch && !(was_selected && resp.double_clicked() && self.region(id).is_some_and(|r| {
+                    matches!(r.kind, RegionKind::Math { .. } | RegionKind::Text { .. } | RegionKind::Plot { .. } | RegionKind::Plot3d { .. })
+                })) {
+                    return;
+                }
                 self.begin_edit(id, true);
                 // matrix cells are edited in place, cell by cell; the rest structurally
                 self.doc.edit_click = resp.interact_pointer_pos();
@@ -3654,6 +3735,11 @@ const HELP: &str = "\
   g — ускорение свободного падения, как в Mathcad.";
 
 impl eframe::App for App {
+    #[cfg(any(target_os = "android", test))]
+    fn raw_input_hook(&mut self, ctx: &Context, input: &mut egui::RawInput) {
+        self.touch.prepare(ctx, input);
+    }
+
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         storage.set_string("xmath-ui", self.ui_state());
     }

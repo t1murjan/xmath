@@ -223,20 +223,21 @@ fn paint_text(t: &TextShape, canvas: &mut dyn Canvas, o: Vec2, has_bold: bool) {
     let (sin, cos) = t.angle.sin_cos();
     // glyph positions are laid out horizontally from `org` and rotated about it
     let place = |gx: f32, gy: f32| -> (f32, f32) { (org.x + gx * cos - gy * sin, org.y + gx * sin + gy * cos) };
+    let mut formats = job.sections.iter().flat_map(|section| {
+        job.text[section.byte_range.clone()].chars()
+            .filter(|&ch| !job.break_on_newline || ch != '\n')
+            .map(|_| &section.format)
+    }).peekable();
     for row in &t.galley.rows {
+        let place = |x, y| place(row.pos.x + x, row.pos.y + y);
         // consecutive glyphs of one section form a run
         let mut i = 0;
         while i < row.glyphs.len() {
-            let sec = row.glyphs[i].section_index;
-            let mut j = i;
-            while j < row.glyphs.len() && row.glyphs[j].section_index == sec {
+            let Some(f) = formats.next() else { break };
+            let mut j = i + 1;
+            while j < row.glyphs.len() && formats.next_if(|next| std::ptr::eq(*next, f)).is_some() {
                 j += 1;
             }
-            let Some(section) = job.sections.get(sec as usize) else {
-                i = j;
-                continue;
-            };
-            let f = &section.format;
             let color = t.override_text_color.unwrap_or(if f.color == Color32::PLACEHOLDER { t.fallback_color } else { f.color });
             let glyphs: Vec<GlyphPos> = row.glyphs[i..j]
                 .iter()
