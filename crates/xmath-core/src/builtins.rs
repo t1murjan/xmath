@@ -11,6 +11,8 @@ pub const NAMES: &[&str] = &[
     "asinh", "acosh", "atanh", "exp", "ln", "log", "sqrt", "nthroot", "abs", "arg", "Re", "Im", "conj", "xor", "floor",
     "ceil", "round", "trunc", "mod", "sign", "signum", "max", "min", "mean", "median", "stdev", "Stdev", "var",
     "Var", "sum", "prod", "length", "rows", "cols", "last", "identity", "transpose", "det", "tr", "lsolve",
+    "PolyLookup", "Floor", "Ceil", "Trunc", "Round", "mag", "phase", "phasecor", "makeri", "DMS", "Seed",
+    "setwindow", "SIUnitsOf", "stderr", "Spear", "Rank",
     "augment", "stack", "submatrix", "cross", "norme", "sort", "reverse", "linterp", "polyroots", "factorial",
     "gamma", "Γ", "erf", "erfc", "dnorm", "pnorm", "UnitsOf", "concat", "num2str", "strlen", "if", "integrate",
     "diff", "root", "matrix", "eigenvals", "eigenvecs", "eigenvec", "rank", "cholesky", "lu", "qr", "svd", "svds",
@@ -236,6 +238,9 @@ pub fn format_plain(n: Num) -> String {
 
 /// Calls built-in `name`. Returns `None` if there is no such built-in.
 pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
+    if let Some(r) = crate::extension_pack::call(name, args) {
+        return Some(r);
+    }
     let one = |f: &dyn Fn(&Value) -> EResult<Value>| -> EResult<Value> {
         arity(name, args, 1)?;
         f(&args[0])
@@ -317,6 +322,19 @@ pub fn call(name: &str, args: &[Value], origin: i64) -> Option<EResult<Value>> {
             Ok(Value::real(y.v.re.atan2(x.v.re)))
         })(),
         "floor" => one(&|v| real_keep_dim(v, f64::floor)),
+        // Mathcad's uppercase versions take a threshold: the number rounded to its multiple
+        "Floor" | "Ceil" | "Trunc" | "Round" => {
+            if args.len() != 2 {
+                return Some(Err(format!("{name} принимает число и порог")));
+            }
+            let f: fn(f64) -> f64 = match name {
+                "Floor" => f64::floor,
+                "Ceil" => f64::ceil,
+                "Trunc" => f64::trunc,
+                _ => f64::round,
+            };
+            crate::extension_pack::round_to(&args[0], &args[1], f)
+        }
         "ceil" => one(&|v| real_keep_dim(v, f64::ceil)),
         "trunc" => one(&|v| real_keep_dim(v, f64::trunc)),
         "round" => match args.len() {

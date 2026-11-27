@@ -42,6 +42,8 @@ pub struct ExpectedValue {
     pub dim: Dim,
     /// A string result.
     pub text: Option<String>,
+    /// Elements of a table of strings, row-major.
+    pub texts: Vec<String>,
     /// The number is expressed in the region's display unit (`<ml:unitOverride>`) rather than in
     /// SI units: `Filesize*s = kB` stores the 7.91 of "7.91 kB", not 8092 bytes.
     pub display_unit: bool,
@@ -1536,8 +1538,8 @@ fn parse_result(n: Node) -> Option<ExpectedValue> {
     }
     let (factor, offset, dim, unknown) = unit.unwrap_or((1.0, 0.0, Dim::NONE, None));
     let scale = |(re, im): (f64, f64)| ((re + offset) * factor, im * factor);
-    let (rows, cols, data, text) = match lname(core) {
-        "str" => (1, 1, Vec::new(), Some(core.text().unwrap_or("").to_string())),
+    let (rows, cols, data, text, texts) = match lname(core) {
+        "str" => (1, 1, Vec::new(), Some(core.text().unwrap_or("").to_string()), Vec::new()),
         "matrix" => {
             let rows: usize = core.attribute("rows")?.trim().parse().ok()?;
             let cols: usize = core.attribute("cols")?.trim().parse().ok()?;
@@ -1545,20 +1547,36 @@ fn parse_result(n: Node) -> Option<ExpectedValue> {
             if rows * cols != ks.len() || rows == 0 || cols == 0 {
                 return None;
             }
+            // a table of strings: `PolyLookup(6) = [name; dual; Wythoff]`
+            if ks.iter().all(|k| lname(*k) == "str") {
+                let cells: Vec<String> = ks.iter().map(|k| k.text().unwrap_or("").to_string()).collect();
+                // column-major in the file
+                let texts = (0..rows)
+                    .flat_map(|r| (0..cols).map(move |c| (r, c)))
+                    .map(|(r, c)| cells[c * rows + r].clone())
+                    .collect();
+                return Some(ExpectedValue {
+                    rows,
+                    cols,
+                    data: Vec::new(),
+                    dim,
+                    text: None,
+                    texts,
+                    display_unit: false,
+                    unknown_unit: unknown,
+                });
+            }
             let mut items = Vec::with_capacity(ks.len());
             for k in ks {
-                if lname(k) == "str" {
-                    return Some(ExpectedValue { rows, cols, data: Vec::new(), dim, text: Some(String::new()), display_unit: false, unknown_unit: unknown });
-                }
                 items.push(scale(parse_scalar(k)?));
             }
             // column-major in the file
             let data = (0..rows).flat_map(|r| (0..cols).map(move |c| (r, c))).map(|(r, c)| items[c * rows + r]).collect();
-            (rows, cols, data, None)
+            (rows, cols, data, None, Vec::new())
         }
-        _ => (1, 1, vec![scale(parse_scalar(core)?)], None),
+        _ => (1, 1, vec![scale(parse_scalar(core)?)], None, Vec::new()),
     };
-    Some(ExpectedValue { rows, cols, data, dim, text, display_unit: false, unknown_unit: unknown })
+    Some(ExpectedValue { rows, cols, data, dim, text, texts, display_unit: false, unknown_unit: unknown })
 }
 
 /// SI factor, zero-point offset and dimension of a `unitMonomial`.

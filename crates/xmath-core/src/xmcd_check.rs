@@ -98,7 +98,7 @@ pub fn check_import(r: &ImportResult) -> CheckReport {
 /// saved, because the draw is not reproduced.
 const RANDOM_FNS: &[&str] = &[
     "rnd", "runif", "rnorm", "rexp", "rpois", "rbinom", "rgamma", "rchisq", "rbeta", "rt", "rlnorm", "rweibull",
-    "rcauchy", "rlogis", "rgeom", "whiten", "rnd", "noise",
+    "rcauchy", "rlogis", "rgeom", "whiten", "rnd", "noise", "Seed",
 ];
 
 /// Regions whose value comes from a random generator, directly or through a variable defined
@@ -112,7 +112,7 @@ fn random_dependent_regions(ws: &Worksheet) -> HashSet<u64> {
         let Ok(stmt) = crate::parse_statement(source) else { continue };
         let mut names = Names::default();
         names.stmt(&stmt);
-        let uses_random = names.calls.iter().any(|n| RANDOM_FNS.contains(&n.as_str()))
+        let uses_random = names.calls.iter().any(|n| RANDOM_FNS.contains(&n.as_str()) || tainted.contains(n))
             || names.vars.iter().any(|n| tainted.contains(n));
         if uses_random {
             regions.insert(region.id);
@@ -354,6 +354,22 @@ fn show(z: (f64, f64)) -> String {
 fn compare(ours: &Snapshot, exp: &ExpectedValue, tol: f64, solver: bool) -> Verdict {
     if let Some(u) = &exp.unknown_unit {
         return Verdict::Skipped(format!("неизвестная единица «{u}»"));
+    }
+    // a table of strings
+    if !exp.texts.is_empty() {
+        if ours.texts.is_empty() {
+            return Verdict::Mismatch("у Mathcad таблица строк".into());
+        }
+        if (ours.rows, ours.cols) != (exp.rows, exp.cols) {
+            return Verdict::Mismatch(format!("размер {}×{}, у Mathcad {}×{}", ours.rows, ours.cols, exp.rows, exp.cols));
+        }
+        for (k, (a, b)) in ours.texts.iter().zip(&exp.texts).enumerate() {
+            let norm = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+            if norm(a) != norm(b) {
+                return Verdict::Mismatch(format!("строка «{a}», у Mathcad «{b}» [элемент {}]", k + 1));
+            }
+        }
+        return Verdict::Ok;
     }
     if let Some(t) = &exp.text {
         return match &ours.text {

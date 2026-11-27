@@ -11,6 +11,7 @@ pub mod color;
 pub mod data_analysis;
 pub mod component;
 pub mod eval;
+pub mod extension_pack;
 pub mod fft;
 mod fitting;
 pub mod fileio;

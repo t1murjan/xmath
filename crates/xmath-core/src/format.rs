@@ -341,6 +341,12 @@ pub enum ResultView {
         units: UnitText,
     },
     Text(String),
+    /// A table of strings (`PolyLookup(6)`).
+    TextMatrix {
+        rows: usize,
+        cols: usize,
+        cells: Vec<String>,
+    },
     Function(String),
 }
 
@@ -404,6 +410,11 @@ impl ResultView {
                 Ok(ResultView::Matrix { rows: m.rows, cols: m.cols, cells, cell_units, units })
             }
             Value::Str(s) => Ok(ResultView::Text(s.to_string())),
+            Value::StrMat(t) => Ok(ResultView::TextMatrix {
+                rows: t.rows,
+                cols: t.cols,
+                cells: t.data.iter().map(|s| s.to_string()).collect(),
+            }),
             Value::Func(f) => Ok(ResultView::Function(format!("{}({})", f.name, f.params.join(", ")))),
         }
     }
@@ -444,6 +455,21 @@ impl fmt::Display for ResultView {
                 units(f, u)
             }
             ResultView::Text(s) => write!(f, "\"{s}\""),
+            ResultView::TextMatrix { rows, cols, cells } => {
+                write!(f, "[")?;
+                for r in 0..*rows {
+                    if r > 0 {
+                        write!(f, "; ")?;
+                    }
+                    for c in 0..*cols {
+                        if c > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "\"{}\"", cells[r * cols + c])?;
+                    }
+                }
+                write!(f, "]")
+            }
             ResultView::Function(s) => write!(f, "{s}"),
         }
     }

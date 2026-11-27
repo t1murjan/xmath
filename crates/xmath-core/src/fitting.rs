@@ -671,6 +671,11 @@ thread_local! {
     static RNG: Cell<u64> = const { Cell::new(0x9E37_79B9_7F4A_7C15) };
 }
 
+/// `Seed(n)`: restarts the generator from a given seed (Mathcad's `Seed`).
+pub fn set_seed(seed: u64) {
+    RNG.with(|s| s.set(seed));
+}
+
 fn next_u64() -> u64 {
     RNG.with(|s| {
         // splitmix64

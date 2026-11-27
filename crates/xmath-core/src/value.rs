@@ -169,8 +169,38 @@ pub enum Value {
     Num(Num),
     Matrix(Matrix),
     Str(Rc<str>),
+    /// A table of strings, e.g. `PolyLookup(6)` = `["tetrahedron"; "tetrahedron"; "3|2 3"]`.
+    StrMat(StrMatrix),
     Range(Range),
     Func(Rc<UserFunc>),
+}
+
+/// A matrix whose elements are text (Mathcad's extension pack returns such tables).
+#[derive(Clone, Debug, PartialEq)]
+pub struct StrMatrix {
+    pub rows: usize,
+    pub cols: usize,
+    /// Row-major.
+    pub data: Vec<Rc<str>>,
+}
+
+impl StrMatrix {
+    pub fn new(rows: usize, cols: usize, data: Vec<Rc<str>>) -> StrMatrix {
+        debug_assert_eq!(rows * cols, data.len());
+        StrMatrix { rows, cols, data }
+    }
+
+    pub fn column(data: Vec<Rc<str>>) -> StrMatrix {
+        StrMatrix { rows: data.len(), cols: 1, data }
+    }
+
+    pub fn get(&self, r: usize, c: usize) -> &Rc<str> {
+        &self.data[r * self.cols + c]
+    }
+
+    pub fn is_vector(&self) -> bool {
+        self.cols == 1 || self.rows == 1
+    }
 }
 
 impl Value {
@@ -187,6 +217,7 @@ impl Value {
             Value::Num(_) => "скаляр",
             Value::Matrix(_) => "матрица",
             Value::Str(_) => "строка",
+            Value::StrMat(_) => "таблица строк",
             Value::Range(_) => "диапазон",
             Value::Func(_) => "функция",
         }

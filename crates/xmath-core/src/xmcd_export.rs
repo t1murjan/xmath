@@ -1192,14 +1192,29 @@ fn result_xml(s: &Snapshot, d: usize, scale: Option<f64>) -> Option<String> {
     if s.data.iter().any(|n| n.dim != dim) {
         return None;
     }
-    let united = !dim.is_none() && s.text.is_none();
+    let united = !dim.is_none() && s.text.is_none() && s.texts.is_empty();
     let mut dd = d + 1;
     if united {
         ind(&mut o, dd);
         o.push_str("<unitedValue>\n");
         dd += 1;
     }
-    if let Some(t) = &s.text {
+    if !s.texts.is_empty() {
+        // a table of strings: Mathcad stores the cells by columns
+        if s.texts.len() != s.rows * s.cols || s.texts.is_empty() {
+            return None;
+        }
+        ind(&mut o, dd);
+        let _ = writeln!(o, "<ml:matrix rows=\"{}\" cols=\"{}\">", s.rows, s.cols);
+        for c in 0..s.cols {
+            for r in 0..s.rows {
+                ind(&mut o, dd + 1);
+                let _ = writeln!(o, "<ml:str>{}</ml:str>", esc(&s.texts[r * s.cols + c]));
+            }
+        }
+        ind(&mut o, dd);
+        o.push_str("</ml:matrix>\n");
+    } else if let Some(t) = &s.text {
         ind(&mut o, dd);
         let _ = writeln!(o, "<ml:str>{}</ml:str>", esc(t));
     } else if s.rows == 1 && s.cols == 1 && s.data.len() == 1 {

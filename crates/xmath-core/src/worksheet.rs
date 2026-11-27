@@ -660,18 +660,31 @@ pub struct Snapshot {
     pub data: Vec<Num>,
     /// Set for string values.
     pub text: Option<String>,
+    /// Elements of a table of strings, row-major.
+    pub texts: Vec<String>,
 }
 
 impl Snapshot {
     fn of(v: &Value) -> Option<Snapshot> {
         match v {
-            Value::Num(n) => Some(Snapshot { rows: 1, cols: 1, data: vec![*n], text: None }),
-            Value::Matrix(m) => Some(Snapshot { rows: m.rows, cols: m.cols, data: m.data.clone(), text: None }),
+            Value::Num(n) => Some(Snapshot { rows: 1, cols: 1, data: vec![*n], text: None, texts: Vec::new() }),
+            Value::Matrix(m) => {
+                Some(Snapshot { rows: m.rows, cols: m.cols, data: m.data.clone(), text: None, texts: Vec::new() })
+            }
             Value::Range(r) => {
                 let d: Vec<Num> = r.values().collect();
-                Some(Snapshot { rows: d.len(), cols: 1, data: d, text: None })
+                Some(Snapshot { rows: d.len(), cols: 1, data: d, text: None, texts: Vec::new() })
             }
-            Value::Str(s) => Some(Snapshot { rows: 1, cols: 1, data: Vec::new(), text: Some(s.to_string()) }),
+            Value::Str(s) => {
+                Some(Snapshot { rows: 1, cols: 1, data: Vec::new(), text: Some(s.to_string()), texts: Vec::new() })
+            }
+            Value::StrMat(t) => Some(Snapshot {
+                rows: t.rows,
+                cols: t.cols,
+                data: Vec::new(),
+                text: None,
+                texts: t.data.iter().map(|s| s.to_string()).collect(),
+            }),
             Value::Func(_) => None,
         }
     }
