@@ -34,6 +34,32 @@ const WG: [f64; 4] = [
 fn gk15(f: &dyn Fn(f64) -> EResult<C64>, a: f64, b: f64) -> EResult<(C64, f64)> {
     let c = 0.5 * (a + b);
     let h = 0.5 * (b - a);
+    // An integrable singularity at an endpoint (`1/sqrt(1 - τ²)` at τ = 1) makes a node that
+    // rounded onto the endpoint infinite: step such a node inside by a few ulps and use that.
+    let at = |x: f64| -> EResult<C64> {
+        let ok = |v: &C64| v.re.is_finite() && v.im.is_finite();
+        let mut y = x;
+        for _ in 0..64 {
+            if y <= a {
+                y = toward(y, c);
+            } else if y >= b {
+                y = toward(y, c);
+            }
+            match f(y) {
+                Ok(v) if ok(&v) => return Ok(v),
+                other if y != x || y <= a || y >= b => {
+                    let _ = other;
+                    y = toward(y, c);
+                    if y == x || y == c {
+                        break;
+                    }
+                }
+                other => return other,
+            }
+        }
+        f(y)
+    };
+    let f = &at;
     let fc = f(c)?;
     let mut k = fc * WGK[7];
     let mut g = fc * WG[3];
@@ -48,6 +74,19 @@ fn gk15(f: &dyn Fn(f64) -> EResult<C64>, a: f64, b: f64) -> EResult<(C64, f64)> 
     let k = k * h;
     let g = g * h;
     Ok((k, (k - g).norm()))
+}
+
+/// The next representable number from `x` toward `dir`.
+fn toward(x: f64, dir: f64) -> f64 {
+    if x == dir || !x.is_finite() {
+        return x;
+    }
+    let bits = x.to_bits();
+    if (dir > x) == (x > 0.0) {
+        f64::from_bits(bits + 1)
+    } else {
+        f64::from_bits(bits - 1)
+    }
 }
 
 const MAX_INTERVALS: usize = 2000;

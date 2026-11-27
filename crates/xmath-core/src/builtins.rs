@@ -14,7 +14,7 @@ pub const NAMES: &[&str] = &[
     "PolyLookup", "Floor", "Ceil", "Trunc", "Round", "mag", "phase", "phasecor", "makeri", "DMS", "Seed",
     "setwindow", "SIUnitsOf", "stderr", "Spear", "Rank",
     "dilog", "Psi", "Zeta", "Ei", "Si", "Ci", "FresnelC", "FresnelS", "hypergeom", "mhyper", "fhyper",
-    "⇒", "⇔", "∠",
+    "⇒", "⇔", "∠", "binarize", "concomp", "kendltau", "kendltau2",
     "augment", "stack", "submatrix", "cross", "norme", "sort", "reverse", "linterp", "polyroots", "factorial",
     "gamma", "Γ", "erf", "erfc", "dnorm", "pnorm", "UnitsOf", "concat", "num2str", "strlen", "if", "integrate",
     "diff", "root", "matrix", "eigenvals", "eigenvecs", "eigenvec", "rank", "cholesky", "lu", "qr", "svd", "svds",

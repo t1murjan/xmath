@@ -350,6 +350,131 @@ fn spear(args: &[Value]) -> EResult<Value> {
     Ok(Value::Matrix(Matrix::new(5, 1, data.into_iter().map(Num::real).collect())))
 }
 
+/// `kendltau(x, y)` — Kendall's tau: `[t; z; p]` (the coefficient, its standard score and
+/// the two-sided probability under no association).
+fn kendltau(args: &[Value]) -> EResult<Value> {
+    if args.len() != 2 {
+        return Err("kendltau принимает два вектора".into());
+    }
+    let x = as_vec(&args[0], "kendltau")?;
+    let y = as_vec(&args[1], "kendltau")?;
+    let n = x.len();
+    if n != y.len() || n < 3 {
+        return Err("kendltau: векторы должны быть одной длины (не меньше трёх точек)".into());
+    }
+    let (mut conc, mut disc, mut tx, mut ty) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let dx = x[i].v.re - x[j].v.re;
+            let dy = y[i].v.re - y[j].v.re;
+            if dx == 0.0 && dy == 0.0 {
+                continue;
+            } else if dx == 0.0 {
+                tx += 1.0;
+            } else if dy == 0.0 {
+                ty += 1.0;
+            } else if (dx > 0.0) == (dy > 0.0) {
+                conc += 1.0;
+            } else {
+                disc += 1.0;
+            }
+        }
+    }
+    let denom = ((conc + disc + ty) * (conc + disc + tx)).sqrt();
+    if denom == 0.0 {
+        return Err("kendltau: все пары связаны".into());
+    }
+    let tau = (conc - disc) / denom;
+    let n = n as f64;
+    let sd = (2.0 * (2.0 * n + 5.0) / (9.0 * n * (n - 1.0))).sqrt();
+    let z = tau / sd;
+    let p = libm::erfc(z.abs() / std::f64::consts::SQRT_2);
+    Ok(Value::Matrix(Matrix::column(vec![Num::real(tau), Num::real(z), Num::real(p)])))
+}
+
+/// `kendltau2(M)` — Kendall's tau-b of a contingency table: `[tau; z; p]`.
+fn kendltau2(args: &[Value]) -> EResult<Value> {
+    let m = contingency(args, "kendltau2")?;
+    let n: f64 = m.data.iter().map(|x| x.v.re).sum();
+    if n < 3.0 {
+        return Err("kendltau2: в таблице слишком мало наблюдений".into());
+    }
+    let row_tot: Vec<f64> = (0..m.rows).map(|r| (0..m.cols).map(|c| m.get(r, c).v.re).sum()).collect();
+    let col_tot: Vec<f64> = (0..m.cols).map(|c| (0..m.rows).map(|r| m.get(r, c).v.re).sum()).collect();
+    let (mut conc, mut disc) = (0.0, 0.0);
+    for i in 0..m.rows {
+        for j in 0..m.cols {
+            for k in i + 1..m.rows {
+                for l in 0..m.cols {
+                    let pairs = m.get(i, j).v.re * m.get(k, l).v.re;
+                    if l > j {
+                        conc += pairs;
+                    } else if l < j {
+                        disc += pairs;
+                    }
+                }
+            }
+        }
+    }
+    let choose2 = |x: f64| x * (x - 1.0) / 2.0;
+    let tx: f64 = row_tot.iter().map(|r| choose2(*r)).sum();
+    let ty: f64 = col_tot.iter().map(|c| choose2(*c)).sum();
+    let n0 = choose2(n);
+    let denom = ((n0 - tx) * (n0 - ty)).sqrt();
+    if denom == 0.0 {
+        return Err("kendltau2: таблица вырождена".into());
+    }
+    let tau = (conc - disc) / denom;
+    let sd = (2.0 * (2.0 * n + 5.0) / (9.0 * n * (n - 1.0))).sqrt();
+    let z = tau / sd;
+    let p = libm::erfc(z.abs() / std::f64::consts::SQRT_2);
+    Ok(Value::Matrix(Matrix::column(vec![Num::real(tau), Num::real(z), Num::real(p)])))
+}
+
+fn contingency(args: &[Value], name: &str) -> EResult<Matrix> {
+    if args.len() != 1 {
+        return Err(format!("{name} принимает таблицу сопряжённости"));
+    }
+    let m = args[0].as_matrix()?.clone();
+    if m.rows < 2 || m.cols < 2 {
+        return Err(format!("{name}: таблица должна быть хотя бы 2×2"));
+    }
+    Ok(m)
+}
+
+/// `contingtbl(M)` — the statistics of a contingency table: `[χ²; df; p; V; C]`.
+fn contin_tbl(args: &[Value]) -> EResult<Value> {
+    let m = contingency(args, "contingtbl")?;
+    let total: f64 = m.data.iter().map(|n| n.v.re).sum();
+    if total == 0.0 {
+        return Err("contingtbl: пустая таблица".into());
+    }
+    let row_tot: Vec<f64> = (0..m.rows).map(|r| (0..m.cols).map(|c| m.get(r, c).v.re).sum()).collect();
+    let col_tot: Vec<f64> = (0..m.cols).map(|c| (0..m.rows).map(|r| m.get(r, c).v.re).sum()).collect();
+    let mut chi2 = 0.0;
+    for r in 0..m.rows {
+        for c in 0..m.cols {
+            let e = row_tot[r] * col_tot[c] / total;
+            if e > 0.0 {
+                let d = m.get(r, c).v.re - e;
+                chi2 += d * d / e;
+            }
+        }
+    }
+    let df = ((m.rows - 1) * (m.cols - 1)) as f64;
+    let p = 1.0 - crate::special::chisq_cdf(chi2, df);
+    let k = (m.rows.min(m.cols) - 1) as f64;
+    let v = (chi2 / (total * k)).sqrt();
+    let c = (chi2 / (chi2 + total)).sqrt();
+    Ok(Value::Matrix(Matrix::column(vec![
+        Num::real(chi2),
+        Num::real(df),
+        Num::real(p),
+        Num::real(v),
+        Num::real(c),
+    ])))
+}
+
 /// `Rank(x)` — the ranks of the elements (1 is the smallest, ties share their average rank).
 fn rank(args: &[Value]) -> EResult<Value> {
     one_arg("Rank", args)?;
@@ -378,6 +503,70 @@ fn ranks(v: Vec<f64>) -> Vec<f64> {
     r
 }
 
+// ---------------------------------------------------------------------------
+// Image Processing pack: thresholding and connected components
+
+/// `binarize(M, t)` — an image with 1 where the pixel is at least `t` and 0 elsewhere.
+fn binarize(args: &[Value]) -> EResult<Value> {
+    if args.len() != 2 {
+        return Err("binarize(M, порог) принимает изображение и порог".into());
+    }
+    let m = args[0].as_matrix()?;
+    let t = args[1].as_num()?.v.re;
+    let data = m.data.iter().map(|n| Num::real(if n.v.re >= t { 1.0 } else { 0.0 })).collect();
+    Ok(Value::Matrix(Matrix::new(m.rows, m.cols, data)))
+}
+
+/// `concomp(M, con, fg)` — labels the connected components of the foreground value `fg`
+/// (`con` = 4 or 8 neighbours); background becomes 0 and the components are numbered from 1.
+fn concomp(args: &[Value]) -> EResult<Value> {
+    if args.len() != 3 {
+        return Err("concomp(M, связность, значение) принимает изображение, 4 или 8 и значение".into());
+    }
+    let m = args[0].as_matrix()?;
+    let con = args[1].as_int()?;
+    let fg = args[2].as_num()?.v.re;
+    if con != 4 && con != 8 {
+        return Err("concomp: связность бывает 4 или 8".into());
+    }
+    let (rows, cols) = (m.rows, m.cols);
+    let mut labels = vec![0.0f64; rows * cols];
+    let mut next = 0.0;
+    for start in 0..rows * cols {
+        if labels[start] != 0.0 || m.data[start].v.re != fg {
+            continue;
+        }
+        next += 1.0;
+        let mut stack = vec![start];
+        labels[start] = next;
+        while let Some(k) = stack.pop() {
+            let (r, c) = ((k / cols) as i64, (k % cols) as i64);
+            let mut step = |dr: i64, dc: i64| {
+                let (nr, nc) = (r + dr, c + dc);
+                if nr < 0 || nc < 0 || nr as usize >= rows || nc as usize >= cols {
+                    return;
+                }
+                let n = nr as usize * cols + nc as usize;
+                if labels[n] == 0.0 && m.data[n].v.re == fg {
+                    labels[n] = next;
+                    stack.push(n);
+                }
+            };
+            step(-1, 0);
+            step(1, 0);
+            step(0, -1);
+            step(0, 1);
+            if con == 8 {
+                step(-1, -1);
+                step(-1, 1);
+                step(1, -1);
+                step(1, 1);
+            }
+        }
+    }
+    Ok(Value::Matrix(Matrix::new(rows, cols, labels.into_iter().map(Num::real).collect())))
+}
+
 /// Functions of the extension pack, called from [`crate::builtins::call`].
 pub fn call(name: &str, args: &[Value]) -> Option<EResult<Value>> {
     match name {
@@ -388,12 +577,17 @@ pub fn call(name: &str, args: &[Value]) -> Option<EResult<Value>> {
         "makeri" => Some(makeri(args)),
         "DMS" => Some(dms(args)),
         "∠" => Some(polar(args)),
+        "binarize" => Some(binarize(args)),
+        "concomp" => Some(concomp(args)),
         "Seed" => Some(seed(args)),
         "setwindow" => Some(setwindow(args)),
         "SIUnitsOf" => Some(si_units_of(args)),
         "stderr" => Some(stderr(args)),
         "Spear" => Some(spear(args)),
         "Rank" => Some(rank(args)),
+        "kendltau" => Some(kendltau(args)),
+        "kendltau2" => Some(kendltau2(args)),
+        "contingtbl" => Some(contin_tbl(args)),
         _ => None,
     }
 }

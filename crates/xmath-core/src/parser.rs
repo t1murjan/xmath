@@ -173,11 +173,27 @@ fn lex(src: &str) -> Result<Vec<Token>, ParseError> {
                     i += 1;
                 }
             }
+            // Mathcad also reads `2F5B5` as hexadecimal (digits and A…F, no prefix)
+            let mut hex = false;
+            if (at(i) as u32) < 128 && at(i).is_ascii_hexdigit() && !at(i).is_ascii_digit() {
+                let mut j = i;
+                while (at(j) as u32) < 128 && at(j).is_ascii_hexdigit() {
+                    j += 1;
+                }
+                if j > i && !is_ident_continue(at(j)) {
+                    i = j;
+                    hex = true;
+                }
+            }
             let text: String = chars[start..i].iter().map(|c| c.1).collect();
-            let value: f64 = text.parse().map_err(|_| ParseError {
-                msg: format!("неверное число '{text}'"),
-                pos,
-            })?;
+            let value: f64 = if hex {
+                match u64::from_str_radix(&text, 16) {
+                    Ok(v) => v as f64,
+                    Err(_) => return Err(ParseError { msg: format!("неверное число '{text}'"), pos }),
+                }
+            } else {
+                text.parse().map_err(|_| ParseError { msg: format!("неверное число '{text}'"), pos })?
+            };
             if (at(i) == 'i' || at(i) == 'j') && !is_ident_continue(at(i + 1)) {
                 i += 1;
                 toks.push(Token { tok: Tok::Imag(value), pos });
