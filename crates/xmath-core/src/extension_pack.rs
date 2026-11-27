@@ -283,7 +283,9 @@ fn stderr(args: &[Value]) -> EResult<Value> {
     let b = sxy / sxx;
     let a = my - b * mx;
     let sse: f64 = x.iter().zip(&y).map(|(p, q)| (q.v.re - (a + b * p.v.re)).powi(2)).sum();
-    Ok(Value::real((sse / (n - 2) as f64).sqrt()))
+    // the standard error is a residual in Y, so it carries Y's dimension
+    let dim = y[0].dim;
+    Ok(Value::Num(Num::new(C64::new((sse / (n - 2) as f64).sqrt(), 0.0), dim)))
 }
 
 fn mean(v: impl Iterator<Item = f64>) -> f64 {

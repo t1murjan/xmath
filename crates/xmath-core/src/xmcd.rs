@@ -1586,6 +1586,15 @@ fn unit_of(um: Node) -> (f64, f64, Dim, Option<String>) {
     let mut offset = 0.0;
     let mut dim = Dim::NONE;
     let mut unknown = None;
+    // a monomial whose references all have power 0 says nothing about the unit: Mathcad writes
+    // that for `1/s` results of the Timefreq sheet, while its own display shows `1/s`
+    let degenerate = !refs.is_empty()
+        && refs.iter().all(|r| {
+            r.attribute("power-numerator").map(str::trim) == Some("0")
+        });
+    if degenerate {
+        return (1.0, 0.0, Dim::NONE, Some("единица со степенью 0".into()));
+    }
     for r in &refs {
         let name = r.attribute("unit").unwrap_or("");
         let num: i32 = r.attribute("power-numerator").and_then(|s| s.trim().parse().ok()).unwrap_or(1);
