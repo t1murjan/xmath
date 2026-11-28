@@ -349,4 +349,126 @@ mod tests {
         let grabbed = (moved - origin(&app)) / app.doc.zoom - region_pos(&app).to_vec2();
         assert!((grabbed - vec2(9.0, 8.0)).length() < 0.1);
     }
+
+    #[test]
+    fn plot_taps_open_desktop_format_dialogs_and_keep_expression_editing_accessible() {
+        use crate::app::{Action, App};
+        use eframe::App as _;
+
+        fn label(frame: &egui::FullOutput, text: &str) -> Pos2 {
+            frame
+                .shapes
+                .iter()
+                .find_map(|shape| {
+                    let egui::Shape::Text(glyphs) = &shape.shape else {
+                        return None;
+                    };
+                    let pos = glyphs.visual_bounding_rect().center();
+                    (glyphs.galley.job.text == text && shape.clip_rect.contains(pos)).then_some(pos)
+                })
+                .unwrap_or_else(|| panic!("visible label missing: {text}"))
+        }
+
+        for insert in [Action::InsertPlot, Action::InsertSurface] {
+            let ctx = Context::default();
+            let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+            let mut app = App::new(&cc, [], false);
+            app.palettes.clear();
+            app.run(&ctx, insert);
+            let id = app.doc.selection[0];
+            app.finish_edit(false);
+            app.doc.selection.clear();
+            let screen = Rect::from_min_size(Pos2::ZERO, egui::vec2(260.0, 550.0));
+            let tick = |app: &mut App, time, contact: Option<(TouchPhase, Pos2)>| {
+                let mut raw = RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(time),
+                    ..Default::default()
+                };
+                if let Some((phase, pos)) = contact {
+                    raw.events.push(Event::Touch {
+                        device_id: TouchDeviceId(0),
+                        id: TouchId(1),
+                        phase,
+                        pos,
+                        force: None,
+                    });
+                }
+                app.raw_input_hook(&ctx, &mut raw);
+                ctx.run(raw, |ctx| {
+                    app.update(ctx, &mut eframe::Frame::_new_kittest())
+                })
+            };
+            let tap = |app: &mut App, n, pos| {
+                tick(app, n, Some((Start, pos)));
+                tick(app, n + 0.02, Some((End, pos)))
+            };
+            tick(&mut app, 0.0, Some((Cancel, Pos2::ZERO)));
+            tick(&mut app, 0.03, None);
+            let plot = ctx
+                .read_response(app.region_ui_id(("region", id)))
+                .unwrap()
+                .rect;
+            let inside = plot
+                .intersect(Rect::from_min_size(app.doc.view_min, app.doc.view_size))
+                .center();
+            tap(&mut app, 0.1, inside);
+            assert_eq!(app.doc.selection, vec![id]);
+            assert!(app.doc.editing.is_none());
+            tap(&mut app, 0.2, inside);
+            let frame = tick(&mut app, 0.26, None);
+            assert!(app.doc.editing.is_none());
+            if insert == Action::InsertPlot {
+                assert_eq!(app.dlg_plot.as_ref().map(|dialog| dialog.id), Some(id));
+                for name in [
+                    "Оси X, Y",
+                    "Трассировка",
+                    "ОК",
+                    "Отмена",
+                    "Применить",
+                    "Справка",
+                ] {
+                    assert!(screen.contains(label(&frame, name)));
+                }
+            } else {
+                assert_eq!(app.dlg_plot3d.as_ref().map(|dialog| dialog.id), Some(id));
+                assert!(screen.contains(label(&frame, "Масштаб:")));
+            }
+            tap(&mut app, 0.5, label(&frame, "Отмена"));
+            tick(&mut app, 0.55, None);
+            assert!(app.dlg_plot.is_none() && app.dlg_plot3d.is_none());
+
+            let frame = tick(&mut app, 0.6, None);
+            tap(&mut app, 0.7, label(&frame, "График"));
+            let frame = tick(&mut app, 0.75, None);
+            tap(&mut app, 0.8, label(&frame, "Редактировать выражения"));
+            tick(&mut app, 0.86, None);
+            assert_eq!(app.doc.editing, Some(id));
+            assert!(ctx.read_response(app.region_ui_id(("edit", id))).is_some());
+            if insert == Action::InsertPlot {
+                assert!(ctx
+                    .read_response(app.region_ui_id(("plot-lim", id, 0)))
+                    .is_some());
+            } else {
+                tick(&mut app, 0.9, None);
+                let rotation = ctx
+                    .read_response(app.region_ui_id(("plot3d-rot", id)))
+                    .unwrap();
+                let pos = rotation.interact_rect.center();
+                let angle = |app: &App| match &app.region(id).unwrap().kind {
+                    xmath_core::RegionKind::Plot3d { view, .. } => view.azimuth,
+                    _ => unreachable!(),
+                };
+                let before = angle(&app);
+                tick(&mut app, 1.0, Some((Start, pos)));
+                tick(&mut app, 1.04, Some((Move, pos + egui::vec2(24.0, 0.0))));
+                tick(&mut app, 1.08, Some((End, pos + egui::vec2(24.0, 0.0))));
+                assert_ne!(
+                    angle(&app),
+                    before,
+                    "dragging in edit mode rotates the plot"
+                );
+            }
+        }
+    }
 }

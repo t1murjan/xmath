@@ -128,6 +128,7 @@ pub enum Action {
     ToggleAuto,
     ResultFormat,
     WorksheetOptions,
+    EditPlot,
     PlotFormat,
     SeparateRegions,
     AlignAcross,
@@ -834,12 +835,23 @@ impl App {
                 let (origin, tol, ctol) = self.builtin_values();
                 self.dlg_options = Some(OptionsDlg { tab: 0, origin, tol, ctol, units: self.doc.ws.format.unit_system });
             }
-            Action::PlotFormat => {
-                let target = self.doc.editing.into_iter().chain(self.doc.selection.iter().copied()).find(|id| matches!(self.region(*id).map(|r| &r.kind), Some(RegionKind::Plot { .. } | RegionKind::Plot3d { .. })));
-                match target.and_then(|id| self.region(id).map(|r| (id, r.kind.clone()))) {
-                    Some((id, RegionKind::Plot { .. })) => self.open_plot_dialog(id),
-                    Some((id, RegionKind::Plot3d { .. })) => self.open_plot3d_dialog(id),
-                    _ => self.doc.status = "Выберите график".into(),
+            Action::EditPlot | Action::PlotFormat => {
+                let Some(id) = self.active_plot() else {
+                    self.doc.status = "Выберите график".into();
+                    return;
+                };
+                if a == Action::EditPlot {
+                    self.begin_edit(id, true);
+                } else {
+                    if touch_sheet(ctx) {
+                        self.finish_edit(false);
+                        ctx.memory_mut(|m| m.stop_text_input());
+                    }
+                    match self.region(id).map(|r| &r.kind) {
+                        Some(RegionKind::Plot { .. }) => self.open_plot_dialog(id),
+                        Some(RegionKind::Plot3d { .. }) => self.open_plot3d_dialog(id),
+                        _ => {}
+                    }
                 }
             }
             Action::SeparateRegions => self.separate_regions(),
@@ -1147,6 +1159,12 @@ impl App {
 
     fn editing_math(&self) -> Option<u64> {
         self.doc.editing.filter(|id| matches!(self.region(*id).map(|r| &r.kind), Some(RegionKind::Math { .. })))
+    }
+
+    fn active_plot(&self) -> Option<u64> {
+        self.doc.editing.into_iter().chain(self.doc.selection.iter().copied()).find(|id| {
+            matches!(self.region(*id).map(|r| &r.kind), Some(RegionKind::Plot { .. } | RegionKind::Plot3d { .. }))
+        })
     }
 
     fn dialogs_open(&self) -> bool {
@@ -2047,7 +2065,7 @@ impl App {
                 }
             });
         };
-        if cfg!(target_os = "android") {
+        if touch_sheet(&ctx) {
             ui.spacing_mut().interact_size.y = 30.0;
             ui.horizontal_wrapped(menus);
         } else {
@@ -2058,9 +2076,10 @@ impl App {
         }
     }
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", test))]
     fn touch_toolbar(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        let has_plot = self.active_plot().is_some();
         ui.spacing_mut().interact_size.y = 36.0;
         ui.add_enabled_ui(!self.dialogs_open(), |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -2075,6 +2094,8 @@ impl App {
                                 self.insert(&ctx, if token == "√" { "sqrt(■)" } else { token });
                             }
                         }
+                    } else if has_plot && ui.button("Формат графика…").clicked() {
+                        self.pending.push(Action::PlotFormat);
                     }
                 } else {
                     for (label, action) in [
@@ -2083,7 +2104,19 @@ impl App {
                         ("График", Action::InsertPlot),
                         ("Расчёт", Action::Calculate),
                     ] {
-                        if ui.button(label).clicked() {
+                        if action == Action::InsertPlot && has_plot {
+                            ui.menu_button(label, |ui| {
+                                for (label, action) in [
+                                    ("Редактировать выражения", Action::EditPlot),
+                                    ("Формат графика…", Action::PlotFormat),
+                                    ("Новый декартов график", Action::InsertPlot),
+                                ] {
+                                    if menu_item(ui, label, "", true) {
+                                        self.pending.push(action);
+                                    }
+                                }
+                            });
+                        } else if ui.button(label).clicked() {
                             self.pending.push(action);
                         }
                     }
@@ -2716,9 +2749,11 @@ impl App {
                         let resp = ui.interact(region_rect, self.region_ui_id(("region", id)), sense);
                         self.region_interaction(&ctx, id, &resp, z, pinch_drag_delta);
                         clicked_region |= resp.clicked();
-                        if !touch_sheet && resp.double_clicked() {
-                            // a double click only opens the format panel (the first click started editing)
+                        if resp.double_clicked() && (!touch_sheet || selected) {
                             self.finish_edit(false);
+                            if touch_sheet {
+                                ctx.memory_mut(|m| m.stop_text_input());
+                            }
                             self.open_plot_dialog(id);
                         }
                         if editing || (selected && !touch_sheet) {
@@ -2833,8 +2868,11 @@ impl App {
                         let resp = ui.interact(region_rect, self.region_ui_id(("region", id)), sense);
                         self.region_interaction(&ctx, id, &resp, z, pinch_drag_delta);
                         clicked_region |= resp.clicked();
-                        if !touch_sheet && resp.double_clicked() {
+                        if resp.double_clicked() && (!touch_sheet || selected) {
                             self.finish_edit(false);
+                            if touch_sheet {
+                                ctx.memory_mut(|m| m.stop_text_input());
+                            }
                             self.open_plot3d_dialog(id);
                         }
                         if editing {
@@ -3114,7 +3152,7 @@ impl App {
                 }
                 self.doc.selection = vec![id];
                 if touch && !(was_selected && resp.double_clicked() && self.region(id).is_some_and(|r| {
-                    matches!(r.kind, RegionKind::Math { .. } | RegionKind::Text { .. } | RegionKind::Plot { .. } | RegionKind::Plot3d { .. })
+                    matches!(r.kind, RegionKind::Math { .. } | RegionKind::Text { .. })
                 })) {
                     return;
                 }
@@ -3771,10 +3809,12 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("menu").frame(egui::Frame::default().fill(PANEL).inner_margin(2.0)).show(ctx, |ui| {
             self.menu_bar(ui);
         });
-        #[cfg(target_os = "android")]
-        egui::TopBottomPanel::top("touch-tools")
-            .frame(egui::Frame::default().fill(PANEL).inner_margin(egui::Margin::symmetric(6, 3)))
-            .show(ctx, |ui| self.touch_toolbar(ui));
+        #[cfg(any(target_os = "android", test))]
+        if touch_sheet(ctx) {
+            egui::TopBottomPanel::top("touch-tools")
+                .frame(egui::Frame::default().fill(PANEL).inner_margin(egui::Margin::symmetric(6, 3)))
+                .show(ctx, |ui| self.touch_toolbar(ui));
+        }
         if self.bars.standard || self.bars.formatting || self.bars.math {
             egui::TopBottomPanel::top("toolbars").frame(egui::Frame::default().fill(PANEL).inner_margin(egui::Margin::symmetric(4, 2))).show(ctx, |ui| {
                 let mut contents = |ui: &mut Ui| {

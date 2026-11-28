@@ -572,7 +572,7 @@ enum Btn {
 
 fn buttons(ui: &mut Ui, can_apply: bool) -> Btn {
     let mut res = Btn::None;
-    ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 28.0), Layout::right_to_left(Align::Center), |ui| {
+    ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 28.0), Layout::right_to_left(Align::Center).with_main_wrap(true), |ui| {
         // as in Mathcad (90 px), narrower when the panel is narrow
         let gap = ui.spacing().item_spacing.x;
         let sz = Vec2::new(((ui.available_width() - 3.0 * gap) / 4.0).clamp(50.0, 90.0), 24.0);
@@ -598,8 +598,8 @@ fn caption(ui: &mut Ui, title: &str) -> (bool, Vec2) {
     let mut closed = false;
     let w = ui.available_width();
     let (bar, drag) = ui.allocate_exact_size(Vec2::new(w, 24.0), Sense::drag());
-    ui.painter().text(bar.left_center() + Vec2::new(2.0, 0.0), Align2::LEFT_CENTER, title, FontId::proportional(DLG_FONT), Color32::BLACK);
     let rect = Rect::from_center_size(bar.right_center() - Vec2::new(13.0, 0.0), Vec2::new(26.0, 20.0));
+    ui.painter_at(bar.with_max_x(rect.left() - 2.0)).text(bar.left_center() + Vec2::new(2.0, 0.0), Align2::LEFT_CENTER, title, FontId::proportional(DLG_FONT), Color32::BLACK);
     let resp = ui.interact(rect, ui.id().with("dlg-close"), Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(232, 17, 35));
@@ -638,7 +638,8 @@ fn dialog_window(ctx: &Context, id: &'static str, title: &str, can_apply: bool, 
     let mut pos: Pos2 = ctx.data(|m| m.get_temp(pos_id)).unwrap_or(Pos2::new(area.center().x - last.x / 2.0, area.center().y - last.y / 2.0));
     pos.x = pos.x.min(area.right() - last.x).max(area.left());
     pos.y = pos.y.min(area.bottom() - last.y).max(area.top());
-    let max_body_h = (area.height() - 24.0 - 30.0 - 36.0 - 16.0).max(60.0);
+    let footer_h = if width < 300.0 { 56.0 } else { 28.0 };
+    let max_body_h = (area.height() - 24.0 - footer_h - 36.0 - 16.0).max(60.0);
     let mut res = Btn::None;
     let mut moved = Vec2::ZERO;
     let shown = egui::Area::new(Id::new(id)).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
