@@ -55,6 +55,8 @@ public final class XmathActivity extends NativeActivity {
     private static final int PDF = 2;
     private static final int REFERENCE = 3;
     private static final int EXTERNAL_OPEN = 4;
+    private static final String MATHCAD_MIME = "application/x-mathcad";
+    private static final String XMATH_MIME = "application/x-xmath";
 
     private final AtomicReference<String[]> documentResult = new AtomicReference<>();
     private final ConcurrentLinkedQueue<String[]> externalDocuments = new ConcurrentLinkedQueue<>();
@@ -263,7 +265,8 @@ public final class XmathActivity extends NativeActivity {
             if (kind == OPEN || kind == REFERENCE) {
                 intent.setType("*/*");
             } else {
-                intent.setType(kind == PDF ? "application/pdf" : "application/octet-stream");
+                String worksheetMime = ".xmath".equals(worksheetExtension(name)) ? XMATH_MIME : MATHCAD_MIME;
+                intent.setType(kind == PDF ? "application/pdf" : worksheetMime);
                 intent.putExtra(Intent.EXTRA_TITLE, name);
             }
             try {
@@ -308,9 +311,9 @@ public final class XmathActivity extends NativeActivity {
         }
         String extension = worksheetExtension(uriName);
         if (extension == null) {
-            if ("application/x-xmath".equals(mimeType)) {
+            if (XMATH_MIME.equals(mimeType)) {
                 extension = ".xmath";
-            } else if ("application/x-mathcad".equals(mimeType)
+            } else if (MATHCAD_MIME.equals(mimeType)
                     || "application/vnd.ptc.mathcad.xmcd+xml".equals(mimeType)) {
                 extension = ".xmcd";
             } else {

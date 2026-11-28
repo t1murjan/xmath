@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="io.github.t1murjan.xmath"
-    android:versionCode="4"
-    android:versionName="0.1.3">
+    android:versionCode="5"
+    android:versionName="0.1.4">
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="35" />
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
     <application android:label="xmath" android:icon="@drawable/ic_xmath"
@@ -24,6 +24,9 @@
                 <data android:mimeType="application/x-mathcad" />
                 <data android:mimeType="application/vnd.ptc.mathcad.xmcd+xml" />
                 <data android:mimeType="application/x-xmath" />
+                <!-- Downloads may contain only a numeric URI and a generic type.
+                     The receiver checks the display name before opening the stream. -->
+                <data android:mimeType="application/octet-stream" />
             </intent-filter>
             <!-- Providers can use a generic MIME type, or omit it. In either case
                  scope matching to the worksheet extension in the content URI. -->
