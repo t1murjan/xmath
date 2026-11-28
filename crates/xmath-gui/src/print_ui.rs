@@ -87,6 +87,7 @@ impl App {
         match self.write_output(p, r.xml.as_bytes()) {
             Ok(()) => {
                 self.doc.path = Some(p.to_path_buf());
+                self.doc.external_writable = self.doc.external_writable.map(|_| true);
                 self.doc.modified = false;
                 if r.warnings.is_empty() {
                     self.doc.status = format!("Сохранено: {}", p.display());

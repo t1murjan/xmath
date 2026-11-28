@@ -7,6 +7,7 @@ use egui::{Context, Event, ImeEvent, Key, Modifiers};
 use jni::errors::Result as JniResult;
 use jni::objects::{JObject, JObjectArray, JString};
 use jni::refs::{Global, IntoAuto};
+use jni::strings::JNIStr;
 use jni::{jni_sig, jni_str, Env, JValue, JavaVM};
 use winit::platform::android::activity::AndroidApp;
 
@@ -138,27 +139,38 @@ impl Bridge {
     }
 
     pub(crate) fn take_document(&self) -> Option<Result<Option<PathBuf>, String>> {
-        let result = self.call(|env, activity| {
+        match self.take_file_result(jni_str!("takeDocumentResult")).as_deref() {
+            Ok([]) => None,
+            Ok([status, value]) if status == "ok" => Some(Ok(Some(PathBuf::from(value)))),
+            Ok([status, _]) if status == "cancel" => Some(Ok(None)),
+            Ok([_, error]) | Err(error) => Some(Err(error.clone())),
+            _ => Some(Err("Неожиданный ответ системы выбора файлов".into())),
+        }
+    }
+
+    pub(crate) fn take_external_document(&self) -> Option<Result<(PathBuf, bool), String>> {
+        match self.take_file_result(jni_str!("takeExternalDocument")).as_deref() {
+            Ok([]) => None,
+            Ok([status, value]) if status == "ok" || status == "readonly" => {
+                Some(Ok((PathBuf::from(value), status == "ok")))
+            }
+            Ok([_, error]) | Err(error) => Some(Err(error.clone())),
+            _ => Some(Err("Неожиданный ответ при открытии файла".into())),
+        }
+    }
+
+    fn take_file_result(&self, method: &JNIStr) -> Result<Vec<String>, String> {
+        self.call(|env, activity| {
             let value = env
                 .call_method(
                     activity,
-                    jni_str!("takeDocumentResult"),
+                    method,
                     jni_sig!("()[Ljava/lang/String;"),
                     &[],
                 )?
                 .l()?;
             Self::strings(env, value)
-        });
-        match result {
-            Ok(values) => match values.as_slice() {
-                [] => None,
-                [status, value] if status == "ok" => Some(Ok(Some(PathBuf::from(value)))),
-                [status, _] if status == "cancel" => Some(Ok(None)),
-                [_, error] => Some(Err(error.clone())),
-                _ => Some(Err("Неожиданный ответ системы выбора файлов".into())),
-            },
-            Err(error) => Some(Err(error)),
-        }
+        })
     }
 
     pub(crate) fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {

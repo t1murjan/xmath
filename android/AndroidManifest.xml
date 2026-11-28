@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="io.github.t1murjan.xmath"
-    android:versionCode="3"
-    android:versionName="0.1.2">
+    android:versionCode="4"
+    android:versionName="0.1.3">
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="35" />
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
     <application android:label="xmath" android:icon="@drawable/ic_xmath"
@@ -10,11 +10,51 @@
         android:extractNativeLibs="false" android:hasCode="true">
         <activity android:name=".XmathActivity" android:exported="true"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|screenLayout|smallestScreenSize|density"
+            android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize">
             <meta-data android:name="android.app.lib_name" android:value="xmath_gui" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:mimeType="application/x-mathcad" />
+                <data android:mimeType="application/vnd.ptc.mathcad.xmcd+xml" />
+                <data android:mimeType="application/x-xmath" />
+            </intent-filter>
+            <!-- Providers can use a generic MIME type, or omit it. In either case
+                 scope matching to the worksheet extension in the content URI. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" android:host="*" android:mimeType="*/*" />
+                <data android:pathSuffix=".xmcd" android:pathPattern=".*\\.xmcd" />
+                <data android:pathSuffix=".xmath" android:pathPattern=".*\\.xmath" />
+                <data android:pathSuffix=".XMCD" android:pathPattern=".*\\.XMCD" />
+                <data android:pathSuffix=".XMATH" android:pathPattern=".*\\.XMATH" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" android:host="*" />
+                <data android:pathSuffix=".xmcd" android:pathPattern=".*\\.xmcd" />
+                <data android:pathSuffix=".xmath" android:pathPattern=".*\\.xmath" />
+                <data android:pathSuffix=".XMCD" android:pathPattern=".*\\.XMCD" />
+                <data android:pathSuffix=".XMATH" android:pathPattern=".*\\.XMATH" />
+            </intent-filter>
+            <!-- Files with opaque URIs and generic types can still be sent explicitly. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/x-mathcad" />
+                <data android:mimeType="application/vnd.ptc.mathcad.xmcd+xml" />
+                <data android:mimeType="application/x-xmath" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/xml" />
+                <data android:mimeType="application/json" />
             </intent-filter>
         </activity>
     </application>

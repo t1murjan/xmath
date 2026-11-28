@@ -1,12 +1,17 @@
 package io.github.t1murjan.xmath;
 
 import android.app.NativeActivity;
+import android.content.ContentResolver;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.BadParcelableException;
 import android.os.Bundle;
 import android.os.CancellationSignal;
+import android.os.Parcelable;
 import android.os.ParcelFileDescriptor;
+import android.os.Process;
 import android.print.PageRange;
 import android.print.PrintAttributes;
 import android.print.PrintDocumentAdapter;
@@ -33,6 +38,9 @@ import java.util.ArrayList;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
 import java.nio.charset.StandardCharsets;
 
@@ -46,8 +54,11 @@ public final class XmathActivity extends NativeActivity {
     private static final int SAVE = 1;
     private static final int PDF = 2;
     private static final int REFERENCE = 3;
+    private static final int EXTERNAL_OPEN = 4;
 
     private final AtomicReference<String[]> documentResult = new AtomicReference<>();
+    private final ConcurrentLinkedQueue<String[]> externalDocuments = new ConcurrentLinkedQueue<>();
+    private final ExecutorService documentWorker = Executors.newSingleThreadExecutor();
     private final ConcurrentHashMap<String, Uri> destinations = new ConcurrentHashMap<>();
     private final ArrayList<String> input = new ArrayList<>();
     private KeyboardView keyboard;
@@ -59,6 +70,44 @@ public final class XmathActivity extends NativeActivity {
         super.onCreate(state);
         keyboard = new KeyboardView();
         addContentView(keyboard, new FrameLayout.LayoutParams(1, 1));
+        openIntent(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        openIntent(intent);
+    }
+
+    @Override
+    protected void onDestroy() {
+        documentWorker.shutdown();
+        super.onDestroy();
+    }
+
+    @SuppressWarnings("deprecation") // getParcelableExtra(String, Class) requires Android 13.
+    private void openIntent(Intent intent) {
+        if (intent == null) {
+            return;
+        }
+        Uri uri;
+        if (Intent.ACTION_VIEW.equals(intent.getAction())) {
+            uri = intent.getData();
+        } else if (Intent.ACTION_SEND.equals(intent.getAction())) {
+            try {
+                Parcelable stream = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+                uri = stream instanceof Uri ? (Uri) stream : null;
+            } catch (BadParcelableException ignored) {
+                return;
+            }
+        } else {
+            return;
+        }
+        if (uri == null || !ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) {
+            return;
+        }
+        documentWorker.execute(() -> resolveDocument(EXTERNAL_OPEN, uri, intent.getType()));
     }
 
     @Override
@@ -220,7 +269,7 @@ public final class XmathActivity extends NativeActivity {
             try {
                 startActivityForResult(intent, REQUEST_BASE + kind);
             } catch (RuntimeException error) {
-                deliver("error", error.toString());
+                deliver(kind, "error", error.toString());
             }
         });
     }
@@ -233,14 +282,48 @@ public final class XmathActivity extends NativeActivity {
             return;
         }
         if (result != RESULT_OK || data == null || data.getData() == null) {
-            deliver("cancel", "");
+            deliver(kind, "cancel", "");
             return;
         }
         Uri uri = data.getData();
-        new Thread(() -> resolveDocument(kind, uri), "xmath-document").start();
+        documentWorker.execute(() -> resolveDocument(kind, uri, null));
     }
 
-    private void resolveDocument(int kind, Uri uri) {
+    private static String worksheetExtension(String name) {
+        if (name != null) {
+            String lower = name.toLowerCase(Locale.ROOT);
+            if (lower.endsWith(".xmcd")) return ".xmcd";
+            if (lower.endsWith(".xmath")) return ".xmath";
+        }
+        return null;
+    }
+
+    private static String externalDocumentName(String displayName, Uri uri, String mimeType) throws IOException {
+        if (worksheetExtension(displayName) != null) {
+            return displayName;
+        }
+        String uriName = uri.getLastPathSegment();
+        if (uriName != null) {
+            uriName = uriName.substring(uriName.lastIndexOf('/') + 1);
+        }
+        String extension = worksheetExtension(uriName);
+        if (extension == null) {
+            if ("application/x-xmath".equals(mimeType)) {
+                extension = ".xmath";
+            } else if ("application/x-mathcad".equals(mimeType)
+                    || "application/vnd.ptc.mathcad.xmcd+xml".equals(mimeType)) {
+                extension = ".xmcd";
+            } else {
+                throw new IOException("Поддерживаются файлы .xmcd и .xmath");
+            }
+        }
+        if (displayName != null && !displayName.isEmpty()) {
+            return displayName + extension;
+        }
+        return worksheetExtension(uriName) != null ? uriName : "xmath" + extension;
+    }
+
+    private void resolveDocument(int kind, Uri uri, String mimeType) {
         try {
             String displayName = null;
             try (Cursor cursor = getContentResolver().query(uri,
@@ -248,6 +331,11 @@ public final class XmathActivity extends NativeActivity {
                 if (cursor != null && cursor.moveToFirst()) {
                     displayName = cursor.getString(0);
                 }
+            } catch (IllegalArgumentException | UnsupportedOperationException ignored) {
+                // Some content providers expose a stream without metadata.
+            }
+            if (kind == EXTERNAL_OPEN) {
+                displayName = externalDocumentName(displayName, uri, mimeType);
             }
             if (displayName == null || displayName.isEmpty()) {
                 displayName = kind == PDF ? "xmath.pdf" : "xmath.xmcd";
@@ -268,7 +356,7 @@ public final class XmathActivity extends NativeActivity {
                 throw new IOException("Не удалось создать рабочую папку");
             }
             File path = new File(folder, displayName);
-            if (kind == OPEN || kind == REFERENCE) {
+            if (kind == OPEN || kind == REFERENCE || kind == EXTERNAL_OPEN) {
                 try (InputStream stream = getContentResolver().openInputStream(uri)) {
                     if (stream == null) {
                         throw new IOException("Не удалось прочитать выбранный файл");
@@ -277,13 +365,16 @@ public final class XmathActivity extends NativeActivity {
                 }
             }
             destinations.put(path.getAbsolutePath(), uri);
-            deliver("ok", path.getAbsolutePath());
+            boolean readOnly = kind == EXTERNAL_OPEN
+                    && checkUriPermission(uri, Process.myPid(), Process.myUid(), Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                        != PackageManager.PERMISSION_GRANTED;
+            deliver(kind, readOnly ? "readonly" : "ok", path.getAbsolutePath());
         } catch (Exception error) {
-            deliver("error", error.toString());
+            deliver(kind, "error", error.toString());
         }
     }
 
-    private static void writeLocal(File path, InputStream input) throws IOException {
+    private static synchronized void writeLocal(File path, InputStream input) throws IOException {
         AtomicFile file = new AtomicFile(path);
         FileOutputStream output = file.startWrite();
         try {
@@ -303,13 +394,22 @@ public final class XmathActivity extends NativeActivity {
         }
     }
 
-    private void deliver(String status, String value) {
-        documentResult.set(new String[]{status, value});
+    private void deliver(int kind, String status, String value) {
+        String[] result = {status, value};
+        if (kind == EXTERNAL_OPEN) {
+            externalDocuments.add(result);
+        } else {
+            documentResult.set(result);
+        }
         wake();
     }
 
     public String[] takeDocumentResult() {
         return documentResult.getAndSet(null);
+    }
+
+    public String[] takeExternalDocument() {
+        return externalDocuments.poll();
     }
 
     public String writeDocument(String path, byte[] data) {

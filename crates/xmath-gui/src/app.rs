@@ -485,6 +485,10 @@ impl App {
     }
 
     fn load(&mut self, ctx: &Context, p: &Path) {
+        self.load_worksheet(ctx, p, None);
+    }
+
+    fn load_worksheet(&mut self, ctx: &Context, p: &Path, external_writable: Option<bool>) {
         let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
         // Saving updates the same file that was opened, in its original format.
         // Plain text imports start as unsaved worksheets.
@@ -492,14 +496,17 @@ impl App {
         let open = path.as_deref().and_then(|p| self.document_for_path(p));
         if let Some(id) = open {
             self.show_document(ctx, id);
+            if self.doc.external_writable == Some(false) && external_writable != Some(false) {
+                self.doc.external_writable = Some(true);
+            }
             return;
         }
         let result: Result<(Worksheet, Vec<String>), String> = std::fs::read_to_string(p)
             .map_err(|e| e.to_string())
             .and_then(|s| {
-                if ext == "xmcd" || s.trim_start().starts_with("<?xml") {
+                if ext == "xmcd" || (external_writable.is_none() && s.trim_start().starts_with("<?xml")) {
                     crate::import::xmcd(&s)
-                } else if s.trim_start().starts_with('{') {
+                } else if (ext == "xmath" && external_writable.is_some()) || s.trim_start().starts_with('{') {
                     Worksheet::from_json(&s).map(|w| (w, vec![]))
                 } else {
                     Ok((Worksheet::from_lines(&s), vec![]))
@@ -508,6 +515,7 @@ impl App {
         match result {
             Ok((ws, warnings)) => {
                 self.open_loaded_document(ctx, ws, path);
+                self.doc.external_writable = external_writable;
                 self.doc.status = if warnings.is_empty() {
                     format!("Открыт файл {}", p.display())
                 } else {
@@ -549,6 +557,7 @@ impl App {
                 Ok(()) => {
                     self.doc.status = format!("Сохранено: {}", p.display());
                     self.doc.path = Some(p);
+                    self.doc.external_writable = self.doc.external_writable.map(|_| true);
                     self.doc.modified = false;
                 }
                 Err(e) => self.doc.status = format!("Ошибка сохранения: {e}"),
@@ -568,6 +577,10 @@ impl App {
 
     /// Saves to the current path, or asks for one.
     fn save_doc(&mut self, ctx: &Context, then: Option<Action>) {
+        if self.doc.external_writable == Some(false) {
+            self.save_as(ctx, then);
+            return;
+        }
         match self.doc.path.clone() {
             Some(p) => {
                 self.save_to(p);
@@ -690,7 +703,18 @@ impl App {
 
     #[cfg(target_os = "android")]
     fn poll_dialog(&mut self, ctx: &Context) {
-        let Some((kind, then)) = self.file_job else { return };
+        let Some((kind, then)) = self.file_job else {
+            if !self.dialogs_open() {
+                if let Some(result) = self.android.as_ref().and_then(|android| android.take_external_document()) {
+                    match result {
+                        Ok((path, writable)) => self.load_worksheet(ctx, &path, Some(writable)),
+                        Err(error) => self.doc.status = format!("Не удалось открыть файл: {error}"),
+                    }
+                    ctx.request_repaint();
+                }
+            }
+            return;
+        };
         let Some(result) = self.android.as_ref().and_then(|android| android.take_document()) else {
             ctx.request_repaint_after(Duration::from_millis(250));
             return;
@@ -704,6 +728,7 @@ impl App {
         if then == Some(Action::Exit) && self.doc.modified {
             self.workspace.exit_discarded.clear();
         }
+        ctx.request_repaint();
     }
 
     fn file_chosen(&mut self, ctx: &Context, kind: DlgKind, p: PathBuf, then: Option<Action>) {
@@ -3714,7 +3739,10 @@ impl App {
                 self.doc.eval_gen += 1;
                 let gen = self.doc.eval_gen;
                 let ws = self.doc.ws.clone();
-                let env = self.eval_env();
+                let mut env = self.eval_env();
+                // Viewing an external attachment may calculate values, but file writes
+                // require the user to run a calculation explicitly.
+                env.allow_write &= self.doc.external_writable.is_none() || self.doc.force_calc;
                 let tx = self.doc.eval_tx.clone();
                 let c = ctx.clone();
                 self.doc.dirty = false;

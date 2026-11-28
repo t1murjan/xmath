@@ -13,6 +13,8 @@ pub(super) struct Document {
     pub(super) dirty: bool,
     pub(super) modified: bool,
     pub(super) path: Option<PathBuf>,
+    /// Whether a worksheet opened by an Android file provider can be written back there.
+    pub(super) external_writable: Option<bool>,
     pub(super) selection: Vec<u64>,
     pub(super) editing: Option<u64>,
     pub(super) focus_pending: bool,
@@ -82,6 +84,7 @@ impl Document {
             dirty: true,
             modified: false,
             path: None,
+            external_writable: None,
             selection: Vec::new(),
             editing: None,
             focus_pending: false,
@@ -764,6 +767,54 @@ mod tests {
                 modifiers: Modifiers::NONE,
             },
         ]
+    }
+
+    #[test]
+    fn external_worksheets_reuse_tabs_and_defer_automatic_file_writes() {
+        let ctx = Context::default();
+        let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = App::new(&cc, None, false);
+        let dir = std::env::temp_dir().join(format!("xmath-external-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mathcad = dir.join("units.XMCD");
+        std::fs::write(&mathcad, include_str!("../../xmath-core/tests/data/units.xmcd")).unwrap();
+        let xmath = dir.join("worksheet.xmath");
+        let ws = Worksheet::from_lines("M := [1, 2]\nWRITEPRN(\"out.prn\") := M");
+        std::fs::write(&xmath, ws.to_json()).unwrap();
+
+        app.doc.ws = Worksheet::from_lines("unsaved := 1");
+        app.changed();
+        let unsaved = app.doc.id;
+        app.load_worksheet(&ctx, &mathcad, Some(false));
+        let imported = app.doc.id;
+        assert_ne!(imported, unsaved);
+        assert_eq!(app.doc.path.as_deref(), Some(mathcad.as_path()));
+        assert!(!app.doc.ws.regions.is_empty());
+        assert_eq!(app.doc.external_writable, Some(false));
+        app.load_worksheet(&ctx, &xmath, Some(true));
+        let native = app.doc.id;
+        assert_eq!(app.doc.ws.to_json(), ws.to_json());
+        let output = dir.join("out.prn");
+        app.drive_evaluation(&ctx);
+        let received = app.doc.eval_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(received.outputs.values().any(|o| o.error().is_some_and(|e| e.contains("запись файлов отключена"))));
+        assert!(!output.exists());
+        app.run(&ctx, Action::Calculate);
+        app.drive_evaluation(&ctx);
+        app.doc.eval_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(output.is_file());
+
+        app.load_worksheet(&ctx, &mathcad, Some(false));
+        assert_eq!(app.doc.id, imported);
+        assert_eq!(app.documents().count(), 3);
+        let copy = dir.join("copy.xmcd");
+        app.save_to(copy.clone());
+        assert_eq!(app.doc.path.as_deref(), Some(copy.as_path()));
+        assert_eq!(app.doc.external_writable, Some(true));
+        app.show_document(&ctx, unsaved);
+        assert!(app.doc.modified);
+        assert!(app.documents().any(|d| d.id == native));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
